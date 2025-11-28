@@ -4,7 +4,7 @@
 trainer:
   accelerator: "auto"         # 'auto' seleciona GPU se disponível, senão CPU
   devices: 1
-  max_epochs: 20000
+  max_epochs: 10000
   #max_steps: 1000000          # Parada por número de passos
   precision:  "32-true"    #"16-mixed"       # Treinamento com precisão mista. Use precision="32-true" para 32 bits
   log_every_n_steps: 100      # Frequência do log nos steps
@@ -28,10 +28,10 @@ model:
 
 # Configurações do DataModule para carregar os dados
 data:
-  data_dir: "/root/DATASETS/VoiceBank-DEMAND-16k/"
+  data_dir: "/home/fred/Projetos/DATASETS/VoiceBank-DEMAND-16k/"
   train_list_path: "filelists/train.csv"
   val_list_path: "filelists/test.csv"
-  batch_size: 100
+  batch_size: 10
   num_workers: 8 # Recomendo aumentar para acelerar o carregamento de dados
   persistent_workers: true
 
