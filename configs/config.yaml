@@ -1,0 +1,74 @@
+# configs/config.yaml
+
+# Configurações do PyTorch Lightning Trainer
+trainer:
+  accelerator: "auto"         # 'auto' seleciona GPU se disponível, senão CPU
+  devices: 1
+  max_epochs: 20000
+  #max_steps: 1000000          # Parada por número de passos
+  precision:  "32-true"    #"16-mixed"       # Treinamento com precisão mista. Use precision="32-true" para 32 bits
+  log_every_n_steps: 100      # Frequência do log nos steps
+  #val_check_interval: 1.0   # Frequência da validação nos steps
+  check_val_every_n_epoch: 10
+
+# Hiperparâmetros do modelo e da função de perda
+model:
+  lr: 0.00001
+  sample_rate: 16000
+  loss_config:
+    ell_p: 1
+    ell_p_lambda: 1.0
+    stft_lambda: 1.0
+    sc_lambda: 0.5
+    mag_lambda: 0.5
+    stft_config:
+      fft_sizes: [512, 1024, 2048]
+      hop_sizes: [50, 120, 240]
+      win_lengths: [240, 600, 1200]
+
+# Configurações do DataModule para carregar os dados
+data:
+  data_dir: "/root/DATASETS/VoiceBank-DEMAND-16k/"
+  train_list_path: "filelists/train.csv"
+  val_list_path: "filelists/test.csv"
+  batch_size: 100
+  num_workers: 8 # Recomendo aumentar para acelerar o carregamento de dados
+  persistent_workers: true
+
+# Configuração dos callbacks
+callbacks:
+  # Salva o melhor checkpoint com base na perda de validação
+  best_checkpoint:
+    _target_: pytorch_lightning.callbacks.ModelCheckpoint
+    monitor: "val_loss"
+    dirpath: "logs/checkpoints/"
+    filename: "best-model-{epoch}-{val_loss:.4f}"
+    save_top_k: 1
+    mode: "min"
+
+  # Salva um checkpoint periodicamente
+  periodic_checkpoint:
+    _target_: pytorch_lightning.callbacks.ModelCheckpoint
+    dirpath: "logs/checkpoints/"
+    filename: "epoch-{epoch}"
+    every_n_epochs: 10
+    #every_n_train_steps: 1000 # Salva a cada 100.000 passos
+    save_top_k: 3
+    save_last: true
+    monitor: "epoch" 
+    mode: "max"
+
+  # Parada antecipada se a val_loss não melhorar
+  #early_stopping:
+  #  _target_: pytorch_lightning.callbacks.EarlyStopping
+  #  monitor: "val_loss"
+  #  patience: 10
+  #  mode: "min"
+
+# Configuração do logger do TensorBoard
+logger:
+  _target_: pytorch_lightning.loggers.TensorBoardLogger
+  save_dir: "logs"
+  name: "cleanunet2"
+
+#resume_from_checkpoint: "logs/checkpoints/last.ckpt"

@@ -1,0 +1,8 @@
+torch
+torchaudio
+lightning
+tensorboard
+librosa
+matplotlib
+pesq
+pystoi

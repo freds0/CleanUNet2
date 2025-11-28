@@ -1,0 +1,26 @@
+# Parâmetros da Inferência
+inference_params:
+  input_dir: "/home/fred/Projetos/DATASETS/VoiceBank-DEMAND-16k/test/noisy/"
+  output_dir: "denoised_results"
+  checkpoint_path: "logs_cleanunet/checkpoints/last.ckpt"
+  cpu: false # Forçar uso da CPU (true/false)
+
+# Parâmetros do Modelo (necessários para instanciar o LightningModule)
+# Estes valores não afetam a performance da inferência, apenas a criação do objeto.
+model_hparams:
+  lr: 0.0001
+  sample_rate: 16000
+  loss_config:
+    ell_p: 1
+    ell_p_lambda: 1.0
+    stft_lambda: 1.0
+    sc_lambda: 0.5
+    mag_lambda: 0.5
+    stft_config:
+      fft_sizes: [512, 1024, 2048]
+      hop_sizes: [50, 120, 240]
+      win_lengths: [240, 600, 1200]
+
+# Parâmetros de áudio
+audio_params:
+  target_sample_rate: 16000

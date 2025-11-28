@@ -7,9 +7,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from util import weight_scaling_init
-
-#torch.autograd.set_detect_anomaly(True)
+from cleanunet.util import weight_scaling_init
+#from util import weight_scaling_init
 
 
 # Transformer (encoder) https://github.com/jadore801120/attention-is-all-you-need-pytorch
@@ -29,7 +28,7 @@ class ScaledDotProductAttention(nn.Module):
         attn = torch.matmul(q / self.temperature, k.transpose(2, 3))
 
         if mask is not None:
-            attn = attn.masked_fill(mask == 0, -1e9)
+            attn = attn.masked_fill(mask == 0, torch.finfo(attn.dtype).min)
 
         attn = self.dropout(F.softmax(attn, dim=-1))
         output = torch.matmul(attn, v)
@@ -226,21 +225,52 @@ def padding(x, D, K, S):
     return x
 
 
+class ConvEmbAdapter(nn.Module):
+    def __init__(self, input_dim, output_dim=512):
+        """
+        Initializes the ConvEncoder.
+
+        Args:
+            input_dim (int): Number of input features per time step.
+            output_dim (int): Number of output features after convolution and pooling.
+        """
+        super(ConvEmbAdapter    , self).__init__()
+        self.conv = nn.Conv1d(input_dim, output_dim, kernel_size=3, padding=1)
+        self.pool = nn.AdaptiveAvgPool1d(1)  # Pool to 1 time step
+        self.activation = nn.ReLU()
+    
+    def forward(self, x):
+        """
+        Forward pass of the ConvEncoder.
+
+        Args:
+            x (torch.Tensor): Input tensor of shape [batch_size, feature_dim, time_steps].
+
+        Returns:
+            torch.Tensor: Output tensor of shape [batch_size, output_dim].
+        """
+        # Apply convolution
+        x = self.conv(x)  # [batch_size, output_dim, time_steps]
+        # Apply adaptive average pooling
+        x = self.pool(x)  # [batch_size, output_dim, 1]
+        # Remove the last dimension
+        x = x.squeeze(2)  # [batch_size, output_dim]
+        # Apply activation function
+        x = self.activation(x)
+        return x
+    
+
 class CleanUNet(nn.Module):
     """ CleanUNet architecture. """
 
-    def __init__(self, 
-                channels_input=1, 
-                channels_output=1,
-                channels_H=64, 
-                max_H=768,
-                encoder_n_layers=8, 
-                kernel_size=4, 
-                stride=2,
-                tsfm_n_layers=3, 
-                tsfm_n_head=8,
-                tsfm_d_model=512, 
-                tsfm_d_inner=2048):        
+    def __init__(self, channels_input=1, channels_output=1,
+                 channels_H=64, max_H=768,
+                 encoder_n_layers=8, kernel_size=4, stride=2,
+                 tsfm_n_layers=3, 
+                 tsfm_n_head=8,
+                 tsfm_d_model=512, 
+                 tsfm_d_inner=2048):
+        
         """
         Parameters:
         channels_input (int):   input channels
@@ -323,7 +353,15 @@ class CleanUNet(nn.Module):
             if isinstance(layer, (nn.Conv1d, nn.ConvTranspose1d)):
                 weight_scaling_init(layer)
 
+        #skip_d = [64, 128, 256, 512, 768, 768, 768, 768]
+        #spk_emb_dim = 512
+        #self.conv_emb_adapters = nn.ModuleList(
+        #    [ConvEmbAdapter(spk_emb_dim, skip_d[i]) for i in range(encoder_n_layers)]
+        #)
+        #print(self.conv_emb_adapters)
+
     def forward(self, noisy_audio):
+
         # (B, L) -> (B, C, L)
         if len(noisy_audio.shape) == 2:
             noisy_audio = noisy_audio.unsqueeze(1)
@@ -341,7 +379,7 @@ class CleanUNet(nn.Module):
             x = downsampling_block(x)
             skip_connections.append(x)
         skip_connections = skip_connections[::-1]
-
+    
         # attention mask for causal inference; for non-causal, set attn_mask to None
         len_s = x.shape[-1]  # length at bottleneck
         attn_mask = (1 - torch.triu(torch.ones((1, len_s, len_s), device=x.device), diagonal=1)).bool()
@@ -355,11 +393,55 @@ class CleanUNet(nn.Module):
         # decoder
         for i, upsampling_block in enumerate(self.decoder):
             skip_i = skip_connections[i]
-            x = x + skip_i[:, :, :x.shape[-1]].clone()
+            skip_x = skip_i[:, :, :x.shape[-1]].clone()
+            x = x + skip_x
             x = upsampling_block(x)
         x = x[:, :, :L] * std
         return x
+    '''
+    def forward(self, noisy_audio, feature):
+        feature = feature.unsqueeze(2) # (B, C) -> (B, C, 1)
 
+        # (B, L) -> (B, C, L)
+        if len(noisy_audio.shape) == 2:
+            noisy_audio = noisy_audio.unsqueeze(1)
+        B, C, L = noisy_audio.shape
+        assert C == 1
+        
+        # normalization and padding
+        std = noisy_audio.std(dim=2, keepdim=True) + 1e-3
+        noisy_audio = noisy_audio / std
+        x = padding(noisy_audio, self.encoder_n_layers, self.kernel_size, self.stride)
+        
+        # encoder
+        skip_connections = []
+        for downsampling_block in self.encoder:
+            x = downsampling_block(x)
+            skip_connections.append(x)
+        skip_connections = skip_connections[::-1]
+    
+        # attention mask for causal inference; for non-causal, set attn_mask to None
+        len_s = x.shape[-1]  # length at bottleneck
+        attn_mask = (1 - torch.triu(torch.ones((1, len_s, len_s), device=x.device), diagonal=1)).bool()
+
+        x = self.tsfm_conv1(x)  # C 1024 -> 512
+        x = x.permute(0, 2, 1)
+        x = self.tsfm_encoder(x, src_mask=attn_mask)
+        x = x.permute(0, 2, 1)
+        x = self.tsfm_conv2(x)  # C 512 -> 1024
+
+        # decoder
+        for i, upsampling_block in enumerate(self.decoder):
+            skip_i = skip_connections[i]
+            skip_x = skip_i[:, :, :x.shape[-1]].clone()
+            feature_emb = self.conv_emb_adapters[len(self.conv_emb_adapters) - i - 1](feature)
+            feature_emb = feature_emb.unsqueeze(2)
+            skip_x = feature_emb * skip_x
+            x = x + skip_x
+            x = upsampling_block(x)
+        x = x[:, :, :L] * std
+        return x
+    '''
 
 if __name__ == '__main__':
     import json
@@ -381,7 +463,8 @@ if __name__ == '__main__':
     print_size(model, keyword="tsfm")
     
     input_data = torch.ones([4,1,int(4.5*16000)]).cuda()
-    output = model(input_data)
+    xvector_data = torch.ones([4,512]).cuda()
+    output = model(input_data, xvector_data)
     print(output.shape)
 
     y = torch.rand([4,1,int(4.5*16000)]).cuda()

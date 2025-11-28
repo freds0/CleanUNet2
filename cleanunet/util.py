@@ -10,7 +10,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 #from losses import MultiResolutionSTFTLoss
-from logger import Logger
+from .logger import Logger
+#from logger import Logger
 
 
 def flatten(v):
@@ -45,7 +46,8 @@ def find_max_epoch(path):
 
 def print_size(net, keyword=None):
     """
-    Print the number of parameters of a network
+    Prints the total number of parameters and the number of trainable parameters of a neural network model.
+    If a keyword is provided, it also prints the number of parameters associated with that keyword.
     """
 
     if net is not None and isinstance(net, torch.nn.Module):
@@ -182,18 +184,61 @@ def sampling(net, noisy_audio):
     return net(noisy_audio)
 
 
+def loss_fn(net, X, ell_p, ell_p_lambda, stft_lambda, mrstftloss, **kwargs):
+    """
+    Loss function in CleanUNet
+
+    Parameters:
+    net: network
+    X: training data pair (clean audio, noisy_audio)
+    ell_p: \ell_p norm (1 or 2) of the AE loss
+    ell_p_lambda: factor of the AE loss
+    stft_lambda: factor of the STFT loss
+    mrstftloss: multi-resolution STFT loss function
+
+    Returns:
+    loss: value of objective function
+    output_dic: values of each component of loss
+    """
+
+    assert type(X) == tuple and len(X) == 2
+    
+    clean_audio, noisy_audio = X
+    B, C, L = clean_audio.shape
+    output_dic = {}
+    loss = 0.0
+    
+    # AE loss
+    denoised_audio = net(noisy_audio)  
+
+    if ell_p == 2:
+        ae_loss = nn.MSELoss()(denoised_audio, clean_audio)
+    elif ell_p == 1:
+        ae_loss = F.l1_loss(denoised_audio, clean_audio)
+    else:
+        raise NotImplementedError
+    loss += ae_loss * ell_p_lambda
+    output_dic["reconstruct"] = ae_loss.data * ell_p_lambda
+
+    if stft_lambda > 0:
+        sc_loss, mag_loss = mrstftloss(denoised_audio.squeeze(1), clean_audio.squeeze(1))
+        loss += (sc_loss + mag_loss) * stft_lambda
+        output_dic["stft_sc"] = sc_loss.data * stft_lambda
+        output_dic["stft_mag"] = mag_loss.data * stft_lambda
+
+    return loss, output_dic
+
+
 ####################### train util #############################
 
-def load_checkpoint(checkpoint_path, model, optimizer):
+
+def load_checkpoint(checkpoint_path, model):
+    assert os.path.isfile(checkpoint_path)
     print("Loading checkpoint '{}'".format(checkpoint_path))
     checkpoint_dict = torch.load(checkpoint_path, map_location='cpu')    
+    print(checkpoint_dict.keys())
     model.load_state_dict(checkpoint_dict['state_dict'])
-    optimizer.load_state_dict(checkpoint_dict['optimizer'])
-    learning_rate = checkpoint_dict['learning_rate']
-    iteration = checkpoint_dict['iteration']
-    print("Loaded checkpoint '{}' from iteration {}" .format(
-        checkpoint_path, iteration))
-    return model, optimizer, learning_rate, iteration
+    return model
 
 
 def save_checkpoint(model, optimizer, learning_rate, iteration, filepath):

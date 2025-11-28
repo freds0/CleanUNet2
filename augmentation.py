@@ -5,15 +5,17 @@ from glob import glob
 import torchaudio
 import soundfile as sf
 import torch
+import random
 
 from torch_audiomentations import (
     Compose, Gain, AddBackgroundNoise, ApplyImpulseResponse, LowPassFilter, HighPassFilter, BandPassFilter, AddColoredNoise
 )
 
 class AudioAugmenter:
-    def __init__(self, augmentations, device='cpu'):
+    def __init__(self, augmentations, device='cpu', seed=42):
         self.augmentations = augmentations
         self.device = device
+        self.seed = seed
         self.compose = self._create_compose(self.augmentations)
 
     def _create_compose(self, augmentations):
@@ -41,17 +43,21 @@ class AudioAugmenter:
                 aug_list.append(AddColoredNoise(**params))
             else:
                 print(f"Warning: Unknown augmentation '{name}'")
-        return Compose(aug_list, shuffle=False)
+        return Compose(aug_list, shuffle=True, p=1.0) 
 
     def apply(self, waveform, sr):
-        # Ensure waveform is a tensor with shape (batch_size, num_channels, num_samples)
-        # Apply augmentations
-        waveform = waveform.reshape(1, 1, -1)
+        # Set seed for reproducibility
+        if self.seed is not None:
+            self.seed += random.randint(1, 1000)
+            torch.manual_seed(self.seed) 
+            random.seed(self.seed) 
+            self.seed += 1            
 
+        # Ensure waveform is a tensor with shape (batch_size, num_channels, num_samples)
+        waveform = waveform.reshape(1, 1, -1)
+        # Apply augmentations
         augmented_waveform = self.compose(waveform, sample_rate=sr)
-        # Convert back to numpy array
-        #augmented_waveform = augmented_waveform_tensor.cpu().squeeze(0).numpy()
-        augmented_waveform = augmented_waveform.squeeze()
+        augmented_waveform = augmented_waveform.reshape(1, -1)
         return augmented_waveform
 
 def main():
@@ -61,6 +67,7 @@ def main():
     parser.add_argument('--output_dir', '-o', type=str, default="output_wavs", help='Output directory')
     parser.add_argument('--search_pattern', '-s', type=str, default="*.wav", help='Search pattern for input files')
     parser.add_argument('--device', type=str, default='cpu', help='Device to use (cpu or cuda)')
+    parser.add_argument('--seed', type=int, default=42, help='Seed for reproducibility')
     args = parser.parse_args()
 
     # Load configurations from config.json
@@ -76,15 +83,15 @@ def main():
     print("Augmentations:", augmentations)
     print("Sample rate:", sample_rate)
     print("Device:", args.device)
+    print("Seed:", args.seed)
 
-    augmenter = AudioAugmenter(augmentations, device=args.device)
+    augmenter = AudioAugmenter(augmentations, device=args.device, seed=args.seed)
 
     # Ensure output directory exists
     if not os.path.exists(args.output_dir):
         os.makedirs(args.output_dir)
 
     # Process each file
-    i = 0
     for file in tqdm(glob(os.path.join(args.input_dir, args.search_pattern))):
         print(f"Processing {file}")
         # Load audio file using torchaudio
@@ -102,9 +109,6 @@ def main():
 
         sf.write(output_file, augmented_waveform, sr)
         print(f"Saved to {output_file}")
-        i+=1
-        if i == 10:
-            break
 
 if __name__ == "__main__":
     main()
