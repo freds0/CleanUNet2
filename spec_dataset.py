@@ -14,7 +14,7 @@ import torchaudio
 import torch.multiprocessing as mp
 
 # Use "spawn" multiprocessing start method for dataloaders (safer for CUDA in some setups)
-mp.set_start_method("spawn", force=True)
+#mp.set_start_method("spawn", force=True)
 
 MAX_WAV_VALUE = 32768.0  # legacy constant (if needed)
 
@@ -288,7 +288,8 @@ class MelDataset(torch.utils.data.Dataset):
             # Provide a helpful error message for debugging
             filename = os.path.basename(clean_path)
             print(f"Error processing file {filename}: {e}")
-            raise
+            return self.__getitem__(random.randint(0, len(self.audio_files)-1)
+            #raise
 
         # If cache is active, reuse previously loaded audio (cheap)
         if self._cache_ref_count > 0 and self.cached_wav is not None:
