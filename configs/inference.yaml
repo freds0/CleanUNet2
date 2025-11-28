@@ -1,15 +1,44 @@
-# Parâmetros da Inferência
-inference_params:
-  input_dir: "/home/fred/Projetos/DATASETS/VoiceBank-DEMAND-16k/test/noisy/"
-  output_dir: "denoised_results"
-  checkpoint_path: "logs_cleanunet/checkpoints/last.ckpt"
-  cpu: false # Forçar uso da CPU (true/false)
+# -----------------------------------------------------------
+# Inference configuration for CleanUNet2 Lightning model
+# -----------------------------------------------------------
 
-# Parâmetros do Modelo (necessários para instanciar o LightningModule)
-# Estes valores não afetam a performance da inferência, apenas a criação do objeto.
-model_hparams:
+# Inference runtime options
+inference:
+  # Directory containing noisy input audio files (one or many .wav)
+  input_dir: "/home/fred/Projetos/DATASETS/VoiceBank-DEMAND-16k/test/noisy/"
+
+  # Output directory where denoised audio will be written.
+  # If it does not exist the script should create it.
+  output_dir: "denoised_results"
+
+  # Path to the checkpoint to load for inference.
+  # Use an absolute path or path relative to your project root.
+  checkpoint_path: "logs/checkpoints/last.ckpt"
+
+  # Force CPU usage even if CUDA is available. Set to true or false.
+  force_cpu: false
+
+  # File glob / pattern to search for audio files in input_dir.
+  # Example: "*.wav" or "**/*.wav" (if your loader supports recursive globbing).
+  input_pattern: "*.wav"
+
+  # Overwrite existing files in output_dir if True.
+  overwrite: false
+
+  # Number of worker processes used to load/process audio during inference.
+  # 0 = single-threaded; >0 may speed up I/O for large datasets.
+  num_workers: 0
+
+# Model hyperparameters required to instantiate the LightningModule.
+# These must match how the model was created/trained (sample rate, architecture flags, etc.).
+model:
+  # Learning rate value is not used for inference but kept for consistent object creation.
   lr: 0.0001
+
+  # Expected sample rate for waveform inputs (resampling will be applied if needed).
   sample_rate: 16000
+
+  # Loss configuration (only needed if LightningModule expects it on construction).
   loss_config:
     ell_p: 1
     ell_p_lambda: 1.0
@@ -21,6 +50,46 @@ model_hparams:
       hop_sizes: [50, 120, 240]
       win_lengths: [240, 600, 1200]
 
-# Parâmetros de áudio
-audio_params:
+# Audio processing parameters (used during pre/post processing)
+audio:
+  # Target sample rate to resample inputs to (Hz). PESQ/STOI usually expect 16k for many setups.
   target_sample_rate: 16000
+
+  # Expected number of channels in input audio. If stereo, loader may mix to mono.
+  target_channels: 1
+
+  # Whether to normalize audio amplitude to -1..1 before feeding the model.
+  normalize: true
+
+  # Padding/trimming policy for inputs that are shorter or longer than the model's expectation.
+  # Options: "pad" (zero-pad shorter), "trim" (truncate longer), "none" (no adjustment).
+  pad_trim: "pad"
+
+# Output audio file format settings
+output:
+  # Output file extension/format. torchaudio supports "wav", "flac", etc.
+  format: "wav"
+
+  # Bit-depth when saving WAV (16 or 32). Use 16 for standard PCM.
+  bit_depth: 16
+
+  # Whether to apply inverse normalization (if inputs were normalized before inference).
+  undo_normalize: true
+
+# Logging and runtime
+runtime:
+  # Whether to print progress info to stdout during inference.
+  verbose: true
+
+  # Save a JSON report with objective metrics (PESQ/STOI/SI-SDR) for each file.
+  save_metrics_report: true
+
+  # Path to write the per-file metrics JSON report (if save_metrics_report is true).
+  metrics_report_path: "inference_metrics.json"
+
+# Notes:
+# - The LightningModule used for inference should be instantiated with `model` and
+#   `loss_config` fields above if required by your constructor.
+# - If you set force_cpu=true, ensure the code maps the loaded checkpoint to CPU
+#   (e.g. torch.load(checkpoint, map_location='cpu')).
+
