@@ -40,6 +40,11 @@ model:
   lr: 1e-5
   # Sample rate of audio data
   sample_rate: 16000
+
+  # Select the conditioning method here:
+  # Options: "addition", "concatenation", "film"
+  conditioning_type: "addition"
+
   # Loss configuration grouped for clarity
   loss_config:
     ell_p: 1                 # 1 -> L1, 2 -> L2
@@ -64,7 +69,7 @@ data:
   num_workers: 8
   persistent_workers: true
   # Optional: segment length (samples) used by dataset sampling (if supported)
-  segment_size: 8192
+  #segment_size: 16384
 
 # ----------------------
 # Callbacks
@@ -74,18 +79,20 @@ callbacks:
   best_checkpoint:
     _target_: "pytorch_lightning.callbacks.ModelCheckpoint"
     monitor: "val_loss"
-    dirpath: "${checkpoint_dir}"   # uses the top-level checkpoint_dir
+    dirpath: "logs/checkpoints"
     filename: "best-model-{epoch:02d}-{val_loss:.4f}"
     save_top_k: 1
     mode: "min"
   # Periodic checkpointing (every N epochs)
   periodic_checkpoint:
     _target_: "pytorch_lightning.callbacks.ModelCheckpoint"
-    dirpath: "${checkpoint_dir}"
+    dirpath: "logs/checkpoints"
     filename: "epoch-{epoch:04d}"
     every_n_epochs: 10
     save_top_k: 3
     save_last: true
+    monitor: "val_loss"
+    mode: "min"
     # monitor/mode not needed for simple periodic saving
 
   # Example early stopping (commented by default)
@@ -100,8 +107,26 @@ callbacks:
 # ----------------------
 logger:
   _target_: "pytorch_lightning.loggers.TensorBoardLogger"
-  save_dir: "${logging_dir}"
+  save_dir: "logs"
   name: "cleanunet2"
+
+logger:
+  # Choose: 'tensorboard', 'wandb' or 'both' (for both)
+  choice: "tensorboard"
+  
+  tensorboard:
+    _target_: pytorch_lightning.loggers.TensorBoardLogger
+    save_dir: "logs"
+    name: "cleanunet2"
+    default_hp_metric: false
+
+  wandb:
+    _target_: pytorch_lightning.loggers.WandbLogger
+    project: "CleanUNet2_Project"
+    name: "cleanunet2_run"
+    save_dir: "logs"
+    offline: false  # Change for true if no internet
+    log_model: true
 
 # ----------------------
 # Resume / checkpoints

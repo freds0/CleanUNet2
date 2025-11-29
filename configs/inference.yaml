@@ -38,6 +38,10 @@ model:
   # Expected sample rate for waveform inputs (resampling will be applied if needed).
   sample_rate: 16000
 
+  # Select the conditioning method here:
+  # Options: "addition", "concatenation", "film"
+  conditioning_type: "addition"
+
   # Loss configuration (only needed if LightningModule expects it on construction).
   loss_config:
     ell_p: 1

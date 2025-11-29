@@ -1,9 +1,10 @@
 # train.py
 """
-Training entrypoint for CleanUNet2 with safer callback/logger instantiation
+Training entrypoint for CleanUNet2 with safer callback/logger instantiation.
+Supports TensorBoard and WandB.
 
 Usage:
-    python train.py --config configs/config.yaml
+    python train.py --config configs/train.yaml
 """
 
 import yaml
@@ -14,7 +15,7 @@ import copy
 import torch
 from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
-from pytorch_lightning.loggers import TensorBoardLogger
+from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger
 
 # Make sure these imports point to the correct modules in your repo
 from lightning_modules.cleanunet_module import CleanUNetLightningModule
@@ -53,25 +54,75 @@ def _safe_instantiate_callbacks(callbacks_config: dict):
             logger.warning("Callback '%s' with target '%s' is not supported and will be ignored.", name, target)
     return callbacks
 
+def _create_single_logger(cfg: dict):
+    """
+    Helper to instantiate a single logger based on its _target_.
+    """
+    if not cfg:
+        return None
+    
+    # Deepcopy to avoid modifying the original config dict
+    config_copy = copy.deepcopy(cfg)
+    target = config_copy.pop("_target_", None)
+
+    if not target:
+        # If no target, we can't instantiate
+        return None
+
+    if "TensorBoardLogger" in target:
+        logger.info("Instantiating TensorBoardLogger.")
+        return TensorBoardLogger(**config_copy)
+    
+    elif "WandbLogger" in target:
+        logger.info("Instantiating WandbLogger.")
+        # Ensure 'save_dir' exists or let Wandb handle it
+        return WandbLogger(**config_copy)
+    
+    else:
+        logger.warning(f"Logger target '{target}' not supported. Skipping.")
+        return None
+
 def _safe_instantiate_logger(logger_config: dict):
     """
-    Instantiate logger from config in a safe way. Currently supports TensorBoardLogger.
+    Instantiate logger(s) from config safely.
+    Supports 'choice' logic: 'tensorboard', 'wandb', or 'both'.
     """
     if not logger_config:
         logger.info("No logger configuration provided; proceeding without logger.")
         return None
 
-    cfg = copy.deepcopy(logger_config)
-    target = cfg.pop("_target_", None)
-    if target is None:
-        logger.warning("Logger config missing '_target_' field. Skipping logger creation.")
-        return None
+    # Check for 'choice' key to determine strategy
+    choice = logger_config.get("choice", None)
 
-    if "TensorBoardLogger" in target:
-        logger.info("Instantiating TensorBoardLogger.")
-        return TensorBoardLogger(**cfg)
-    else:
-        raise ValueError(f"Logger '{target}' not supported. Add support in _safe_instantiate_logger.")
+    # Strategy 1: 'choice' logic (new structure)
+    if choice:
+        choice = choice.lower()
+        loggers_list = []
+
+        if choice in ["tensorboard", "both"]:
+            tb_conf = logger_config.get("tensorboard")
+            if tb_conf:
+                l = _create_single_logger(tb_conf)
+                if l: loggers_list.append(l)
+        
+        if choice in ["wandb", "both"]:
+            wb_conf = logger_config.get("wandb")
+            if wb_conf:
+                l = _create_single_logger(wb_conf)
+                if l: loggers_list.append(l)
+
+        if not loggers_list:
+            logger.warning(f"Logger choice was '{choice}' but no valid configuration found.")
+            return None
+        
+        # If only one logger, return it directly; otherwise return list
+        return loggers_list[0] if len(loggers_list) == 1 else loggers_list
+
+    # Strategy 2: Direct instantiation (legacy structure with _target_ at root)
+    if "_target_" in logger_config:
+        return _create_single_logger(logger_config)
+
+    return None
 
 def train(config: dict):
     """
@@ -102,13 +153,18 @@ def train(config: dict):
     # Instantiate callbacks safely
     callbacks = _safe_instantiate_callbacks(config.get("callbacks", {}))
 
-    # Instantiate logger safely
+    # Instantiate logger safely (supports TB, WandB, or Both)
     lightning_logger = _safe_instantiate_logger(config.get("logger", {}))
 
     # Create the Trainer
     logger.info("Creating PyTorch Lightning Trainer.")
     trainer_kwargs = copy.deepcopy(config.get("trainer", {}))
-    trainer = Trainer(logger=lightning_logger, callbacks=callbacks, **trainer_kwargs)
+    
+    trainer = Trainer(
+        logger=lightning_logger, 
+        callbacks=callbacks, 
+        **trainer_kwargs
+    )
 
     # Resume from checkpoint if configured
     ckpt_path = config.get("resume_from_checkpoint", None)
@@ -133,7 +189,6 @@ if __name__ == "__main__":
         config = yaml.safe_load(fh)
 
     # Set precision hint for tensor cores if available (optional)
-    # torch.set_float32_matmul_precision exists in newer PyTorch versions
     if hasattr(torch, "set_float32_matmul_precision"):
         try:
             torch.set_float32_matmul_precision("medium")
@@ -143,4 +198,3 @@ if __name__ == "__main__":
 
     # Run training
     train(config)
-

@@ -20,6 +20,7 @@ json5>=0.9.14
 
 # --- Logging & Experimentation ---
 tensorboard>=2.14.0
+wandb
 
 # --- Optional but Recommended ---
 matplotlib>=3.6.0

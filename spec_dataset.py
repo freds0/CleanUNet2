@@ -288,8 +288,7 @@ class MelDataset(torch.utils.data.Dataset):
             # Provide a helpful error message for debugging
             filename = os.path.basename(clean_path)
             print(f"Error processing file {filename}: {e}")
-            return self.__getitem__(random.randint(0, len(self.audio_files)-1)
-            #raise
+            return self.__getitem__(random.randint(0, len(self.audio_files)-1))
 
         # If cache is active, reuse previously loaded audio (cheap)
         if self._cache_ref_count > 0 and self.cached_wav is not None:

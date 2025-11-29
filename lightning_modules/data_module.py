@@ -28,7 +28,8 @@ class CleanUNetDataModule(pl.LightningDataModule):
         val_list_path: str,
         batch_size: int = 8,
         num_workers: int = 4,
-        persistent_workers: bool = False
+        persistent_workers: bool = False,
+        segment_size: int = None
     ):
         super().__init__()
 
@@ -38,6 +39,7 @@ class CleanUNetDataModule(pl.LightningDataModule):
         self.batch_size = batch_size
         self.num_workers = num_workers
         self.persistent_workers = persistent_workers
+        self.segment_size = segment_size
 
         self.train_dataset = None
         self.val_dataset = None
@@ -51,14 +53,20 @@ class CleanUNetDataModule(pl.LightningDataModule):
 
         Loads training and validation datasets into memory.
         """
+        dataset_kwargs = {}
+        if self.segment_size is not None:
+            dataset_kwargs["segment_size"] = self.segment_size
+
         self.train_dataset = MelDataset(
             data_dir=self.data_dir,
-            data_files=self.train_list_path
+            data_files=self.train_list_path,
+            **dataset_kwargs
         )
 
         self.val_dataset = MelDataset(
             data_dir=self.data_dir,
-            data_files=self.val_list_path
+            data_files=self.val_list_path,
+            **dataset_kwargs
         )
 
     # ---------------------------------------------------------
