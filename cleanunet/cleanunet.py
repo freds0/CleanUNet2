@@ -259,7 +259,7 @@ class CleanUNet(nn.Module):
         encoder_n_layers: int = 8,
         kernel_size: int = 4,
         stride: int = 2,
-        tsfm_n_layers: int = 3,
+        tsfm_n_layers: int = 5,
         tsfm_n_head: int = 8,
         tsfm_d_model: int = 512,
         tsfm_d_inner: int = 2048
