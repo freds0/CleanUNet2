@@ -69,10 +69,28 @@ class CleanUNetLightningModule(pl.LightningModule):
         # ------------------------------------------------------------------
         # Freeze or unfreeze submodules according to flags passed to init.
         # (You can also change this to read from hparams if preferred)
-        self._set_requires_grad(self.model.clean_unet, not freeze_cleanunet)
-        self._set_requires_grad(self.model.clean_spec_net, not freeze_cleanspecnet)
 
-        # Ensure glue components (Conditioner & Upsampler) are always trainable
+        # [STEP 3.1] RESET: Unfreeze ALL weights first.
+        # This ensures the model starts in a fully trainable state before we apply restrictions.
+        print("[INFO] Resetting all model parameters to 'Trainable' before applying config.")
+        for param in self.model.parameters():
+            param.requires_grad = True
+
+        # [STEP 3.2] Apply specific freezing based on configuration.
+        # Determine if submodules should be trained or frozen based on config.
+        # Default: False (Frozen) if not specified in config.
+        train_cleanunet = getattr(self.hparams, "train_cleanunet", False)
+        train_cleanspecnet = getattr(self.hparams, "train_cleanspecnet", False)
+
+        print(f"[INFO] Training Config -> CleanUNet: {'TRAIN' if train_cleanunet else 'FREEZE'}, "
+              f"CleanSpecNet: {'TRAIN' if train_cleanspecnet else 'FREEZE'}")
+
+        # Apply gradients setting (if False, it will overwrite the True we set above)
+        self._set_requires_grad(self.model.clean_unet, train_cleanunet)
+        self._set_requires_grad(self.model.clean_spec_net, train_cleanspecnet)
+
+        # [STEP 3.3] Ensure 'glue' components are ALWAYS trainable.
+        # Even if the submodules are frozen, the layers connecting them must learn.
         if hasattr(self.model, "conditioner"):
             self._set_requires_grad(self.model.conditioner, True)
         elif hasattr(self.model, "WaveformConditioner"): # Fallback for legacy naming
@@ -165,9 +183,9 @@ class CleanUNetLightningModule(pl.LightningModule):
         """
         Validation step:
          - Calculates losses.
-         - Calculates objective metrics (PESQ, STOI, SI-SDR) using TorchMetrics.
+         - Calculates objective metrics (PESQ, STOI, SI-SDR) using TorchMetrics safely.
          - Computes the custom 'weighted_score'.
-         - Logs everything (averaged over the epoch).
+         - Logs everything.
         """
         noisy, noisy_spec, clean, clean_spec = batch
         enhanced, enhanced_spec = self(noisy, noisy_spec)
@@ -184,29 +202,54 @@ class CleanUNetLightningModule(pl.LightningModule):
                      (self.weight_spec * loss_spec) + \
                      (self.weight_phase * loss_phase)
         
-        # --- 2. Calculate Metrics (TorchMetrics) ---
-        # Note: Input shape to metrics should be (Batch, Time). Squeeze channels if needed.
+        # --- 2. Calculate Metrics (Safe Mode) ---
+        # Note: Input shape to metrics should be (Batch, Time). Squeeze channels.
         preds = enhanced.squeeze(1)
         target = clean.squeeze(1)
 
-        val_pesq = self.val_pesq(preds, target)
-        val_stoi = self.val_stoi(preds, target)
-        val_sisdr = self.val_sisdr(preds, target)
+        # Check for Silence or NaNs to prevent PESQ crashes (NoUtterancesError)
+        # If the max amplitude is too low, PESQ considers it empty.
+        is_silent_or_nan = (preds.abs().max() < 1e-5) or torch.isnan(preds).any()
+
+        if is_silent_or_nan:
+            # Assign worst-case values if model collapsed
+            val_pesq = torch.tensor(1.0, device=self.device)   # Min PESQ is ~1.0
+            val_stoi = torch.tensor(1e-5, device=self.device)  # Min STOI is 0.0
+            val_sisdr = torch.tensor(-50.0, device=self.device) # Very low SI-SDR
+        else:
+            # PESQ calculation
+            try:
+                val_pesq = self.val_pesq(preds, target)
+            except Exception as e:
+                # print(f"[WARNING] PESQ computation failed: {e}")
+                val_pesq = torch.tensor(1.0, device=self.device)
+
+            # STOI calculation
+            try:
+                val_stoi = self.val_stoi(preds, target)
+            except Exception:
+                val_stoi = torch.tensor(1e-5, device=self.device)
+
+            # SI-SDR calculation
+            try:
+                val_sisdr = self.val_sisdr(preds, target)
+            except Exception:
+                val_sisdr = torch.tensor(-50.0, device=self.device)
 
         # --- 3. Calculate Custom Weighted Score ---
         # Formula: (STOI + PESQ/4.5 + SI_SDR/30.0) / 3.0
-        # Uses current batch values. PL averages this over the epoch.
+        # We ensure values are on the correct device for logging
         weighted_score = (val_stoi + (val_pesq / 4.5) + (val_sisdr / 30.0)) / 3.0
 
         # --- 4. Logging ---
-        # Log 'val_loss' explicitly for ModelCheckpoint compatibility
+        # Log 'val_loss' explicitly for ModelCheckpoint
         self.log("val_loss", total_loss, prog_bar=False, on_epoch=True, sync_dist=True)
         self.log("val/total_loss", total_loss, prog_bar=True, on_epoch=True, sync_dist=True)
         
         # Log Metrics (on_epoch=True ensures accumulation and averaging)
-        self.log("val/pesq", self.val_pesq, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
-        self.log("val/stoi", self.val_stoi, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
-        self.log("val/si_sdr", self.val_sisdr, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("val/pesq", val_pesq, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("val/stoi", val_stoi, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("val/si_sdr", val_sisdr, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         self.log("val/weighted_score", weighted_score, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
 
         # --- 5. Log Audio Examples (First batch only) ---
@@ -218,8 +261,6 @@ class CleanUNetLightningModule(pl.LightningModule):
             sample_rate = int(getattr(self.hparams, "sample_rate", 16000))
             for i in range(num_examples):
                 try:
-                    # TensorBoard expects (Channel, Time) or (Time)
-                    # We ensure (1, Time) for mono audio
                     tb.add_audio(f"val/sample_{i}/noisy", noisy[i].squeeze().cpu().unsqueeze(0), global_step=self.global_step, sample_rate=sample_rate)
                     tb.add_audio(f"val/sample_{i}/enhanced", enhanced[i].squeeze().cpu().unsqueeze(0), global_step=self.global_step, sample_rate=sample_rate)
                     tb.add_audio(f"val/sample_{i}/clean", clean[i].squeeze().cpu().unsqueeze(0), global_step=self.global_step, sample_rate=sample_rate)
