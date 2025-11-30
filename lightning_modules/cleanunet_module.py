@@ -100,17 +100,48 @@ class CleanUNetLightningModule(pl.LightningModule):
             self._set_requires_grad(self.model.spec_upsampler, True)
 
         # ------------------------------------------------------------------
-        # 4. Losses
+        # 4. Losses (Loaded from Config)
         # ------------------------------------------------------------------
-        self.criterion = CleanUNet2Loss(
-            ell_p=1,
-            ell_p_lambda=1.0,
-            stft_lambda=1.0,
-            mrstftloss=MultiResolutionSTFTLoss()
+        # Retrieve loss configuration dictionary
+        loss_cfg = getattr(self.hparams, "loss_config", {})
+        
+        # 1. Multi-Resolution STFT Loss parameters
+        stft_cfg = loss_cfg.get("stft_config", {})
+        fft_sizes = stft_cfg.get("fft_sizes", [512, 1024, 2048])
+        hop_sizes = stft_cfg.get("hop_sizes", [50, 120, 240])
+        win_lengths = stft_cfg.get("win_lengths", [240, 600, 1200])
+        sc_lambda = loss_cfg.get("sc_lambda", 0.5)
+        mag_lambda = loss_cfg.get("mag_lambda", 0.5)
+
+        # Instantiate MR-STFT with config values
+        self.mrstft = MultiResolutionSTFTLoss(
+            fft_sizes=fft_sizes,
+            hop_sizes=hop_sizes,
+            win_lengths=win_lengths,
+            sc_lambda=sc_lambda,
+            mag_lambda=mag_lambda
         )
 
+        # 2. Primary Waveform Loss (CleanUNet2Loss) parameters
+        ell_p = loss_cfg.get("ell_p", 1)
+        ell_p_lambda = loss_cfg.get("ell_p_lambda", 1.0)
+        stft_lambda = loss_cfg.get("stft_lambda", 1.0)
+
+        self.criterion = CleanUNet2Loss(
+            ell_p=ell_p,
+            ell_p_lambda=ell_p_lambda,
+            stft_lambda=stft_lambda,
+            mrstftloss=self.mrstft # Pass the configured MR-STFT
+        )
+
+        # 3. Phase Loss (using standard 1024/256 or config if available)
         self.phase_loss = AntiWrappingPhaseLoss(n_fft=1024, hop_length=256, win_length=1024)
-        self.mrstft = MultiResolutionSTFTLoss()
+
+        # 4. Global Loss Weights (Look in loss_config first, then hparams root, then default)
+        self.weight_waveform = float(loss_cfg.get("weight_waveform", getattr(self.hparams, "weight_waveform", 10.0)))
+        self.weight_spec = float(loss_cfg.get("weight_spec", getattr(self.hparams, "weight_spec", 1.0)))
+        self.weight_phase = float(loss_cfg.get("weight_phase", getattr(self.hparams, "weight_phase", 1.0)))
+        # self.weight_consistency = 1.0
 
         # ------------------------------------------------------------------
         # 5. Metrics (TorchMetrics)
