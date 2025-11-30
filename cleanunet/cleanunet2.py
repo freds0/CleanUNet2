@@ -158,11 +158,87 @@ class CleanUNet2(nn.Module):
         
         return denoised_waveform, denoised_spec
 
-    # ... (Load weight methods remain the same, just ensure logs are in English) ...
+    # ------------------------------------------------------------------
+    # Checkpoint Loading Helpers
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _load_and_extract_state_dict(checkpoint_path: str) -> Dict[str, torch.Tensor]:
+        """
+        Loads a checkpoint file and extracts the state_dict, handling different saving formats
+        (e.g., PyTorch Lightning checkpoints vs standard PyTorch save).
+        """
+        print(f"[INFO] Loading checkpoint from: {checkpoint_path}")
+        try:
+            # Load to CPU to avoid OOM or device mismatch errors initially
+            checkpoint = torch.load(checkpoint_path, map_location="cpu")
+        except Exception as e:
+            raise IOError(f"[ERROR] Failed to load checkpoint at {checkpoint_path}. Error: {e}")
+
+        if isinstance(checkpoint, dict):
+            # Check for common keys used by PyTorch Lightning or standard PyTorch wrappers
+            # 'state_dict' is the standard Lightning key. 'model' or 'generator' are common in other frameworks.
+            for key in ("state_dict", "model", "generator", "state_dict_cleanunet2"):
+                if key in checkpoint:
+                    return checkpoint[key]
+            # If no wrapper key is found, assume the dict itself is the state_dict
+            return checkpoint
+        else:
+            raise ValueError("[ERROR] Checkpoint content is not a dictionary.")
+
     def load_cleanunet_weights(self, checkpoint_path: str):
-        # Implementation omitted for brevity (same logic as before)
-        pass
+        """
+        Loads weights specifically for the CleanUNet submodule.
+        Handles both standalone CleanUNet checkpoints and full CleanUNet2 checkpoints.
+        """
+        state_dict = self._load_and_extract_state_dict(checkpoint_path)
+        filtered = {}
+        
+        for k, v in state_dict.items():
+            # Case 1: Checkpoint comes from a full CleanUNet2 training (keys prefixed with 'clean_unet.')
+            if "clean_unet." in k:
+                # Remove the prefix so keys match the submodule's state_dict
+                filtered[k.split("clean_unet.")[-1]] = v
+            
+            # Case 2: Checkpoint comes from standalone CleanUNet training (no prefix)
+            # We filter out keys that clearly belong to other parts (spec_net, upsampler, conditioner)
+            elif not any(x in k for x in ["clean_spec_net", "spec_upsampler", "conditioner"]):
+                filtered[k] = v
+
+        # Validation: Only keep keys that actually exist in the current submodule to avoid errors
+        model_keys = set(self.clean_unet.state_dict().keys())
+        final_weights = {k: v for k, v in filtered.items() if k in model_keys}
+
+        if not final_weights:
+             print("[WARNING] No matching keys found for CleanUNet. Skipping weight load.")
+             return
+
+        # strict=False allows partial loading (useful if dimensions changed slightly or layers were added)
+        missing, unexpected = self.clean_unet.load_state_dict(final_weights, strict=False)
+        print(f"[INFO] Successfully loaded weights into CleanUNet. Missing keys: {len(missing)}")
 
     def load_cleanspecnet_weights(self, checkpoint_path: str):
-        # Implementation omitted for brevity
-        pass
+        """
+        Loads weights specifically for the CleanSpecNet submodule.
+        """
+        state_dict = self._load_and_extract_state_dict(checkpoint_path)
+        filtered = {}
+        
+        for k, v in state_dict.items():
+            # Case 1: Full model checkpoint (keys prefixed with 'clean_spec_net.')
+            if "clean_spec_net." in k:
+                filtered[k.split("clean_spec_net.")[-1]] = v
+            
+            # Case 2: Standalone CleanSpecNet checkpoint
+            # Filter out keys belonging to the waveform model or conditioner
+            elif "clean_unet" not in k and "conditioner" not in k:
+                filtered[k] = v
+
+        model_keys = set(self.clean_spec_net.state_dict().keys())
+        final_weights = {k: v for k, v in filtered.items() if k in model_keys}
+        
+        if not final_weights:
+             print("[WARNING] No matching keys found for CleanSpecNet. Skipping weight load.")
+             return
+
+        missing, unexpected = self.clean_spec_net.load_state_dict(final_weights, strict=False)
+        print(f"[INFO] Successfully loaded weights into CleanSpecNet. Missing keys: {len(missing)}")

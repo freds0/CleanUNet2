@@ -16,44 +16,76 @@ class CleanUNetLightningModule(pl.LightningModule):
     - Combines waveform-domain loss (CleanUNet2Loss), a log-magnitude spectrogram loss
       and an anti-wrapping phase loss.
     - Computes audio quality metrics (PESQ/STOI/SI-SDR) on validation.
-    - Provides safe loading of submodule checkpoints and flexible freezing.
+    - Provides safe loading of submodule checkpoints and flexible freezing based on config.
     """
 
-    def __init__(self, hparams, freeze_cleanunet: bool = False, freeze_cleanspecnet: bool = True):
+    def __init__(self, hparams):
         super().__init__()
         self.save_hyperparameters(hparams)
 
-        # Model (CleanUNet2 combines spec-net + waveform UNet)
-        self.model = CleanUNet2()
-
-        # Try to load pretrained checkpoints if available - fail gracefully with a warning.
-        try:
-            self.model.load_cleanunet_weights('checkpoints/cleanunet/last.ckpt')
-            self.model.load_cleanspecnet_weights('checkpoints/cleanspecnet/last.ckpt')
-            print("[INFO] Loaded pretrained checkpoints for CleanUNet and CleanSpecNet.")
-        except Exception as e:
-            # Keep going if checkpoints are missing or incompatible
-            print(f"[WARNING] Could not load checkpoints: {e}")
+        # -------------------------
+        # 1. Initialize Model
+        # -------------------------
+        # Retrieve conditioning type from hparams (default to 'addition')
+        conditioning_type = getattr(self.hparams, "conditioning_type", "addition")
+        print(f"[INFO] Initializing CleanUNet2 with conditioning: {conditioning_type}")
+        
+        self.model = CleanUNet2(conditioning_type=conditioning_type)
 
         # -------------------------
-        # Freezing / Unfreezing
+        # 2. Load Checkpoints (Configurable)
         # -------------------------
-        # Freeze or unfreeze submodules according to flags. Default: unfreeze.
-        self._set_requires_grad(self.model.clean_unet, not freeze_cleanunet)
-        self._set_requires_grad(self.model.clean_spec_net, not freeze_cleanspecnet)
+        # Retrieve paths from config. If None or empty, skip loading.
+        ckpt_cleanunet = getattr(self.hparams, "cleanunet_checkpoint", None)
+        ckpt_cleanspecnet = getattr(self.hparams, "cleanspecnet_checkpoint", None)
 
-        # Ensure optional components (upsampler/conditioner) are trainable by default.
-        # CORREÇÃO: Nome atualizado para "conditioner" conforme a arquitetura CleanUNet2 correta
+        # Load CleanUNet weights
+        if ckpt_cleanunet:
+            try:
+                self.model.load_cleanunet_weights(ckpt_cleanunet)
+                print(f"[INFO] Loaded CleanUNet weights from: {ckpt_cleanunet}")
+            except Exception as e:
+                print(f"[WARNING] Failed to load CleanUNet weights: {e}")
+        else:
+            print("[INFO] No CleanUNet checkpoint provided. Initializing with random weights.")
+
+        # Load CleanSpecNet weights
+        if ckpt_cleanspecnet:
+            try:
+                self.model.load_cleanspecnet_weights(ckpt_cleanspecnet)
+                print(f"[INFO] Loaded CleanSpecNet weights from: {ckpt_cleanspecnet}")
+            except Exception as e:
+                print(f"[WARNING] Failed to load CleanSpecNet weights: {e}")
+        else:
+            print("[INFO] No CleanSpecNet checkpoint provided. Initializing with random weights.")
+
+        # -------------------------
+        # 3. Freezing / Unfreezing
+        # -------------------------
+        # Determine if submodules should be trained or frozen based on config.
+        # Default: False (Frozen) if not specified.
+        train_cleanunet = getattr(self.hparams, "train_cleanunet", False)
+        train_cleanspecnet = getattr(self.hparams, "train_cleanspecnet", False)
+
+        print(f"[INFO] Training Config -> CleanUNet: {'TRAIN' if train_cleanunet else 'FREEZE'}, "
+              f"CleanSpecNet: {'TRAIN' if train_cleanspecnet else 'FREEZE'}")
+
+        # Apply gradients setting
+        self._set_requires_grad(self.model.clean_unet, train_cleanunet)
+        self._set_requires_grad(self.model.clean_spec_net, train_cleanspecnet)
+
+        # IMPORTANT: Always ensure the 'glue' components (Conditioner & Upsampler) are trainable.
+        # These modules need to learn how to fuse the representations from the two submodels.
         if hasattr(self.model, "conditioner"):
             self._set_requires_grad(self.model.conditioner, True)
-        elif hasattr(self.model, "WaveformConditioner"): # Fallback para nomes antigos
+        elif hasattr(self.model, "WaveformConditioner"): # Fallback for older naming
             self._set_requires_grad(self.model.WaveformConditioner, True)
             
         if hasattr(self.model, "spec_upsampler"):
             self._set_requires_grad(self.model.spec_upsampler, True)
 
         # -------------------------
-        # Losses and metrics
+        # 4. Losses and Metrics
         # -------------------------
         # Primary waveform loss wrapper (may internally include STFT/MRSTFT)
         self.criterion = CleanUNet2Loss(
@@ -72,12 +104,12 @@ class CleanUNetLightningModule(pl.LightningModule):
         # Objective metric helper (PESQ/STOI/SI-SDR)
         self.obj_metrics = ObjectiveMetricsPredictor()
 
-        # Loss combination weights (tweak these experimentally)
+        # Loss combination weights (tweak these experimentally via config)
         self.weight_waveform = float(getattr(self.hparams, "weight_waveform", 10.0))
         self.weight_spec = float(getattr(self.hparams, "weight_spec", 1.0))
         self.weight_phase = float(getattr(self.hparams, "weight_phase", 1.0))
-        # Peso para a loss de consistência (novo)
-        self.weight_consistency = 1.0 
+        # Weight for consistency loss (can be 0.0 to disable)
+        self.weight_consistency = float(getattr(self.hparams, "weight_consistency", 1.0))
 
     # -------------------------
     # Helpers
@@ -99,11 +131,9 @@ class CleanUNetLightningModule(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         """
         Single training step:
-         - Run model to get enhanced waveform + enhanced spectrogram.
-         - Compute waveform loss (self.criterion).
-         - Compute log-magnitude spectrogram L1 loss on spectrogram branch.
-         - Compute anti-wrapping phase loss between enhanced and clean waveforms.
-         - Combine losses and log scalars.
+          - Run model to get enhanced waveform + enhanced spectrogram.
+          - Compute losses: Waveform L1/MRSTFT, Spectrogram Log-L1, Phase Loss.
+          - Combine losses and log scalars.
         """
         noisy, noisy_spec, clean, clean_spec = batch
         enhanced, enhanced_spec = self(noisy, noisy_spec)
@@ -111,8 +141,9 @@ class CleanUNetLightningModule(pl.LightningModule):
         # 1. Waveform-domain loss (CleanUNet2Loss)
         loss_waveform = self.criterion(clean, enhanced)
 
-        # 2. Spectrogram branch loss (MELHORIA: Usando log1p para estabilidade e definição)
-        # Multiplicamos por 1000 para trazer os valores para uma escala onde o log opera bem.
+        # 2. Spectrogram branch loss
+        # Use log1p for better numerical stability near zero.
+        # Scaling by 1000 moves spectrogram values into a range where log works effectively.
         loss_spec = F.l1_loss(
             torch.log1p(F.relu(enhanced_spec) * 1000),
             torch.log1p(clean_spec * 1000)
@@ -122,8 +153,8 @@ class CleanUNetLightningModule(pl.LightningModule):
         loss_phase = self.phase_loss(enhanced, clean)
 
         '''
-        # 4. Consistency Loss (NOVO: O Pulo do Gato)
-        # Calcula o spec do áudio gerado pela UNet para comparar com a saída da SpecNet
+        # 4. Consistency Loss (Optional but Recommended)
+        # Forces CleanSpecNet to predict a spectrogram consistent with the audio generated by CleanUNet.
         spec_from_audio = torch.stft(
             enhanced.squeeze(1), n_fft=1024, hop_length=256, win_length=1024, 
             window=torch.hann_window(1024).to(enhanced.device), return_complex=True
@@ -133,18 +164,13 @@ class CleanUNetLightningModule(pl.LightningModule):
             torch.log1p(F.relu(enhanced_spec) * 1000),
             torch.log1p(spec_from_audio * 1000)
         )
-
-        # Weighted sum of components
-        total_loss = (self.weight_waveform * loss_waveform) + \
-                     (self.weight_spec * loss_spec) + \
-                     (self.weight_phase * loss_phase) + \
-                     (self.weight_consistency * loss_consistency)
         '''
         # Weighted sum of components
         total_loss = (self.weight_waveform * loss_waveform) + \
                      (self.weight_spec * loss_spec) + \
-                     (self.weight_phase * loss_phase) 
-                
+                     (self.weight_phase * loss_phase) # + \
+                     #(self.weight_consistency * loss_consistency)
+
         # Logging (train step scalars)
         self.log("train/waveform_loss", loss_waveform, on_step=True, on_epoch=True, prog_bar=False)
         self.log("train/spec_loss", loss_spec, on_step=True, on_epoch=True, prog_bar=False)
@@ -161,7 +187,7 @@ class CleanUNetLightningModule(pl.LightningModule):
         noisy, noisy_spec, clean, clean_spec = batch
         enhanced, enhanced_spec = self(noisy, noisy_spec)
 
-        # Losses (same as training)
+        # Calculate Losses (Same as training for monitoring)
         loss_waveform = self.criterion(clean, enhanced)
         
         loss_spec = F.l1_loss(
@@ -171,26 +197,13 @@ class CleanUNetLightningModule(pl.LightningModule):
         
         loss_phase = self.phase_loss(enhanced, clean)
 
-        '''
-        spec_from_audio = torch.stft(
-            enhanced.squeeze(1), n_fft=1024, hop_length=256, win_length=1024, 
-            window=torch.hann_window(1024).to(enhanced.device), return_complex=True
-        ).abs()
+        # Consistency loss can be omitted from val calculation to save compute if desired,
+        # but included here for completeness.
+        # spec_from_audio calculation omitted for brevity/speed unless needed.
         
-
-        loss_consistency = F.l1_loss(
-            torch.log1p(F.relu(enhanced_spec) * 1000),
-            torch.log1p(spec_from_audio * 1000)
-        )
-
         total_loss = (self.weight_waveform * loss_waveform) + \
                      (self.weight_spec * loss_spec) + \
-                     (self.weight_phase * loss_phase) + \
-                     (self.weight_consistency * loss_consistency)
-        '''
-        total_loss = (self.weight_waveform * loss_waveform) + \
-                        (self.weight_spec * loss_spec) + \
-                        (self.weight_phase * loss_phase)
+                     (self.weight_phase * loss_phase)
         
         # Compute objective metrics safely
         batch_stoi, batch_pesq, batch_sisdr = [], [], []
@@ -203,7 +216,6 @@ class CleanUNetLightningModule(pl.LightningModule):
             try:
                 clean_wave = clean[i]
                 enhanced_wave = enhanced[i]
-                # Assuming predict_metrics handles CPU conversion internally or here
                 metrics = self.obj_metrics.predict_metrics(clean_wave, enhanced_wave)
                 batch_stoi.append(metrics.get("stoi", 0.0))
                 batch_pesq.append(metrics.get("pesq", 0.0))
@@ -217,7 +229,7 @@ class CleanUNetLightningModule(pl.LightningModule):
         mean_sisdr = float(np.mean(batch_sisdr)) if batch_sisdr else 0.0
 
         # Log validation scalars
-        # CORREÇÃO: Logar 'val_loss' explicitamente para garantir compatibilidade com ModelCheckpoint padrão
+        # Log 'val_loss' explicitly for ModelCheckpoint compatibility
         self.log("val_loss", total_loss, prog_bar=False, on_epoch=True, sync_dist=True)
         self.log("val/total_loss", total_loss, prog_bar=True, on_epoch=True, sync_dist=True)
         
@@ -225,7 +237,7 @@ class CleanUNetLightningModule(pl.LightningModule):
         self.log("val/pesq", mean_pesq, prog_bar=True, on_epoch=True, sync_dist=True)
         self.log("val/si_sdr", mean_sisdr, prog_bar=True, on_epoch=True, sync_dist=True)
 
-        # Log audio examples
+        # Log a few audio examples to TensorBoard on the first validation batch
         if batch_idx == 0 and hasattr(self.logger, "experiment"):
             tb = self.logger.experiment
             num_examples = min(4, batch_size)
@@ -236,7 +248,7 @@ class CleanUNetLightningModule(pl.LightningModule):
                     tb.add_audio(f"val/sample_{i}/enhanced", enhanced[i].squeeze().cpu(), global_step=self.global_step, sample_rate=sample_rate)
                     tb.add_audio(f"val/sample_{i}/clean", clean[i].squeeze().cpu(), global_step=self.global_step, sample_rate=sample_rate)
                 except Exception as e:
-                    print(f"Warning: failed to add audio to TensorBoard for index {i}: {e}")
+                    print(f"[WARNING] Failed to add audio to TensorBoard for index {i}: {e}")
 
         return total_loss
 
@@ -244,6 +256,14 @@ class CleanUNetLightningModule(pl.LightningModule):
     # Optimizers
     # -------------------------
     def configure_optimizers(self):
+        """
+        Configure optimizer. Uses AdamW.
+        Only passes parameters that require gradients to the optimizer.
+        """
         lr = float(getattr(self.hparams, "lr", 1e-4))
-        optimizer = torch.optim.AdamW(self.parameters(), lr=lr)
+        
+        # Filter parameters to only update those with requires_grad=True
+        trainable_params = filter(lambda p: p.requires_grad, self.parameters())
+        
+        optimizer = torch.optim.AdamW(trainable_params, lr=lr)
         return optimizer
