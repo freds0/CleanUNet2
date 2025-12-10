@@ -4,103 +4,194 @@ import random
 import torch
 import torch.utils.data
 import numpy as np
-from librosa.util import normalize
-#from scipy.io.wavfile import read
-from torchaudio import load
+from typing import List, Tuple, Optional
+from torchaudio import load as torchaudio_load
 import torchaudio.transforms as T
 from librosa.filters import mel as librosa_mel_fn
-#from noise import NoiseAugmentation
-from augmentation import AudioAugmenter
 import torchaudio
 
-MAX_WAV_VALUE = 32768.0
+# Use "spawn" multiprocessing start method for dataloaders (safer for CUDA in some setups)
+# import torch.multiprocessing as mp
+# mp.set_start_method("spawn", force=True)
 
-def load_wav(full_path, target_sr):
-    #sampling_rate, data = read(full_path)
-    data, sampling_rate = load(full_path, normalize=True)
+MAX_WAV_VALUE = 32768.0 
+
+_mel_basis_cache = {}
+_hann_window_cache = {}
+
+def load_wav(full_path: str, target_sr: int) -> Tuple[torch.Tensor, int]:
+    """
+    Load an audio file, convert to mono, and resample if needed.
+    """
+    waveform, sampling_rate = torchaudio_load(full_path, normalize=True)
+    
+    # -------------------------------------------------------
+    # CORREÇÃO: Forçar Mono
+    # Se tiver mais de 1 canal (ex: stereo), faz a média
+    # -------------------------------------------------------
+    if waveform.shape[0] > 1:
+        waveform = waveform.mean(dim=0, keepdim=True)
+
     if sampling_rate != target_sr:
-        #data = librosa.resample(data, sampling_rate, target_sr)
-        data = torchaudio.transforms.Resample(orig_freq=sampling_rate, new_freq=target_sr)(data)
+        resampler = torchaudio.transforms.Resample(orig_freq=sampling_rate, new_freq=target_sr)
+        waveform = resampler(waveform)
         sampling_rate = target_sr
-    return data, sampling_rate
+        
+    return waveform, sampling_rate
 
-
-def dynamic_range_compression(x, C=1, clip_val=1e-5):
-    return np.log(np.clip(x, a_min=clip_val, a_max=None) * C)
-
-
-def dynamic_range_decompression(x, C=1):
-    return np.exp(x) / C
-
-
-def dynamic_range_compression_torch(x, C=1, clip_val=1e-5):
+# ---------------------------
+# Dynamic range helpers
+# ---------------------------
+def dynamic_range_compression_torch(x: torch.Tensor, C: float = 1.0, clip_val: float = 1e-5) -> torch.Tensor:
     return torch.log(torch.clamp(x, min=clip_val) * C)
 
-
-def dynamic_range_decompression_torch(x, C=1):
+def dynamic_range_decompression_torch(x: torch.Tensor, C: float = 1.0) -> torch.Tensor:
     return torch.exp(x) / C
 
+def spectral_normalize_torch(magnitudes: torch.Tensor) -> torch.Tensor:
+    return dynamic_range_compression_torch(magnitudes)
 
-def spectral_normalize_torch(magnitudes):
-    output = dynamic_range_compression_torch(magnitudes)
-    return output
+# ---------------------------
+# Spectrogram utility (Linear or Mel)
+# ---------------------------
+def get_spectrogram(
+    y: torch.Tensor,
+    n_fft: int,
+    num_mels: int,
+    sampling_rate: int,
+    hop_size: int,
+    win_size: int,
+    fmin: float,
+    fmax: float,
+    center: bool = False,
+    use_mel: bool = True # NOVO ARGUMENTO: Controla o tipo de espectrograma
+) -> torch.Tensor:
+    """
+    Calcula o espectrograma (Linear ou Mel).
+    """
+    if y.dim() == 1:
+        y = y.unsqueeze(0)
 
+    # Cache da janela Hann (reaproveita se o device for o mesmo)
+    if str(y.device) not in _hann_window_cache:
+        _hann_window_cache[str(y.device)] = torch.hann_window(win_size).to(y.device)
+    hann_window = _hann_window_cache[str(y.device)]
 
-def spectral_de_normalize_torch(magnitudes):
-    output = dynamic_range_decompression_torch(magnitudes)
-    return output
+    # Padding com modo reflect para evitar bordas abruptas
+    pad_amount = int((n_fft - hop_size) / 2)
+    y_padded = torch.nn.functional.pad(y.unsqueeze(1), (pad_amount, pad_amount), mode="reflect").squeeze(1)
 
+    # Calcula STFT
+    spec = torch.stft(
+        y_padded,
+        n_fft=n_fft,
+        hop_length=hop_size,
+        win_length=win_size,
+        window=hann_window,
+        center=center,
+        pad_mode="reflect",
+        normalized=False,
+        return_complex=True
+    )
+    
+    # Magnitude: sqrt(real^2 + imag^2)
+    # Shape: [Batch, n_fft // 2 + 1, Time]
+    mag = spec.abs()
 
-mel_basis = {}
-hann_window = {}
+    if use_mel:
+        # Lógica Mel-Spectrograma
+        device_key = f"{fmax}_{y.device}_{num_mels}"
+        if device_key not in _mel_basis_cache:
+            mel = librosa_mel_fn(sr=sampling_rate, n_fft=n_fft, n_mels=num_mels, fmin=fmin, fmax=fmax)
+            _mel_basis_cache[device_key] = torch.from_numpy(mel).float().to(y.device)
+        
+        mel_basis = _mel_basis_cache[device_key]
+        # Aplica o filtro Mel
+        spec_final = torch.matmul(mel_basis, mag)
+    else:
+        # Lógica Espectrograma Linear
+        spec_final = mag
 
+    # Aplica compressão dinâmica (log)
+    spec_final = spectral_normalize_torch(spec_final)
+    
+    return spec_final.squeeze(0) if spec_final.size(0) == 1 else spec_final
 
-def mel_spectrogram(y, n_fft, num_mels, sampling_rate, hop_size, win_size, fmin, fmax, center=False):
-    if torch.min(y) < -1.:
-        print('min value is ', torch.min(y))
-    if torch.max(y) > 1.:
-        print('max value is ', torch.max(y))
+# ---------------------------
+# File list helper
+# ---------------------------
+def get_dataset_filelist(filelist_path: str) -> List[Tuple[str, str]]:
+    with open(filelist_path, "r", encoding="utf-8") as ifile:
+        lines = [l.strip() for l in ifile.readlines() if l.strip()]
+    pairs = []
+    for l in lines:
+        parts = l.split("|")
+        if len(parts) >= 2:
+            pairs.append((parts[0].strip(), parts[1].strip()))
+    return pairs
 
-    global mel_basis, hann_window
-    if fmax not in mel_basis:
-        mel = librosa_mel_fn(sr=sampling_rate, n_fft=n_fft, n_mels=num_mels, fmin=fmin, fmax=fmax)
-        mel_basis[str(fmax)+'_'+str(y.device)] = torch.from_numpy(mel).float().to(y.device)
-        hann_window[str(y.device)] = torch.hann_window(win_size).to(y.device)
+# ---------------------------
+# Collate function
+# ---------------------------
+def custom_collate_fn(batch):
+    audios, specs, clean_audios, clean_specs = zip(*batch)
+    
+    def pad_list(tensors: List[torch.Tensor]):
+        # Encontra o tamanho máximo no último eixo (tempo)
+        max_len = max(t.shape[-1] for t in tensors)
+        # Pad
+        padded = [torch.nn.functional.pad(t, (0, max_len - t.shape[-1])) for t in tensors]
+        return torch.stack(padded)
 
-    y = torch.nn.functional.pad(y.unsqueeze(1), (int((n_fft-hop_size)/2), int((n_fft-hop_size)/2)), mode='reflect')
-    y = y.squeeze(1)
+    # Tenta empilhar se os tamanhos forem iguais
+    try:
+        audios_stacked = torch.stack(audios)
+        specs_stacked = torch.stack(specs)
+        clean_audios_stacked = torch.stack(clean_audios)
+        clean_specs_stacked = torch.stack(clean_specs)
+    except RuntimeError:
+        # Se tamanhos diferentes, faz padding
+        audios_stacked = pad_list(audios)
+        specs_stacked = pad_list(specs)
+        clean_audios_stacked = pad_list(clean_audios)
+        clean_specs_stacked = pad_list(clean_specs)
 
-    spec = torch.stft(y, n_fft, hop_length=hop_size, win_length=win_size, window=hann_window[str(y.device)],
-                      center=center, pad_mode='reflect', normalized=False, onesided=True, return_complex=False)
+    return audios_stacked, specs_stacked, clean_audios_stacked, clean_specs_stacked
 
-    spec = torch.sqrt(spec.pow(2).sum(-1)+(1e-9))
-
-    spec = torch.matmul(mel_basis[str(fmax)+'_'+str(y.device)], spec)
-    spec = spectral_normalize_torch(spec)
-
-    return spec
-
-
-def get_dataset_filelist(train_file, val_file):
-    with open(train_file, 'r', encoding='utf-8') as fi:
-        training_files = [x.split('|')[0]
-                          for x in fi.read().split('\n') if len(x) > 0]
-
-    with open(val_file, 'r', encoding='utf-8') as fi:
-        validation_files = [x.split('|')[0]
-                            for x in fi.read().split('\n') if len(x) > 0]
-    return training_files, validation_files
-
-
+# ---------------------------
+# Dataset
+# ---------------------------
 class MelDataset(torch.utils.data.Dataset):
-    def __init__(self, data_dir, training_files, segment_size, n_fft, num_mels,
-                 hop_size, win_size, sampling_rate, fmin, fmax, split=True, shuffle=True, n_cache_reuse=1,
-                 device=None, fmax_loss=None, noise_addition=False, augmentations=None):
+    def __init__(
+        self,
+        data_dir: str,
+        data_files: str,
+        segment_size: int = 8192,
+        n_fft: int = 1024,
+        num_mels: int = 80,
+        hop_size: int = 256,
+        win_size: int = 1024,
+        sampling_rate: int = 16000,
+        fmin: int = 0,
+        fmax: int = 8000,
+        split: bool = True,
+        shuffle: bool = True,
+        n_cache_reuse: int = 1,
+        device: Optional[torch.device] = None,
+        fmax_loss: Optional[int] = None,
+        noise_addition: bool = False,
+        augmentations = None,
+        use_mel_spec: bool = True, # NOVO PARÂMETRO (Default True para manter compatibilidade)
+        **kwargs
+    ):
+        super().__init__()
         self.data_dir = data_dir
-        self.audio_files = training_files
+        self.audio_files = get_dataset_filelist(data_files)
+        
         random.seed(1234)
         if shuffle:
             random.shuffle(self.audio_files)
+
         self.segment_size = segment_size
         self.sampling_rate = sampling_rate
         self.split = split
@@ -112,89 +203,59 @@ class MelDataset(torch.utils.data.Dataset):
         self.fmax = fmax
         self.fmax_loss = fmax_loss
         self.noise_addition = noise_addition
-
-        # Initialize the AudioAugmenter with the provided augmentations, if any        
-        self.audio_augmenter = AudioAugmenter(augmentations) if augmentations else None
-        if self.audio_augmenter:
-            print("Using audio augmentations")
-
+        
         self.cached_wav = None
         self.cached_wav_input = None
         self.n_cache_reuse = n_cache_reuse
         self._cache_ref_count = 0
         self.device = device
-        self.spectrogram_fn = T.Spectrogram(n_fft=1024, hop_length=256, win_length=1024, power=1.0, normalized=True, center=False)
-        
-    def __getitem__(self, index):
-        filename = os.path.join(self.data_dir, self.audio_files[index])
+        self.use_mel_spec = use_mel_spec # Salva a configuração
 
-        if self._cache_ref_count == 0:
-            try:
-                #audio, sampling_rate = load_wav(filename)
-                clean_audio, sampling_rate = load_wav(filename, self.sampling_rate)
-                clean_audio = clean_audio / clean_audio.abs().max()
-                input_audio = clean_audio / clean_audio.abs().max()
-            except Exception as e:
-                # if file dont exist or is corrupted, select other sample
-                print("WARNING: The file", filename, "Don't exist or is corrupted, please check this. Selecting other sample ...")
-                print(e)
-                return self.__getitem__(random.randint(0, self.__len__()))
-            
-            if sampling_rate != self.sampling_rate:
-                raise ValueError("{} Sampling_rate doesn't match target {} sampling_rate".format(
-                    sampling_rate, self.sampling_rate))
-            
-            # Apply audio augmentations if any
-            if self.audio_augmenter:
-                # Apply the augmentations
-                noisy_audio = self.audio_augmenter.apply(clean_audio, self.sampling_rate)
-            else:
-                # If there are no augmentations, noisy audio is the same as clean audio.
-                noisy_audio = clean_audio.clone()
+    def __getitem__(self, index: int):
+        clean_rel, noisy_rel = self.audio_files[index]
+        clean_path = os.path.join(self.data_dir, clean_rel)
+        noisy_path = os.path.join(self.data_dir, noisy_rel)
 
-            input_audio = noisy_audio
+        try:
+            clean_audio, clean_sr = load_wav(clean_path, self.sampling_rate)
+            noisy_audio, noisy_sr = load_wav(noisy_path, self.sampling_rate)
 
-            self.cached_clean_wav = clean_audio
-            self.cached_input_wav = input_audio
+            # Normalização de pico
+            clean_audio = clean_audio / (clean_audio.abs().max() + 1e-9)
+            noisy_audio = noisy_audio / (noisy_audio.abs().max() + 1e-9)
 
-            self._cache_ref_count = self.n_cache_reuse
-        else:
-            clean_audio = self.cached_clean_wav
-            input_audio = self.cached_input_wav
-            self._cache_ref_count -= 1
+        except Exception as e:
+            print(f"Error processing file {clean_path}: {e}")
+            return self.__getitem__(random.randint(0, len(self.audio_files)-1))
 
-        # split audio into segments
+        # Corte de segmentos
         if self.split:
             if clean_audio.size(1) >= self.segment_size:
                 max_audio_start = clean_audio.size(1) - self.segment_size
                 audio_start = random.randint(0, max_audio_start)
-                # generate a random even number
-                while audio_start % 2 != 0:
-                    audio_start = random.randint(0, max_audio_start)
-
+                if audio_start % 2 != 0:
+                    audio_start = audio_start - 1 if audio_start > 0 else 0
                 audio_end = audio_start + self.segment_size
                 clean_audio = clean_audio[:, audio_start:audio_end]
-                input_audio = input_audio[:, audio_start:audio_end]
+                noisy_audio = noisy_audio[:, audio_start:audio_end]
             else:
-                clean_audio = torch.nn.functional.pad(clean_audio, (0, self.segment_size - clean_audio.size(1)), 'constant')
-                input_audio = torch.nn.functional.pad(input_audio, (0, self.segment_size - input_audio.size(1)), 'constant')
-            
-        input_spec = self.spectrogram_fn(input_audio).squeeze()
-        clean_spec = self.spectrogram_fn(clean_audio).squeeze()
+                pad_len = self.segment_size - clean_audio.size(1)
+                clean_audio = torch.nn.functional.pad(clean_audio, (0, pad_len))
+                noisy_audio = torch.nn.functional.pad(noisy_audio, (0, pad_len))
 
-        if len(input_audio.shape) != 2:
-            input_audio = input_audio.squeeze()
+        # Geração do espectrograma (Linear ou Mel, dependendo de self.use_mel_spec)
+        noisy_spec = get_spectrogram(
+            noisy_audio, self.n_fft, self.num_mels, self.sampling_rate, 
+            self.hop_size, self.win_size, self.fmin, self.fmax, 
+            use_mel=self.use_mel_spec
+        )
+        clean_spec = get_spectrogram(
+            clean_audio, self.n_fft, self.num_mels, self.sampling_rate, 
+            self.hop_size, self.win_size, self.fmin, self.fmax, 
+            use_mel=self.use_mel_spec
+        )
 
-        if len(clean_audio.shape) != 2:
-            clean_audio = clean_audio.squeeze()
+        return noisy_audio, noisy_spec.squeeze(0), clean_audio, clean_spec.squeeze(0)
 
-        if len(input_spec.shape) != 3:
-            input_spec = input_spec.squeeze()
-
-        if len(clean_spec.shape) != 3:
-            clean_spec = clean_spec.squeeze()
-                    
-        return (input_audio, input_spec, clean_audio, clean_spec)
-
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.audio_files)

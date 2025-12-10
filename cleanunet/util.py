@@ -11,6 +11,7 @@ import torch.nn.functional as F
 
 #from losses import MultiResolutionSTFTLoss
 from .logger import Logger
+#from logger import Logger
 
 
 def flatten(v):

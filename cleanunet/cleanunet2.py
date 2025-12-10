@@ -1,144 +1,227 @@
-from .cleanspecnet import CleanSpecNet
-from .cleanunet import CleanUNet
+"""
+CleanUNet2: Hybrid speech denoising model on waveform and spectrogram.
+Based on the architecture proposed in "CleanUNet 2: A Hybrid Speech Denoising Model on Waveform and Spectrogram".
 
-import numpy as np
+Implementation details:
+ - The combination module is named `Conditioner` (referred to as "conditioning method" in the paper).
+ - Supports 3 conditioning types: Addition, Concatenation, and FiLM.
+"""
 
+from __future__ import annotations
+from typing import Dict, Optional
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-# torch.autograd.set_detect_anomaly(True)
+# Local imports (adjust relative paths if needed)
+from .cleanspecnet import CleanSpecNet
+from .cleanunet import CleanUNet
 
-class WaveformConditioner(nn.Module):
-    def __init__(self, in_channels=2, out_channels=1):
-        super(WaveformConditioner, self).__init__()
-        self.conv1x1 = nn.Conv1d(
-            in_channels=in_channels, 
-            out_channels=out_channels, 
-            kernel_size=1
-        )  
-        self.fn = nn.LeakyReLU(negative_slope=0.4, inplace=False)
-    def forward(self, x):
-        return self.fn(self.conv1x1(x))
+
+class SpecUpsampler(nn.Module):
+    """
+    Upsamples the spectrogram in time and collapses the frequency axis to produce a time-domain feature.
     
-
-# CleanUNet2 (Hybrid Model)
-class CleanUNet2(nn.Module):
-    def __init__(self, 
-            cleanunet_input_channels=1,
-            cleanunet_output_channels=1,
-            cleanunet_channels_H=64,
-            cleanunet_max_H=768,
-            cleanunet_encoder_n_layers=8,
-            cleanunet_kernel_size=4,
-            cleanunet_stride=2,
-            cleanunet_tsfm_n_layers=5, 
-            cleanunet_tsfm_n_head=8,
-            cleanunet_tsfm_d_model=512, 
-            cleanunet_tsfm_d_inner=2048,
-            cleanspecnet_input_channels=513, 
-            cleanspecnet_num_conv_layers=5, 
-            cleanspecnet_kernel_size=4, 
-            cleanspecnet_stride=1,
-            cleanspecnet_num_attention_layers=5, 
-            cleanspecnet_num_heads=8, 
-            cleanspecnet_hidden_dim=512, 
-            cleanspecnet_dropout=0.1):
-
-        super(CleanUNet2, self).__init__()
+    Input: spec (B, F, T)
+    Output: time_feat (B, 1, L)
+    """
+    def __init__(self, in_channels=1, hidden_channels=32, freq_kernel=3, time_kernel=16, leaky_slope=0.4):
+        super().__init__()
+        # Two ConvTranspose2d layers for temporal upsampling (factor 16*16 = 256)
+        self.up1 = nn.ConvTranspose2d(
+            in_channels, hidden_channels, 
+            (freq_kernel, time_kernel), 
+            stride=(1, time_kernel), 
+            padding=(freq_kernel // 2, 0)
+        )
+        self.act1 = nn.LeakyReLU(leaky_slope)
         
-        # Initialize CleanUNet for Waveform Denoising (Waveform-based model)
-        self.clean_unet = CleanUNet(
-            channels_input=cleanunet_input_channels, 
-            channels_output=cleanunet_output_channels,
-            channels_H=cleanunet_channels_H, 
-            max_H=cleanunet_max_H,
-            encoder_n_layers=cleanunet_encoder_n_layers, 
-            kernel_size=cleanunet_kernel_size, 
-            stride=cleanunet_stride,
-            tsfm_n_layers=cleanunet_tsfm_n_layers,
-            tsfm_n_head=cleanunet_tsfm_n_head,
-            tsfm_d_model=cleanunet_tsfm_d_model, 
-            tsfm_d_inner=cleanunet_tsfm_d_inner
-        )        
-
-        # Initialize CleanSpecNet for Spectrogram Denoising
-        self.clean_spec_net = CleanSpecNet(
-            input_channels=cleanspecnet_input_channels, 
-            num_conv_layers=cleanspecnet_num_conv_layers, 
-            kernel_size=cleanspecnet_kernel_size, 
-            stride=cleanspecnet_stride, 
-            hidden_dim=cleanspecnet_hidden_dim, 
-            num_attention_layers=cleanspecnet_num_attention_layers, 
-            num_heads=cleanspecnet_num_heads, 
-            dropout=cleanspecnet_dropout
+        self.up2 = nn.ConvTranspose2d(
+            hidden_channels, in_channels, 
+            (freq_kernel, time_kernel), 
+            stride=(1, time_kernel), 
+            padding=(freq_kernel // 2, 0)
         )
-        self.WaveformConditioner = WaveformConditioner()    
+        self.act2 = nn.LeakyReLU(leaky_slope)
+
+    def forward(self, spec: torch.Tensor) -> torch.Tensor:
+        # Add channel dimension -> (B, 1, F, T)
+        x = spec.unsqueeze(1) if spec.dim() == 3 else spec
+        
+        x = self.act2(self.up2(self.act1(self.up1(x))))
+
+        # Average across frequency axis to obtain 1D temporal feature
+        return x.mean(dim=2, keepdim=True).squeeze(2)
 
 
-    def _reconstruct_waveform(self, noisy_waveform, denoised_spectrogram, n_fft=1024, hop_length=256, window_fn=torch.hann_window):
-        # Compute STFT of the noisy waveform to get phase information
-        stft_noisy = torch.stft(
-            noisy_waveform.squeeze(1),  # Remove channel dimension if necessary
-            n_fft=n_fft,
-            hop_length=hop_length,
-            window=window_fn(n_fft).to(noisy_waveform.device),
-            return_complex=True,
-            center=False,
-            normalized=True
-        )  # Shape: (batch_size, freq_bins, time_frames)
-        # Get the phase from the noisy STFT
-        phase_noisy = torch.angle(stft_noisy)
-        # Reconstruct the complex spectrogram using denoised magnitude and noisy phase
-        denoised_complex_spectrogram = denoised_spectrogram * torch.exp(1j * phase_noisy)
-        # Perform ISTFT to reconstruct waveform
-        reconstructed_waveform = torch.istft(
-            denoised_complex_spectrogram,
-            n_fft=n_fft,
-            hop_length=hop_length,
-            window=window_fn(n_fft).to(noisy_waveform.device),
-            length=noisy_waveform.shape[-1],
-        )
-        # Add channel dimension back if necessary
-        reconstructed_waveform = reconstructed_waveform.unsqueeze(1)
-        return reconstructed_waveform
+class Conditioner(nn.Module):
+    """
+    Implements the "Conditioning Method" described in the CleanUNet 2 paper.
+    It combines the noisy waveform and the spectrogram feature (upsampled).
     
+    Supported methods:
+     1. 'addition': Element-wise addition (Paper default).
+     2. 'concatenation': Concatenation along channels + projection.
+     3. 'film': Feature-wise Linear Modulation.
 
-    def forward(self, noisy_waveform, noisy_spectrogram):
-        #print("cleanunet: noisy_spectrogram.shape", noisy_spectrogram.shape)
-        #print("cleanunet: noisy_waveform.shape", noisy_waveform.shape)
-        denoised_spectrogram = self.clean_spec_net(noisy_spectrogram)
-        #print("cleanunet: denoised_spectrogram.shape", denoised_spectrogram.shape)
-        reconstructed_waveform = self._reconstruct_waveform(noisy_waveform, denoised_spectrogram).unsqueeze(1)
-        reconstructed_waveform = reconstructed_waveform.squeeze(1)
-        #print("cleanunet: reconstructed_waveform.shape", reconstructed_waveform.shape)
-        #print("cleanunet: noisy_waveform.shape", noisy_waveform.shape)
-        concat_waveform = torch.cat((noisy_waveform, reconstructed_waveform), dim=1)
-        #print("cleanunet: concat_waveform.shape", concat_waveform.shape)
-        concat_waveform = self.WaveformConditioner(concat_waveform)
-        denoised_waveform = self.clean_unet(concat_waveform)
-        #print(*[f"cleanunet: denoised_waveform.shape: {denoised_waveform.shape}"])
-        return denoised_waveform #, denoised_spectrogram
+    Input: Waveform and Condition tensors
+    Output: Conditioned waveform (B, out_channels, L)
+    """
+    def __init__(self, method: str = "addition", input_channels: int = 1, cond_channels: int = 1):
+        super().__init__()
+        self.method = method.lower()
+        
+        if self.method == "concatenation":
+            # Concatenates channels and projects back to 1 channel via Conv1d
+            total_channels = input_channels + cond_channels
+            self.concat_proj = nn.Sequential(
+                nn.Conv1d(total_channels, 16, kernel_size=7, padding=3),
+                nn.BatchNorm1d(16),
+                nn.LeakyReLU(0.2),
+                nn.Conv1d(16, input_channels, kernel_size=1)
+            )
+            
+        elif self.method == "film":
+            # FiLM: Predicts scale (gamma) and shift (beta) from the condition
+            # cond (B, C, L) -> gamma (B, C, L), beta (B, C, L)
+            self.film_gen = nn.Conv1d(cond_channels, input_channels * 2, kernel_size=3, padding=1)
+            
+        elif self.method == "addition":
+            # Direct addition (no extra parameters needed if dimensions match)
+            pass
+        else:
+            raise ValueError(f"Unknown conditioning method '{method}'. Use: addition, concatenation, film")
+
+    def forward(self, waveform: torch.Tensor, condition: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            waveform: (B, 1, L) - Noisy waveform
+            condition: (B, 1, L) - Feature from SpecUpsampler
+        Returns:
+            (B, 1, L) - Conditioned waveform ready for CleanUNet
+        """
+        if self.method == "addition":
+            return waveform + condition
+
+        elif self.method == "concatenation":
+            x = torch.cat([waveform, condition], dim=1)
+            return self.concat_proj(x)
+
+        elif self.method == "film":
+            params = self.film_gen(condition) # (B, 2, L) assuming input_channels=1
+            gamma, beta = torch.chunk(params, 2, dim=1)
+            # Apply affine transformation: (1 + gamma) * x + beta
+            return (1.0 + gamma) * waveform + beta
+            
+        return waveform
 
 
-# Example usage:
-if __name__ == '__main__':
+class CleanUNet2(nn.Module):
+    def __init__(self,
+                 conditioning_type: str = "addition",
+                 cleanunet_params: dict = None,
+                 cleanspecnet_params: dict = None):
+        super().__init__()
+        
+        if cleanunet_params is None: cleanunet_params = {}
+        if cleanspecnet_params is None: cleanspecnet_params = {}
 
-    # Simulated inputs
-    noisy_waveform = torch.randn(4, 1, 80000).cuda()  # Waveform input
-    clean_waveform = torch.randn(4, 1, 80000).cuda()  # Waveform input
-    noisy_spectrogram = torch.randn(4, 513, 309).cuda()  # Spectrogram input
-    print("noisy_spectrogram.shape", noisy_spectrogram.shape)
+        # 1. CleanUNet (Waveform Denoiser)
+        self.clean_unet = CleanUNet(**cleanunet_params)
 
-    model = CleanUNet2().cuda()
-    print(model)
-    print(f"Noisy waveform shape: {noisy_waveform.shape}")
-    print(f"Noisy spectrogram shape: {noisy_spectrogram.shape}")
-    denoised_waveform, denoised_spec = model(noisy_waveform, noisy_spectrogram)
-    print(f"Denoised_waveform waveform shape: {denoised_waveform.shape}")
-    print(f"Clean waveform shape: {clean_waveform.shape}")
+        # 2. CleanSpecNet (Spectrogram Denoiser)
+        self.clean_spec_net = CleanSpecNet(**cleanspecnet_params)
 
-    loss = torch.nn.MSELoss()(clean_waveform, denoised_waveform)
-    loss.backward()
-    print(loss.item())
+        # 3. Upsampler
+        self.spec_upsampler = SpecUpsampler()
 
+        # 4. Conditioner (Selectable)
+        print(f"[INFO] CleanUNet2 initialized with conditioning method: {conditioning_type}")
+        self.conditioner = Conditioner(method=conditioning_type, input_channels=1, cond_channels=1)
+
+    def forward(self, noisy_waveform, noisy_spectrogram, debug=False):
+        # 1. Denoise Spectrogram
+        denoised_spec = self.clean_spec_net(noisy_spectrogram)
+        
+        # 2. Upsample to time domain
+        cond_feature = self.spec_upsampler(denoised_spec)
+        
+        # 3. Align lengths (Linear interpolation if sizes mismatch)
+        if cond_feature.shape[-1] != noisy_waveform.shape[-1]:
+            cond_feature = F.interpolate(cond_feature, size=noisy_waveform.shape[-1], mode='linear')
+
+        # 4. Apply Conditioning (Addition, Concat, or FiLM)
+        conditioned_input = self.conditioner(noisy_waveform, cond_feature)
+        
+        # 5. Denoise Waveform
+        denoised_waveform = self.clean_unet(conditioned_input)
+        
+        return denoised_waveform, denoised_spec
+
+
+    # ------------------------------------------------------------------
+    # Checkpoint Loading Helpers
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _load_and_extract_state_dict(checkpoint_path):
+        """Helper method to load a checkpoint and extract the state_dict."""
+        print(f"Loading checkpoint from: {checkpoint_path}")
+        # Load to CPU to avoid device compatibility issues
+        checkpoint = torch.load(checkpoint_path, map_location='cpu')
+        
+        # Search for common keys where model weights are stored
+        if 'generator' in checkpoint:
+            return checkpoint['generator']
+        elif 'state_dict' in checkpoint:
+            return checkpoint['state_dict']
+        else:
+            return checkpoint
+
+    def load_cleanunet_weights(self, checkpoint_path):
+        """Loads pre-trained weights specifically for the CleanUNet submodule."""
+        state_dict = self._load_and_extract_state_dict(checkpoint_path)
+        
+        clean_unet_state_dict = {}
+
+        # The correct prefix, based on output, is "model."
+        prefix = "model." 
+        
+        for k, v in state_dict.items():
+            # Only process keys starting with the expected prefix
+            if k.startswith(prefix):
+                # Remove the prefix so keys match the submodule
+                clean_unet_state_dict[k[len(prefix):]] = v
+        
+        if not clean_unet_state_dict:
+            raise ValueError(f"No compatible keys found in checkpoint. Check the prefix. Available keys: {state_dict.keys()}")
+
+        self.clean_unet.load_state_dict(clean_unet_state_dict)
+        print("[SUCCESS] Weights loaded successfully into self.clean_unet.")
+
+
+    def load_cleanspecnet_weights(self, checkpoint_path):
+        """Loads pre-trained weights specifically for the CleanSpecNet submodule."""
+        state_dict = self._load_and_extract_state_dict(checkpoint_path)
+        
+        clean_spec_net_state_dict = {}
+        # The correct prefix, based on error logs, is also "model."
+        prefix = "model."
+        
+        for k, v in state_dict.items():
+            # Only process keys starting with the expected prefix
+            if k.startswith(prefix):
+                # Remove the prefix so keys match the submodule
+                clean_spec_net_state_dict[k[len(prefix):]] = v
+        
+        if not clean_spec_net_state_dict:
+            raise ValueError(f"No compatible keys found in checkpoint for CleanSpecNet. Check the prefix. Available keys: {state_dict.keys()}")
+
+        self.clean_spec_net.load_state_dict(clean_spec_net_state_dict)
+        print("[SUCCESS] Weights loaded successfully into self.clean_spec_net.")
+
+
+    def load_cleanunet2_weights(self, checkpoint_path):
+        """Loads pre-trained weights for the full CleanUNet2 model."""
+        state_dict = self._load_and_extract_state_dict(checkpoint_path)
+        self.load_state_dict(state_dict)
+        print("[SUCCESS] Weights loaded successfully into the full CleanUNet2 model.")

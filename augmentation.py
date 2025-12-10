@@ -83,8 +83,9 @@ def main():
     print("Augmentations:", augmentations)
     print("Sample rate:", sample_rate)
     print("Device:", args.device)
+    print("Seed:", args.seed)
 
-    augmenter = AudioAugmenter(augmentations, device=args.device)
+    augmenter = AudioAugmenter(augmentations, device=args.device, seed=args.seed)
 
     # Ensure output directory exists
     if not os.path.exists(args.output_dir):

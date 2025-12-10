@@ -1,0 +1,150 @@
+# -------------------------------------------------------------------------
+# Configuração de Treinamento para CleanUNet2-GAN (HiFi-GAN Discriminators)
+# -------------------------------------------------------------------------
+
+# ----------------------
+# Trainer (PyTorch Lightning)
+# ----------------------
+trainer:
+  accelerator: "auto"    # "gpu" ou "cpu"
+  devices: 1             # Número de GPUs
+  max_epochs: 10000      # Treinamento de GANs geralmente é longo
+  precision: "32-true"   # 16-mixed pode ser instável para GANs, prefira 32-true
+  log_every_n_steps: 2
+  check_val_every_n_epoch: 2
+  gradient_clip_val: null # Clipping mais agressivo ajuda a estabilizar o Discriminador
+  benchmark: true
+  num_sanity_val_steps: 0
+# ----------------------
+# Global / Runtime
+# ----------------------
+seed: 1234
+checkpoint_dir: "logs/checkpoints"
+logging_dir: "logs"
+
+# ----------------------
+# Hiperparâmetros do Modelo
+# ----------------------
+model:
+  # HiFi-GAN recomenda 2e-4 e betas (0.8, 0.99)
+  lr_g: 1e-4
+  lr_d: 1e-6
+
+  adam_b1: 0.8
+  adam_b2: 0.99
+  
+  train_cleanunet: true
+  train_cleanspecnet: true
+
+  conditioning_type: "film"  # Opções: addition, concatenation, film
+
+  cleanunet_checkpoint: "checkpoints/cleanunet/last.ckpt"
+  cleanspecnet_checkpoint: "checkpoints/cleanspecnet/last.ckpt"
+
+  # Parâmetros da CleanUNet (Waveform Generator)
+  cleanunet_params:
+    channels_input: 1
+    channels_output: 1
+    channels_H: 64
+    max_H: 768
+    encoder_n_layers: 8
+    kernel_size: 4
+    stride: 2
+    tsfm_n_layers: 5
+    tsfm_n_head: 8
+    tsfm_d_model: 512
+    tsfm_d_inner: 2048
+
+  # Parâmetros da CleanSpecNet (Spectrogram Denoising)
+  cleanspecnet_params:
+    #input_channels: 513   # n_fft // 2 + 1
+    input_channels: 513
+    num_conv_layers: 5
+    kernel_size: 4
+    stride: 1
+    conv_hidden_dim: 64
+    hidden_dim: 512
+    num_attention_layers: 5
+    num_heads: 8
+    dropout: 0.1
+
+# ----------------------
+# Configuração das Losses
+# ----------------------
+loss_config:
+  # Pesos padrão do HiFi-GAN V1
+  lambda_mel: 45.0   # Reconstrução Espectral (muito importante)
+  lambda_fm: 2.0     # Feature Matching (estabilidade)
+  lambda_adv: 1.0    # Adversarial Loss
+
+  # Configuração para Multi-Resolution STFT Loss
+  stft_config:
+    fft_sizes: [1024, 2048, 512]
+    hop_sizes: [120, 240, 50]
+    win_lengths: [600, 1200, 240]
+    window: "hann_window"
+
+# ----------------------
+# Configuração de Dados
+# ----------------------
+data:
+  # Ajuste os caminhos conforme seu ambiente
+  data_dir: "/home/fred/Projetos/DATASETS/VoiceBank-DEMAND-16k/"
+  train_list_path: "filelists/train.csv"
+  val_list_path: "filelists/test.csv"
+  
+  # GANs precisam de segmentos maiores para capturar periodicidade
+  # 16384 amostras ~= 1 segundo em 16kHz (ideal para o Discriminador MPD)
+  segment_size: 16384  
+  
+  batch_size: 5        # Reduzido (vs 10) devido ao alto consumo de VRAM dos discriminadores
+  num_workers: 8
+  persistent_workers: true
+  sampling_rate: 16000
+  
+  use_mel_spec: false
+
+  # Parâmetros de processamento de áudio (Spectrograma)
+  n_fft: 1024
+  num_mels: 80
+  hop_size: 256
+  win_size: 1024
+  fmin: 0
+  fmax: 8000
+
+# ----------------------
+# Callbacks
+# ----------------------
+callbacks:
+  # Salva o modelo com menor erro de reconstrução espectral na validação
+  best_checkpoint:
+    _target_: "pytorch_lightning.callbacks.ModelCheckpoint"
+    monitor: "val/loss_mel" 
+    dirpath: "logs/checkpoints"
+    filename: "best-model-{epoch:02d}-{val/loss_mel:.4f}"
+    save_top_k: 3
+    mode: "min"
+    save_last: true
+
+  # Salva periodicamente para garantir a retomada
+  periodic_checkpoint:
+    _target_: "pytorch_lightning.callbacks.ModelCheckpoint"
+    dirpath: "logs/checkpoints"
+    filename: "epoch-{epoch:04d}"
+    every_n_epochs: 5
+    save_top_k: -1  # Mantém todos (cuidado com espaço em disco) ou defina um número fixo
+
+# ----------------------
+# Logger
+# ----------------------
+logger:
+  choice: "tensorboard"
+  
+  tensorboard:
+    _target_: pytorch_lightning.loggers.TensorBoardLogger
+    save_dir: "logs"
+    name: "cleanunet_gan"
+    default_hp_metric: false
+
+
+#resume_from_checkpoint: "logs/checkpoints/last.ckpt"

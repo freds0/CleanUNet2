@@ -1,14 +1,29 @@
-#torch==2.2.2
-#torchaudio==2.2.2
-tqdm
-numpy==1.26.4
-librosa==0.10.1
-scipy==1.13.0
-tensorboard==2.16.2
-soundfile==0.12.1
-matplotlib==3.8.4
-pydub==0.25.1
-pyroomacoustics==0.7.3
-audiomentations==0.35.0
-torch_audiomentations
+# --- Core Deep Learning ---
+torch>=2.1.0
+torchaudio>=2.1.0
+pytorch-lightning>=2.2.0
+
+# --- Audio Processing ---
+librosa>=0.10.1
+soundfile>=0.12.1
+tqdm>=4.65.0
+
+# --- Metrics (PESQ/STOI) ---
+pesq>=0.0.4
+pystoi>=0.3.3
+torchmetrics[audio]
+
+# --- Numeric / Utils ---
+numpy>=1.23.0
+scipy>=1.10.0
+PyYAML>=6.0
+json5>=0.9.14
+
+# --- Logging & Experimentation ---
+tensorboard>=2.14.0
+wandb
+
+# --- Optional but Recommended ---
+matplotlib>=3.6.0
+einops>=0.7.0
 
