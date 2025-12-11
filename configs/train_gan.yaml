@@ -1,18 +1,18 @@
 # -------------------------------------------------------------------------
-# Configuração de Treinamento para CleanUNet2-GAN (HiFi-GAN Discriminators)
+# Training configuration for CleanUNet2-GAN (HiFi-GAN Discriminators)
 # -------------------------------------------------------------------------
 
 # ----------------------
 # Trainer (PyTorch Lightning)
 # ----------------------
 trainer:
-  accelerator: "auto"    # "gpu" ou "cpu"
-  devices: 1             # Número de GPUs
-  max_epochs: 10000      # Treinamento de GANs geralmente é longo
-  precision: "32-true"   # 16-mixed pode ser instável para GANs, prefira 32-true
-  log_every_n_steps: 2
+  accelerator: "auto"    # "gpu" or "cpu"
+  devices: 1             # Number of GPUs
+  max_epochs: 10000      # GAN training is usually a long process.
+  precision: "16"   # 16-mixed may be unstable for GANs, prefer 32-true.
+  log_every_n_steps: 10
   check_val_every_n_epoch: 2
-  gradient_clip_val: null # Clipping mais agressivo ajuda a estabilizar o Discriminador
+  gradient_clip_val: null # Aggressive clipping helps stabilize the Discriminator
   benchmark: true
   num_sanity_val_steps: 0
 # ----------------------
@@ -23,12 +23,16 @@ checkpoint_dir: "logs/checkpoints"
 logging_dir: "logs"
 
 # ----------------------
-# Hiperparâmetros do Modelo
+# Model Hyperparameters
 # ----------------------
 model:
-  # HiFi-GAN recomenda 2e-4 e betas (0.8, 0.99)
-  lr_g: 1e-4
-  lr_d: 1e-6
+  # HiFi-GAN recommends 2e-4 and betas (0.8, 0.99)
+  lr_g: 5e-5
+  lr_d: 5e-5
+
+  lr_decay: 0.999          # Exponential decay by epoch (Gamma)
+  grad_clip_threshold: 1.0 # Maximum gradient value (Manual)
+  warmup_epochs: 0         # Epochs training only the generator (Loss Mel)
 
   adam_b1: 0.8
   adam_b2: 0.99
@@ -36,12 +40,14 @@ model:
   train_cleanunet: true
   train_cleanspecnet: true
 
-  conditioning_type: "film"  # Opções: addition, concatenation, film
+  conditioning_type: "film"  # Options: addition, concatenation, film
 
   cleanunet_checkpoint: "checkpoints/cleanunet/last.ckpt"
   cleanspecnet_checkpoint: "checkpoints/cleanspecnet/last.ckpt"
 
-  # Parâmetros da CleanUNet (Waveform Generator)
+  val_metrics_interval_epochs: 1 # Calculate PESQ/STOI/SDR every 5 epochs (e.g., 5, 10, 15...)
+
+  # CleanUNet parameters (Waveform Generator)
   cleanunet_params:
     channels_input: 1
     channels_output: 1
@@ -55,10 +61,9 @@ model:
     tsfm_d_model: 512
     tsfm_d_inner: 2048
 
-  # Parâmetros da CleanSpecNet (Spectrogram Denoising)
-  cleanspecnet_params:
-    #input_channels: 513   # n_fft // 2 + 1
-    input_channels: 513
+  # CleanSpecNet parameters (Spectrogram Denoising)
+  cleanspecnet_params: 
+    input_channels: 513 # n_fft // 2 + 1
     num_conv_layers: 5
     kernel_size: 4
     stride: 1
@@ -69,15 +74,19 @@ model:
     dropout: 0.1
 
 # ----------------------
-# Configuração das Losses
+# Loss Configuration
 # ----------------------
 loss_config:
-  # Pesos padrão do HiFi-GAN V1
-  lambda_mel: 45.0   # Reconstrução Espectral (muito importante)
-  lambda_fm: 2.0     # Feature Matching (estabilidade)
+  # Standard weights for HiFi-GAN V1
+  lambda_mel: 10.0   # Spectral Reconstruction (very important)
+  lambda_fm: 2.0     # Feature Matching (stability)
   lambda_adv: 1.0    # Adversarial Loss
 
-  # Configuração para Multi-Resolution STFT Loss
+  weight_waveform: 100.0  # L1 on waveform usually needs high weight
+  weight_spec: 1.0
+  weight_phase: 10.0
+
+  # Configuration for Multi-Resolution STFT Loss
   stft_config:
     fft_sizes: [1024, 2048, 512]
     hop_sizes: [120, 240, 50]
@@ -85,26 +94,26 @@ loss_config:
     window: "hann_window"
 
 # ----------------------
-# Configuração de Dados
+# Data Configuration
 # ----------------------
 data:
-  # Ajuste os caminhos conforme seu ambiente
-  data_dir: "/home/fred/Projetos/DATASETS/VoiceBank-DEMAND-16k/"
+  # Adjust paths according to your environment
+  data_dir: "/root/DATASETS/VoiceBank-DEMAND-16k/"
   train_list_path: "filelists/train.csv"
   val_list_path: "filelists/test.csv"
   
-  # GANs precisam de segmentos maiores para capturar periodicidade
-  # 16384 amostras ~= 1 segundo em 16kHz (ideal para o Discriminador MPD)
+  # GANs need larger segments to capture periodicity
+  # 16384 samples ~= 1 second at 16kHz (ideal for MPD Discriminator)
   segment_size: 16384  
   
-  batch_size: 5        # Reduzido (vs 10) devido ao alto consumo de VRAM dos discriminadores
+  batch_size: 8        # Reduced (vs 10) due to high VRAM consumption of discriminators
   num_workers: 8
   persistent_workers: true
   sampling_rate: 16000
   
   use_mel_spec: false
 
-  # Parâmetros de processamento de áudio (Spectrograma)
+  # Audio processing parameters (Spectrogram)
   n_fft: 1024
   num_mels: 80
   hop_size: 256
@@ -116,7 +125,7 @@ data:
 # Callbacks
 # ----------------------
 callbacks:
-  # Salva o modelo com menor erro de reconstrução espectral na validação
+  # Saves the model with lowest spectral reconstruction error on validation
   best_checkpoint:
     _target_: "pytorch_lightning.callbacks.ModelCheckpoint"
     monitor: "val/loss_mel" 
@@ -126,19 +135,19 @@ callbacks:
     mode: "min"
     save_last: true
 
-  # Salva periodicamente para garantir a retomada
+  # Saves periodically to ensure resumption
   periodic_checkpoint:
     _target_: "pytorch_lightning.callbacks.ModelCheckpoint"
     dirpath: "logs/checkpoints"
     filename: "epoch-{epoch:04d}"
-    every_n_epochs: 5
-    save_top_k: -1  # Mantém todos (cuidado com espaço em disco) ou defina um número fixo
+    every_n_epochs: 3
+    save_top_k: -1  # Keep all (be careful with disk space) or set a fixed number
 
 # ----------------------
 # Logger
 # ----------------------
 logger:
-  choice: "tensorboard"
+  choice: "both"
   
   tensorboard:
     _target_: pytorch_lightning.loggers.TensorBoardLogger
@@ -146,5 +155,12 @@ logger:
     name: "cleanunet_gan"
     default_hp_metric: false
 
+  wandb:
+    _target_: pytorch_lightning.loggers.WandbLogger
+    project: "CleanUNet2-GAN_Project"
+    name: "cleanunet2_gan_run"
+    save_dir: "logs"
+    offline: false  # Change to true if no internet
+    log_model: true # If True, uploads checkpoints to the cloud (can be slow)
 
 #resume_from_checkpoint: "logs/checkpoints/last.ckpt"

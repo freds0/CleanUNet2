@@ -37,7 +37,7 @@ def load_wav(full_path: str, target_sr: int) -> Tuple[torch.Tensor, int]:
         waveform = resampler(waveform)
         sampling_rate = target_sr
         
-    return waveform, sampling_rate
+    return waveform.contiguous(), sampling_rate
 
 # ---------------------------
 # Dynamic range helpers
