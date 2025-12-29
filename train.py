@@ -1,200 +1,270 @@
-# train.py
 """
-Training entrypoint for CleanUNet2 with safer callback/logger instantiation.
-Supports TensorBoard and WandB.
-
-Usage:
-    python train.py --config configs/train.yaml
+Training script for CleanUNet2 with X-Vector integration
+Supports two-stage training strategy
 """
 
-import yaml
 import argparse
-from argparse import Namespace
-import logging
-import copy
+import yaml
+import pytorch_lightning as pl
+from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, LearningRateMonitor
+from pytorch_lightning.loggers import TensorBoardLogger
+from lightning_modules.cleanunet_xvector_module import CleanUNet2XVectorModule
+from lightning_modules.data_module import SpeechEnhancementDataModule
 import torch
-from pytorch_lightning import Trainer
-from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
-from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger
+import os
 
-# Make sure these imports point to the correct modules in your repo
-from lightning_modules.cleanunet_module import CleanUNetLightningModule
-from lightning_modules.data_module import CleanUNetDataModule
 
-# Configure a simple logger for console output (INFO level)
-logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
-logger = logging.getLogger("train")
-
-def _safe_instantiate_callbacks(callbacks_config: dict):
+def train_stage1(config):
     """
-    Instantiate callbacks from a config dict in a safe, explicit manner.
-    We do not evaluate arbitrary code or call constructors by string automatically.
-    Supported: ModelCheckpoint, EarlyStopping.
-    """
-    callbacks = []
-    for name, cb_cfg in (callbacks_config or {}).items():
-        if not isinstance(cb_cfg, dict):
-            logger.warning("Callback config for '%s' is not a dict; skipping.", name)
-            continue
-
-        cfg = copy.deepcopy(cb_cfg)  # don't mutate original
-        target = cfg.pop("_target_", None)
-        if target is None:
-            logger.warning("Callback '%s' has no '_target_' field; skipping.", name)
-            continue
-
-        # Choose known callbacks explicitly (avoid dynamic eval)
-        if "ModelCheckpoint" in target:
-            logger.info("Instantiating ModelCheckpoint for callback '%s'.", name)
-            callbacks.append(ModelCheckpoint(**cfg))
-        elif "EarlyStopping" in target:
-            logger.info("Instantiating EarlyStopping for callback '%s'.", name)
-            callbacks.append(EarlyStopping(**cfg))
-        else:
-            logger.warning("Callback '%s' with target '%s' is not supported and will be ignored.", name, target)
-    return callbacks
-
-def _create_single_logger(cfg: dict):
-    """
-    Helper to instantiate a single logger based on its _target_.
-    """
-    if not cfg:
-        return None
+    Train Stage 1: With X-Vectors.
+    Extracts and integrates X-Vectors, saves latent vectors for Stage 2.
     
-    # Deepcopy to avoid modifying the original config dict
-    config_copy = copy.deepcopy(cfg)
-    target = config_copy.pop("_target_", None)
-
-    if not target:
-        # If no target, we can't instantiate
-        return None
-
-    if "TensorBoardLogger" in target:
-        logger.info("Instantiating TensorBoardLogger.")
-        return TensorBoardLogger(**config_copy)
-    
-    elif "WandbLogger" in target:
-        logger.info("Instantiating WandbLogger.")
-        # Ensure 'save_dir' exists or let Wandb handle it
-        return WandbLogger(**config_copy)
-    
-    else:
-        logger.warning(f"Logger target '{target}' not supported. Skipping.")
-        return None
-
-def _safe_instantiate_logger(logger_config: dict):
-    """
-    Instantiate logger(s) from config safely.
-    Supports 'choice' logic: 'tensorboard', 'wandb', or 'both'.
-    """
-    if not logger_config:
-        logger.info("No logger configuration provided; proceeding without logger.")
-        return None
-
-    # Check for 'choice' key to determine strategy
-    choice = logger_config.get("choice", None)
-
-    # Strategy 1: 'choice' logic (new structure)
-    if choice:
-        choice = choice.lower()
-        loggers_list = []
-
-        if choice in ["tensorboard", "both"]:
-            tb_conf = logger_config.get("tensorboard")
-            if tb_conf:
-                l = _create_single_logger(tb_conf)
-                if l: loggers_list.append(l)
-        
-        if choice in ["wandb", "both"]:
-            wb_conf = logger_config.get("wandb")
-            if wb_conf:
-                l = _create_single_logger(wb_conf)
-                if l: loggers_list.append(l)
-
-        if not loggers_list:
-            logger.warning(f"Logger choice was '{choice}' but no valid configuration found.")
-            return None
-        
-        # If only one logger, return it directly; otherwise return list
-        return loggers_list[0] if len(loggers_list) == 1 else loggers_list
-
-    # Strategy 2: Direct instantiation (legacy structure with _target_ at root)
-    if "_target_" in logger_config:
-        return _create_single_logger(logger_config)
-
-    return None
-
-def train(config: dict):
-    """
-    Main training function.
-
     Args:
-        config: configuration dictionary (loaded from YAML).
+        config (dict): Configuration dictionary
+        
+    Returns:
+        best_checkpoint_path (str): Path to best model checkpoint
     """
-    # Validate minimal config structure
-    if "data" not in config:
-        raise KeyError("Missing 'data' section in config.")
-    if "trainer" not in config:
-        raise KeyError("Missing 'trainer' section in config.")
-
-    # Merge model+data config into hyperparameters for the LightningModule (non-destructive)
-    model_cfg = config.get("model", {})
-    data_cfg = config.get("data", {})
-    hparams_dict = {**model_cfg, **data_cfg}
-    hparams = Namespace(**hparams_dict)
-
-    # Instantiate DataModule and LightningModule
-    logger.info("Instantiating data module.")
-    data_module = CleanUNetDataModule(**data_cfg)
-
-    logger.info("Instantiating model (CleanUNetLightningModule).")
-    model = CleanUNetLightningModule(hparams)
-
-    # Instantiate callbacks safely
-    callbacks = _safe_instantiate_callbacks(config.get("callbacks", {}))
-
-    # Instantiate logger safely (supports TB, WandB, or Both)
-    lightning_logger = _safe_instantiate_logger(config.get("logger", {}))
-
-    # Create the Trainer
-    logger.info("Creating PyTorch Lightning Trainer.")
-    trainer_kwargs = copy.deepcopy(config.get("trainer", {}))
+    print("\n" + "="*70)
+    print("STAGE 1: TRAINING WITH X-VECTORS")
+    print("="*70 + "\n")
     
-    trainer = Trainer(
-        logger=lightning_logger, 
-        callbacks=callbacks, 
-        **trainer_kwargs
+    # Set random seed for reproducibility
+    pl.seed_everything(config.get('seed', 42), workers=True)
+    
+    # Data module
+    print("[Train] Creating data module...")
+    data_module = SpeechEnhancementDataModule(
+        train_filelist=config['data']['train_filelist'],
+        val_filelist=config['data']['val_filelist'],
+        batch_size=config['data']['batch_size'],
+        num_workers=config['data']['num_workers'],
+        root_dir=config['data'].get('root_dir', None),
+        sample_rate=config['data'].get('sample_rate', 16000),
+        segment_length=config['data'].get('segment_length', None)
     )
+    
+    # Model
+    print("[Train] Creating model module...")
+    model = CleanUNet2XVectorModule(config, stage='stage1')
+    
+    # Callbacks
+    checkpoint_callback = ModelCheckpoint(
+        dirpath=f"logs/{config['experiment_name']}/checkpoints",
+        filename='epoch={epoch:03d}-pesq={val/pesq:.3f}',
+        monitor='val/pesq',
+        mode='max',
+        save_top_k=3,
+        save_last=True,
+        auto_insert_metric_name=False
+    )
+    
+    early_stop_callback = EarlyStopping(
+        monitor='val/pesq',
+        patience=config.get('early_stopping_patience', 15),
+        mode='max',
+        verbose=True
+    )
+    
+    lr_monitor = LearningRateMonitor(logging_interval='epoch')
+    
+    # Logger
+    logger = TensorBoardLogger(
+        save_dir='logs',
+        name=config['experiment_name'],
+        version=config.get('version', None)
+    )
+    
+    # Trainer
+    print("[Train] Creating trainer...")
+    trainer = pl.Trainer(
+        max_epochs=config['trainer']['max_epochs'],
+        accelerator='gpu' if torch.cuda.is_available() else 'cpu',
+        devices=config['trainer'].get('gpus', 1),
+        precision=config['trainer'].get('precision', 32),
+        accumulate_grad_batches=config['trainer'].get('accumulate_grad_batches', 1),
+        gradient_clip_val=config['trainer'].get('gradient_clip_val', 5.0),
+        callbacks=[checkpoint_callback, early_stop_callback, lr_monitor],
+        logger=logger,
+        log_every_n_steps=50,
+        val_check_interval=config['trainer'].get('val_check_interval', 1.0),
+        deterministic=False
+    )
+    
+    # Train
+    print("\n[Train] Starting training...\n")
+    trainer.fit(model, data_module)
+    
+    print("\n" + "="*70)
+    print("STAGE 1 TRAINING COMPLETE!")
+    print("="*70)
+    print(f"✓ Latents saved to: {config.get('latents_dir', 'stored_latents')}")
+    print(f"✓ Best checkpoint: {checkpoint_callback.best_model_path}")
+    print(f"✓ Best PESQ: {checkpoint_callback.best_model_score:.4f}\n")
+    
+    return checkpoint_callback.best_model_path
 
-    # Resume from checkpoint if configured
-    ckpt_path = config.get("resume_from_checkpoint", None)
-    if ckpt_path:
-        logger.info("Resuming training from checkpoint: %s", ckpt_path)
 
-    # Start training
-    logger.info("Starting training run.")
-    trainer.fit(model, datamodule=data_module, ckpt_path=ckpt_path)
-    logger.info("Training finished.")
+def train_stage2(config, stage1_checkpoint=None):
+    """
+    Train Stage 2: Without X-Vectors (replicating latents).
+    Trains the model to replicate latent vectors from Stage 1.
+    
+    Args:
+        config (dict): Configuration dictionary
+        stage1_checkpoint (str): Path to Stage 1 checkpoint for weight initialization
+    """
+    print("\n" + "="*70)
+    print("STAGE 2: TRAINING WITHOUT X-VECTORS (REPLICATING LATENTS)")
+    print("="*70 + "\n")
+    
+    # Set random seed
+    pl.seed_everything(config.get('seed', 42), workers=True)
+    
+    # Data module
+    print("[Train] Creating data module...")
+    data_module = SpeechEnhancementDataModule(
+        train_filelist=config['data']['train_filelist'],
+        val_filelist=config['data']['val_filelist'],
+        batch_size=config['data']['batch_size'],
+        num_workers=config['data']['num_workers'],
+        root_dir=config['data'].get('root_dir', None),
+        sample_rate=config['data'].get('sample_rate', 16000),
+        segment_length=config['data'].get('segment_length', None)
+    )
+    
+    # Model
+    print("[Train] Creating model module...")
+    if stage1_checkpoint and config.get('load_from_stage1', True):
+        print(f"[Train] Loading weights from Stage 1: {stage1_checkpoint}")
+        model = CleanUNet2XVectorModule.load_from_checkpoint(
+            stage1_checkpoint,
+            config=config,
+            stage='stage2',
+            strict=False  # Allow missing keys for latent_predictor
+        )
+    else:
+        model = CleanUNet2XVectorModule(config, stage='stage2')
+    
+    # Callbacks
+    checkpoint_callback = ModelCheckpoint(
+        dirpath=f"logs/{config['experiment_name']}/checkpoints",
+        filename='epoch={epoch:03d}-pesq={val/pesq:.3f}',
+        monitor='val/pesq',
+        mode='max',
+        save_top_k=3,
+        save_last=True,
+        auto_insert_metric_name=False
+    )
+    
+    early_stop_callback = EarlyStopping(
+        monitor='val/pesq',
+        patience=config.get('early_stopping_patience', 15),
+        mode='max',
+        verbose=True
+    )
+    
+    lr_monitor = LearningRateMonitor(logging_interval='epoch')
+    
+    # Logger
+    logger = TensorBoardLogger(
+        save_dir='logs',
+        name=config['experiment_name'],
+        version=config.get('version', None)
+    )
+    
+    # Trainer
+    print("[Train] Creating trainer...")
+    trainer = pl.Trainer(
+        max_epochs=config['trainer']['max_epochs'],
+        accelerator='gpu' if torch.cuda.is_available() else 'cpu',
+        devices=config['trainer'].get('gpus', 1),
+        precision=config['trainer'].get('precision', 32),
+        accumulate_grad_batches=config['trainer'].get('accumulate_grad_batches', 1),
+        gradient_clip_val=config['trainer'].get('gradient_clip_val', 5.0),
+        callbacks=[checkpoint_callback, early_stop_callback, lr_monitor],
+        logger=logger,
+        log_every_n_steps=50,
+        val_check_interval=config['trainer'].get('val_check_interval', 1.0),
+        deterministic=False
+    )
+    
+    # Train
+    print("\n[Train] Starting training...\n")
+    trainer.fit(model, data_module)
+    
+    print("\n" + "="*70)
+    print("STAGE 2 TRAINING COMPLETE!")
+    print("="*70)
+    print(f"✓ Model is now causal and ready for deployment!")
+    print(f"✓ Best checkpoint: {checkpoint_callback.best_model_path}")
+    print(f"✓ Best PESQ: {checkpoint_callback.best_model_score:.4f}\n")
 
-def parse_args():
-    parser = argparse.ArgumentParser(description="Train CleanUNet2 using a YAML configuration.")
-    parser.add_argument("--config", type=str, required=True, help="Path to YAML config file.")
-    return parser.parse_args()
 
-if __name__ == "__main__":
-    args = parse_args()
+def main():
+    """Main training function."""
+    parser = argparse.ArgumentParser(
+        description='Train CleanUNet2 with X-Vector integration'
+    )
+    parser.add_argument(
+        '--config',
+        type=str,
+        required=True,
+        help='Path to configuration YAML file'
+    )
+    parser.add_argument(
+        '--stage',
+        type=str,
+        choices=['stage1', 'stage2', 'both'],
+        default='stage1',
+        help='Training stage: stage1 (with X-Vectors), stage2 (without X-Vectors), or both'
+    )
+    args = parser.parse_args()
+    
+    # Load configuration
+    print(f"\n[Main] Loading configuration from: {args.config}")
+    with open(args.config, 'r') as f:
+        config = yaml.safe_load(f)
+    
+    print(f"[Main] Experiment name: {config['experiment_name']}")
+    print(f"[Main] Training stage(s): {args.stage}\n")
+    
+    # Create necessary directories
+    os.makedirs('logs', exist_ok=True)
+    if 'latents_dir' in config:
+        os.makedirs(config['latents_dir'], exist_ok=True)
+    
+    # Train based on selected stage
+    if args.stage == 'stage1' or args.stage == 'both':
+        # Train Stage 1
+        stage1_ckpt = train_stage1(config)
+        
+        # If training both stages, proceed to Stage 2
+        if args.stage == 'both':
+            # Load Stage 2 configuration
+            stage2_config_path = args.config.replace('stage1', 'stage2')
+            
+            if not os.path.exists(stage2_config_path):
+                print(f"\n[Warning] Stage 2 config not found: {stage2_config_path}")
+                print("[Warning] Skipping Stage 2 training.")
+            else:
+                print(f"\n[Main] Loading Stage 2 configuration from: {stage2_config_path}")
+                
+                with open(stage2_config_path, 'r') as f:
+                    config_stage2 = yaml.safe_load(f)
+                
+                # Train Stage 2 with Stage 1 checkpoint
+                train_stage2(config_stage2, stage1_checkpoint=stage1_ckpt)
+    
+    elif args.stage == 'stage2':
+        # Train only Stage 2
+        stage1_ckpt = config.get('stage1_checkpoint', None)
+        train_stage2(config, stage1_checkpoint=stage1_ckpt)
+    
+    print("\n" + "="*70)
+    print("ALL TRAINING COMPLETE!")
+    print("="*70 + "\n")
 
-    # Load config file (YAML)
-    with open(args.config, "r") as fh:
-        config = yaml.safe_load(fh)
 
-    # Set precision hint for tensor cores if available (optional)
-    if hasattr(torch, "set_float32_matmul_precision"):
-        try:
-            torch.set_float32_matmul_precision("medium")
-            logger.info("Set float32 matmul precision to 'medium'.")
-        except Exception as e:
-            logger.warning("Could not set float32 matmul precision: %s", str(e))
-
-    # Run training
-    train(config)
+if __name__ == '__main__':
+    main()

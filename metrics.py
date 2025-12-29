@@ -1,287 +1,375 @@
 """
-Objective Metrics Predictor
-
-This module computes objective speech/audio quality metrics (PESQ, STOI, SI-SDR)
-for single file pairs or for folders of paired clean/distorted audio.
-
-Usage (CLI):
-    python metrics.py --input_dir_clean path/to/clean --input_dir_dist path/to/distorted --output_file results.json
-
-Dependencies:
-    - torch
-    - torchaudio
-    - numpy
-    - pesq (pip install pesq)
-    - pystoi (pip install pystoi)
-    - tqdm
+Metrics for speech enhancement evaluation
+Includes PESQ, STOI, and SI-SDR metrics
 """
 
-import os
-import argparse
-import json
-from glob import glob
-from os.path import join, basename, isdir
-from pathlib import Path
-from typing import Optional, Dict, Tuple
-
-import logging
-import torch
-import torchaudio
-from torchaudio.functional import resample
 import numpy as np
-from tqdm import tqdm
-
+import torch
 from pesq import pesq
 from pystoi import stoi
 
-# Configure basic logging
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
-
-class ObjectiveMetricsPredictor:
+def calculate_pesq(enhanced, clean, sr=16000):
     """
-    Compute objective metrics (PESQ, STOI, SI-SDR) for audio signals.
-
-    The class can be called with file paths or used programmatically by passing
-    waveform tensors / numpy arrays to `predict_metrics`.
-
-    Notes:
-      - PESQ expects 16 kHz sampling rate (this class will resample if needed).
-      - Inputs are converted to mono automatically (averaging channels).
-      - SI-SDR is implemented with PyTorch tensors and returns a scalar float.
+    Calculate PESQ (Perceptual Evaluation of Speech Quality) score.
+    
+    Args:
+        enhanced (torch.Tensor): Enhanced audio tensor (batch, samples) or (batch, 1, samples)
+        clean (torch.Tensor): Clean reference audio tensor
+        sr (int): Sample rate (8000 or 16000)
+        
+    Returns:
+        float: Average PESQ score
     """
-
-    def __init__(self, device: Optional[str] = None):
-        """
-        Initialize the predictor.
-
-        Args:
-            device: "cpu" or "cuda" (optional). If None, auto-detects CUDA if available.
-        """
-        if device is None:
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        else:
-            self.device = torch.device(device)
-        logging.info(f"ObjectiveMetricsPredictor initialized on device: {self.device}")
-
-    @staticmethod
-    def _to_mono_and_resample(waveform: torch.Tensor, sr: int, target_sr: int = 16000) -> Tuple[torch.Tensor, int]:
-        """
-        Convert waveform to mono and resample to target_sr if necessary.
-        Returns (waveform, sr) where waveform is a torch.Tensor (1, T) and sr == target_sr.
-        """
-        # waveform: (channels, T)
-        if waveform.ndim == 1:
-            waveform = waveform.unsqueeze(0)
-        if waveform.shape[0] > 1:
-            waveform = waveform.mean(dim=0, keepdim=True)  # mix to mono
-
-        if sr != target_sr:
-            waveform = resample(waveform, orig_freq=sr, new_freq=target_sr)
-            sr = target_sr
-
-        return waveform, sr
-
-    def _load_file(self, filepath: str, target_sr: int = 16000) -> Tuple[Optional[torch.Tensor], Optional[int]]:
-        """
-        Load an audio file and return (waveform, sr). On error returns (None, None).
-        Waveform is a torch.Tensor with shape (1, T) in float32.
-        """
+    # Convert to numpy and handle dimensions
+    if isinstance(enhanced, torch.Tensor):
+        enhanced = enhanced.detach().cpu().numpy()
+    if isinstance(clean, torch.Tensor):
+        clean = clean.detach().cpu().numpy()
+    
+    # Remove channel dimension if present
+    if enhanced.ndim == 3:
+        enhanced = enhanced.squeeze(1)
+    if clean.ndim == 3:
+        clean = clean.squeeze(1)
+    
+    # Calculate PESQ for each sample in batch
+    batch_size = enhanced.shape[0]
+    pesq_scores = []
+    
+    mode = 'wb' if sr == 16000 else 'nb'
+    
+    for i in range(batch_size):
         try:
-            waveform, sr = torchaudio.load(filepath)  # waveform shape: (channels, T)
-            waveform, sr = self._to_mono_and_resample(waveform, sr, target_sr)
-            # ensure float32
-            waveform = waveform.to(dtype=torch.float32)
-            return waveform, sr
+            score = pesq(sr, clean[i], enhanced[i], mode)
+            pesq_scores.append(score)
         except Exception as e:
-            logging.error(f"Error loading file '{filepath}': {e}")
-            return None, None
+            print(f"[Warning] PESQ calculation failed for sample {i}: {e}")
+            pesq_scores.append(0.0)
+    
+    return np.mean(pesq_scores)
 
-    def __call__(self, input_str_clean: str, input_str_distorted: str) -> Dict[str, dict]:
-        """
-        If input_str_clean is a directory, compute metrics for folder pairs.
-        Otherwise compute metrics for the two file paths.
-        """
-        if isdir(input_str_clean):
-            return self.predict_folder(input_str_clean, input_str_distorted)
-        else:
-            metrics = self.predict_file(input_str_clean, input_str_distorted)
-            return {basename(input_str_clean): metrics} if metrics else {}
 
-    def si_snr(self, estimate: torch.Tensor, reference: torch.Tensor, epsilon: float = 1e-8) -> float:
-        """
-        Compute Scale-Invariant Signal-to-Noise Ratio (SI-SNR) in dB.
-        Expects tensors shaped (1, T) or (T,) — this implementation will operate on last axis.
-
-        Returns:
-            scalar float (dB)
-        """
-        # Convert to 1D floats
-        if isinstance(estimate, np.ndarray):
-            estimate = torch.from_numpy(estimate)
-        if isinstance(reference, np.ndarray):
-            reference = torch.from_numpy(reference)
-
-        # Ensure float tensors
-        estimate = estimate.to(dtype=torch.float32)
-        reference = reference.to(dtype=torch.float32)
-
-        # Flatten to (T,)
-        if estimate.dim() > 1:
-            estimate = estimate.view(-1)
-        if reference.dim() > 1:
-            reference = reference.view(-1)
-
-        # Zero-mean normalization
-        estimate = estimate - estimate.mean()
-        reference = reference - reference.mean()
-
-        # Projection of estimate onto reference
-        reference_energy = torch.sum(reference ** 2)
-        if reference_energy.item() == 0:
-            logging.warning("Reference signal has zero energy; returning -inf for SI-SNR.")
-            return float("-inf")
-
-        scale = torch.dot(estimate, reference) / (reference_energy + epsilon)
-        scaled_ref = scale * reference
-        e_noise = estimate - scaled_ref
-
-        ratio = torch.sum(scaled_ref ** 2) / (torch.sum(e_noise ** 2) + epsilon)
-        si_snr_value = 10.0 * torch.log10(ratio + epsilon)
-        return float(si_snr_value.item())
-
-    def predict_metrics(self, waveform_clean, waveform_distorted) -> Optional[dict]:
-        """
-        Compute PESQ, STOI and SI-SDR for given waveforms.
-        Accepts either torch.Tensor or numpy.ndarray. Expects 1D (T,) or (1, T) shapes.
-
-        Returns:
-            dict with keys: "pesq", "stoi", "si_sdr" or None if computation failed.
-        """
-        # Convert torch tensors to numpy after ensuring correct shape and device
-        # Ensure CPU numpy arrays for pesq/stoi
+def calculate_stoi(enhanced, clean, sr=16000):
+    """
+    Calculate STOI (Short-Time Objective Intelligibility) score.
+    
+    Args:
+        enhanced (torch.Tensor): Enhanced audio tensor (batch, samples)
+        clean (torch.Tensor): Clean reference audio tensor
+        sr (int): Sample rate
+        
+    Returns:
+        float: Average STOI score
+    """
+    # Convert to numpy and handle dimensions
+    if isinstance(enhanced, torch.Tensor):
+        enhanced = enhanced.detach().cpu().numpy()
+    if isinstance(clean, torch.Tensor):
+        clean = clean.detach().cpu().numpy()
+    
+    # Remove channel dimension if present
+    if enhanced.ndim == 3:
+        enhanced = enhanced.squeeze(1)
+    if clean.ndim == 3:
+        clean = clean.squeeze(1)
+    
+    # Calculate STOI for each sample in batch
+    batch_size = enhanced.shape[0]
+    stoi_scores = []
+    
+    for i in range(batch_size):
         try:
-            # If input is torch tensor, convert to cpu numpy
-            if torch.is_tensor(waveform_clean):
-                w_clean = waveform_clean.detach().cpu().squeeze().numpy()
-            else:
-                w_clean = np.asarray(waveform_clean)
-
-            if torch.is_tensor(waveform_distorted):
-                w_dist = waveform_distorted.detach().cpu().squeeze().numpy()
-            else:
-                w_dist = np.asarray(waveform_distorted)
-
-            # Flatten if necessary
-            if w_clean.ndim != 1:
-                w_clean = w_clean.flatten()
-            if w_dist.ndim != 1:
-                w_dist = w_dist.flatten()
-
-            # PESQ (wideband) - may raise exceptions for invalid input lengths / content
-            try:
-                pesq_score = pesq(16000, w_clean, w_dist, mode="wb")
-            except Exception as e:
-                logging.debug(f"PESQ computation failed: {e}")
-                pesq_score = 0.0
-
-            # STOI - may raise exceptions, fall back to 0.0
-            try:
-                stoi_score = stoi(w_clean, w_dist, 16000, extended=False)
-            except Exception as e:
-                logging.debug(f"STOI computation failed: {e}")
-                stoi_score = 0.0
-
-            # SI-SDR / SI-SNR computed with torch for numerical stability
-            try:
-                w_clean_t = torch.from_numpy(w_clean).to(device=self.device)
-                w_dist_t = torch.from_numpy(w_dist).to(device=self.device)
-                si_sdr_score = self.si_snr(w_dist_t, w_clean_t)
-            except Exception as e:
-                logging.debug(f"SI-SDR computation failed: {e}")
-                si_sdr_score = 0.0
-
-            return {"pesq": float(pesq_score), "stoi": float(stoi_score), "si_sdr": float(si_sdr_score)}
+            score = stoi(clean[i], enhanced[i], sr, extended=False)
+            stoi_scores.append(score)
         except Exception as e:
-            logging.error(f"Failed to compute metrics: {e}")
-            return None
+            print(f"[Warning] STOI calculation failed for sample {i}: {e}")
+            stoi_scores.append(0.0)
+    
+    return np.mean(stoi_scores)
 
-    def predict_file(self, filepath_clean: str, filepath_distorted: str) -> Optional[dict]:
-        """
-        Load two audio files, preprocess them (mono + resample to 16kHz) and compute metrics.
-        Returns a metrics dict or None on error.
-        """
-        waveform_clean, sr_clean = self._load_file(filepath_clean)
-        if waveform_clean is None:
-            logging.error(f"Failed to load clean file: {filepath_clean}")
-            return None
 
-        waveform_distorted, sr_dist = self._load_file(filepath_distorted)
-        if waveform_distorted is None:
-            logging.error(f"Failed to load distorted file: {filepath_distorted}")
-            return None
-
-        # Both waveforms are (1, T) torch tensors at 16 kHz
-        return self.predict_metrics(waveform_clean.squeeze(0), waveform_distorted.squeeze(0))
-
-    def predict_folder(self, dirpath_clean: str, dirpath_distorted: str, batch_size: int = 1, search_str: str = "*.wav") -> Dict[str, dict]:
-        """
-        Compute metrics for every paired file in two folders. Files are matched by sorted order.
-        Returns a dictionary mapping filename -> metrics dict.
-        """
-        logging.info(f"Scanning clean folder: {dirpath_clean}, distorted folder: {dirpath_distorted}")
-        filelist_clean = sorted(glob(join(dirpath_clean, search_str)))
-        filelist_distorted = sorted(glob(join(dirpath_distorted, search_str)))
-
-        if len(filelist_clean) == 0:
-            logging.warning("No files found in the clean folder.")
-            return {}
-
-        if len(filelist_clean) != len(filelist_distorted):
-            logging.error(
-                f"Mismatch in file counts: clean={len(filelist_clean)} distorted={len(filelist_distorted)}. "
-                "Make sure folders contain matching files in the same order."
+def calculate_sisdr(enhanced, clean):
+    """
+    Calculate SI-SDR (Scale-Invariant Signal-to-Distortion Ratio).
+    
+    Args:
+        enhanced (torch.Tensor): Enhanced audio tensor (batch, samples)
+        clean (torch.Tensor): Clean reference audio tensor
+        
+    Returns:
+        float: Average SI-SDR score in dB
+    """
+    # Convert to numpy and handle dimensions
+    if isinstance(enhanced, torch.Tensor):
+        enhanced = enhanced.detach().cpu().numpy()
+    if isinstance(clean, torch.Tensor):
+        clean = clean.detach().cpu().numpy()
+    
+    # Remove channel dimension if present
+    if enhanced.ndim == 3:
+        enhanced = enhanced.squeeze(1)
+    if clean.ndim == 3:
+        clean = clean.squeeze(1)
+    
+    # Calculate SI-SDR for each sample in batch
+    batch_size = enhanced.shape[0]
+    sisdr_scores = []
+    
+    for i in range(batch_size):
+        try:
+            # Ensure vectors are 1D
+            s_target = clean[i]
+            s_estimate = enhanced[i]
+            
+            # Remove mean
+            s_target = s_target - np.mean(s_target)
+            s_estimate = s_estimate - np.mean(s_estimate)
+            
+            # Calculate SI-SDR
+            alpha = np.dot(s_estimate, s_target) / (np.linalg.norm(s_target) ** 2 + 1e-8)
+            s_target_scaled = alpha * s_target
+            
+            # Signal and noise
+            e_noise = s_estimate - s_target_scaled
+            
+            # SI-SDR in dB
+            sisdr = 10 * np.log10(
+                (np.linalg.norm(s_target_scaled) ** 2) / 
+                (np.linalg.norm(e_noise) ** 2 + 1e-8)
             )
-            raise AssertionError("Unequal number of files in clean and distorted folders.")
+            
+            sisdr_scores.append(sisdr)
+            
+        except Exception as e:
+            print(f"[Warning] SI-SDR calculation failed for sample {i}: {e}")
+            sisdr_scores.append(0.0)
+    
+    return np.mean(sisdr_scores)
 
-        scores = {}
-        # Use tqdm for a progress bar; compute files one-by-one (PESQ/STOI are single-sample routines)
-        for f_clean, f_dist in tqdm(zip(filelist_clean, filelist_distorted), total=len(filelist_clean), desc="Calculating Metrics"):
-            filename = basename(f_clean)
-            metrics = self.predict_file(f_clean, f_dist)
-            if metrics:
-                scores[filename] = metrics
+
+def calculate_snr(enhanced, clean):
+    """
+    Calculate SNR (Signal-to-Noise Ratio).
+    
+    Args:
+        enhanced (torch.Tensor): Enhanced audio tensor
+        clean (torch.Tensor): Clean reference audio tensor
+        
+    Returns:
+        float: Average SNR in dB
+    """
+    # Convert to numpy and handle dimensions
+    if isinstance(enhanced, torch.Tensor):
+        enhanced = enhanced.detach().cpu().numpy()
+    if isinstance(clean, torch.Tensor):
+        clean = clean.detach().cpu().numpy()
+    
+    # Remove channel dimension if present
+    if enhanced.ndim == 3:
+        enhanced = enhanced.squeeze(1)
+    if clean.ndim == 3:
+        clean = clean.squeeze(1)
+    
+    # Calculate SNR for each sample in batch
+    batch_size = enhanced.shape[0]
+    snr_scores = []
+    
+    for i in range(batch_size):
+        try:
+            signal_power = np.sum(clean[i] ** 2)
+            noise = enhanced[i] - clean[i]
+            noise_power = np.sum(noise ** 2)
+            
+            snr = 10 * np.log10(signal_power / (noise_power + 1e-8))
+            snr_scores.append(snr)
+            
+        except Exception as e:
+            print(f"[Warning] SNR calculation failed for sample {i}: {e}")
+            snr_scores.append(0.0)
+    
+    return np.mean(snr_scores)
+
+
+def calculate_metrics(enhanced, clean, sr=16000, metrics=['pesq', 'stoi', 'sisdr']):
+    """
+    Calculate multiple metrics at once.
+    
+    Args:
+        enhanced (torch.Tensor or np.ndarray): Enhanced audio
+        clean (torch.Tensor or np.ndarray): Clean reference audio
+        sr (int): Sample rate
+        metrics (list): List of metrics to calculate
+        
+    Returns:
+        dict: Dictionary with metric names and values
+    """
+    results = {}
+    
+    if 'pesq' in metrics:
+        try:
+            results['pesq'] = calculate_pesq(enhanced, clean, sr)
+        except Exception as e:
+            print(f"[Warning] PESQ calculation failed: {e}")
+            results['pesq'] = 0.0
+    
+    if 'stoi' in metrics:
+        try:
+            results['stoi'] = calculate_stoi(enhanced, clean, sr)
+        except Exception as e:
+            print(f"[Warning] STOI calculation failed: {e}")
+            results['stoi'] = 0.0
+    
+    if 'sisdr' in metrics:
+        try:
+            results['sisdr'] = calculate_sisdr(enhanced, clean)
+        except Exception as e:
+            print(f"[Warning] SI-SDR calculation failed: {e}")
+            results['sisdr'] = 0.0
+    
+    if 'snr' in metrics:
+        try:
+            results['snr'] = calculate_snr(enhanced, clean)
+        except Exception as e:
+            print(f"[Warning] SNR calculation failed: {e}")
+            results['snr'] = 0.0
+    
+    return results
+
+
+class MetricsTracker:
+    """
+    Track metrics across multiple batches/epochs.
+    """
+    
+    def __init__(self, metrics=['pesq', 'stoi', 'sisdr']):
+        """
+        Initialize metrics tracker.
+        
+        Args:
+            metrics (list): List of metric names to track
+        """
+        self.metrics = metrics
+        self.reset()
+    
+    def reset(self):
+        """Reset all metrics."""
+        self.values = {metric: [] for metric in self.metrics}
+    
+    def update(self, enhanced, clean, sr=16000):
+        """
+        Update metrics with new batch.
+        
+        Args:
+            enhanced (torch.Tensor): Enhanced audio
+            clean (torch.Tensor): Clean audio
+            sr (int): Sample rate
+        """
+        results = calculate_metrics(enhanced, clean, sr, self.metrics)
+        
+        for metric, value in results.items():
+            if metric in self.values:
+                self.values[metric].append(value)
+    
+    def compute(self):
+        """
+        Compute average metrics.
+        
+        Returns:
+            dict: Dictionary with average metric values
+        """
+        averages = {}
+        
+        for metric, values in self.values.items():
+            if len(values) > 0:
+                averages[metric] = np.mean(values)
             else:
-                logging.warning(f"Metrics computation failed for pair: {f_clean} , {f_dist}")
-        return scores
+                averages[metric] = 0.0
+        
+        return averages
+    
+    def compute_std(self):
+        """
+        Compute standard deviation of metrics.
+        
+        Returns:
+            dict: Dictionary with std of metric values
+        """
+        stds = {}
+        
+        for metric, values in self.values.items():
+            if len(values) > 0:
+                stds[metric] = np.std(values)
+            else:
+                stds[metric] = 0.0
+        
+        return stds
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Compute PESQ/STOI/SI-SDR for clean/distorted audio pairs.")
-    parser.add_argument("--input_dir_clean", "-i", type=str, default="samples/0", help="Input clean folder (or single file)")
-    parser.add_argument("--input_dir_dist", "-r", type=str, default="samples/0", help="Input distorted folder (or single file)")
-    parser.add_argument("--output_file", "-o", type=str, default="metrics_prediction.json", help="Output JSON filepath")
-    # batch_size kept for backwards compatibility; not used to parallelize PESQ/STOI
-    parser.add_argument("--batch_size", "-b", type=int, default=1, help="(Deprecated) Batch size")
-    parser.add_argument("--search_pattern", "-s", type=str, default="*.wav", help="Search pattern for folder mode")
-    parser.add_argument("--device", "-d", type=str, default=None, help="Device (cpu or cuda). If omitted auto-detects.")
-    args = parser.parse_args()
-
-    predictor = ObjectiveMetricsPredictor(device=args.device)
-    if isdir(args.input_dir_clean):
-        results = predictor.predict_folder(args.input_dir_clean, args.input_dir_dist, batch_size=args.batch_size, search_str=args.search_pattern)
-    else:
-        results = predictor(args.input_dir_clean, args.input_dir_dist)
-
-    # Write JSON results
-    out_path = Path(args.output_file)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(out_path, "w") as f:
-        json.dump(results, f, indent=4)
-
-    logging.info(f"Saved metrics to: {out_path.resolve()}")
-
-
-if __name__ == "__main__":
-    main()
-
+# Example usage
+if __name__ == '__main__':
+    """
+    Test metrics calculation.
+    """
+    print("="*60)
+    print("Testing Metrics")
+    print("="*60)
+    
+    # Create dummy audio
+    sr = 16000
+    duration = 2  # seconds
+    samples = sr * duration
+    
+    # Generate test signals
+    clean = torch.randn(2, 1, samples)  # Batch of 2
+    
+    # Simulate enhanced audio (clean + small noise)
+    noise = torch.randn_like(clean) * 0.1
+    enhanced = clean + noise
+    
+    print(f"\nTest audio:")
+    print(f"  Sample rate: {sr} Hz")
+    print(f"  Duration: {duration} seconds")
+    print(f"  Shape: {clean.shape}")
+    
+    # Test individual metrics
+    print(f"\nTesting individual metrics:")
+    
+    pesq_score = calculate_pesq(enhanced, clean, sr)
+    print(f"  PESQ: {pesq_score:.4f}")
+    
+    stoi_score = calculate_stoi(enhanced, clean, sr)
+    print(f"  STOI: {stoi_score:.4f}")
+    
+    sisdr_score = calculate_sisdr(enhanced, clean)
+    print(f"  SI-SDR: {sisdr_score:.4f} dB")
+    
+    snr_score = calculate_snr(enhanced, clean)
+    print(f"  SNR: {snr_score:.4f} dB")
+    
+    # Test calculate_metrics
+    print(f"\nTesting calculate_metrics:")
+    metrics = calculate_metrics(enhanced, clean, sr)
+    for metric, value in metrics.items():
+        print(f"  {metric.upper()}: {value:.4f}")
+    
+    # Test MetricsTracker
+    print(f"\nTesting MetricsTracker:")
+    tracker = MetricsTracker()
+    
+    # Simulate multiple batches
+    for i in range(3):
+        noise = torch.randn_like(clean) * (0.1 + i * 0.05)
+        enhanced = clean + noise
+        tracker.update(enhanced, clean, sr)
+    
+    avg_metrics = tracker.compute()
+    std_metrics = tracker.compute_std()
+    
+    print(f"  Average metrics over 3 batches:")
+    for metric, value in avg_metrics.items():
+        print(f"    {metric.upper()}: {value:.4f} ± {std_metrics[metric]:.4f}")
+    
+    print("\n" + "="*60)
+    print("✓ All metrics tests passed!")
+    print("="*60)

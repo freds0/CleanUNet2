@@ -1,0 +1,42 @@
+# Stage-2: Treinamento sem X-Vectors (replicando latentes)
+experiment_name: "cleanunet2_xvector_stage2"
+stage: "stage2"
+
+model:
+  channels_input: 1
+  channels_output: 1
+  latent_dim: 512
+  xvector_dim: 512
+  use_xvector: true
+  xvector_stage: "stage2"
+
+losses:
+  fft_sizes: [512, 1024, 2048]
+  hop_sizes: [128, 256, 512]
+  win_lengths: [512, 1024, 2048]
+  weights:
+    l1: 0.45
+    stft: 0.45
+    latent: 0.10  # Peso para replicar latentes (similar ao γ=0.05 do artigo)
+
+optimizer:
+  lr: 0.0001
+  betas: [0.9, 0.999]
+
+data:
+  train_path: "filelists/train.csv"
+  val_path: "filelists/val.csv"
+  batch_size: 8
+  num_workers: 4
+  sample_rate: 16000
+
+trainer:
+  max_epochs: 100
+  gpus: 1
+  precision: 16
+  accumulate_grad_batches: 4
+
+latents_dir: "stored_latents"
+
+# Checkpoint do Stage-1 para inicializar pesos
+stage1_checkpoint: "logs/cleanunet2_xvector_stage1/checkpoints/best.ckpt"

@@ -344,60 +344,93 @@ class CleanUNet(nn.Module):
                     # If user doesn't have weight_scaling_init or it fails, skip gracefully
                     pass
 
+        # --- Internal state for encode/decode split ---
+        self._stored_skips = None
+        self._stored_std = None
+        self._original_len = None
 
     def forward(self, noisy_audio: torch.Tensor) -> torch.Tensor:
-        """Forward pass.
-        Args:
-            noisy_audio: Tensor shape (B, L) or (B, 1, L)
-        Returns:
-            denoised audio tensor with same length as input: (B, 1, L)
+        """Standard forward pass."""
+        latent = self.encode(noisy_audio)
+        return self.decode(latent)
+
+    def encode(self, noisy_audio: torch.Tensor) -> torch.Tensor:
         """
-        # ensure shape (B, C, L)
+        Encodes the noisy audio into latent representation (inside bottleneck).
+        Stores skip connections and stats internally for subsequent decode call.
+        
+        Returns:
+            latent: (B, tsfm_d_model, T)
+        """
         if noisy_audio.dim() == 2:
             noisy_audio = noisy_audio.unsqueeze(1)
-        B, C, L = noisy_audio.shape
-        assert C == 1, "Expected mono input (1 channel)."
+        
+        # Store original length and std for reconstruction
+        self._original_len = noisy_audio.shape[-1]
+        self._stored_std = noisy_audio.std(dim=2, keepdim=True) + 1e-3
+        
+        # Normalize and Pad
+        x = noisy_audio / self._stored_std
+        x = padding(x, self.encoder_n_layers, self.kernel_size, self.stride)
 
-        # normalize by standard deviation per example and pad to suitable length
-        std = noisy_audio.std(dim=2, keepdim=True) + 1e-3
-        noisy_audio = noisy_audio / std
-        x = padding(noisy_audio, self.encoder_n_layers, self.kernel_size, self.stride)
-
-        # encoder: collect skip connections
-        skip_connections = []
+        # Encoder Pass
+        skips = []
         for downsampling_block in self.encoder:
             x = downsampling_block(x)
-            skip_connections.append(x)
-        # reverse skip connections so they correspond to decoder order
-        skip_connections = skip_connections[::-1]
+            skips.append(x)
+        
+        # Store skips (reverse order for decoder)
+        self._stored_skips = skips[::-1]
 
-        # prepare attention mask - causal mask that prevents attending to future positions
-        len_s = x.shape[-1]  # time length at bottleneck
+        # Bottleneck: Part 1 (Conv -> Transformer)
+        # Prepare mask
+        len_s = x.shape[-1]
         attn_mask = (1 - torch.triu(torch.ones((1, len_s, len_s), device=x.device), diagonal=1)).bool()
 
-        # Transformer bottleneck
-        x = self.tsfm_conv1(x)           # (B, channels, T) -> (B, tsfm_d_model, T)
-        x = x.permute(0, 2, 1)           # -> (B, T, d_model) for transformer
+        x = self.tsfm_conv1(x)           # (B, H, T) -> (B, d_model, T)
+        x = x.permute(0, 2, 1)           # -> (B, T, d_model)
         x = self.tsfm_encoder(x, src_mask=attn_mask)
         x = x.permute(0, 2, 1)           # -> (B, d_model, T)
-        x = self.tsfm_conv2(x)           # -> (B, channels, T)
-
-        # decoder with skip connections
-        for i, upsampling_block in enumerate(self.decoder):
-            skip_i = skip_connections[i]
-            # crop skip to match current length if necessary
-            skip_x = skip_i[:, :, :x.shape[-1]].clone()
-            x = x + skip_x
-            x = upsampling_block(x)
-
-        # crop to original length and denormalize
-        x = x[:, :, :L] * std
+        
+        # Return at this point (latent space)
         return x
 
-    # Optional feature-conditional forward (kept as comment for reference)
-    # def forward(self, noisy_audio, feature):
-    #     feature = feature.unsqueeze(2) # (B, C) -> (B, C, 1)
-    #     ... (omitted) ...
+    def decode(self, latent: torch.Tensor) -> torch.Tensor:
+        """
+        Decodes the latent representation back to waveform.
+        Uses stored skip connections and stats from the last encode call.
+        
+        Args:
+            latent: (B, tsfm_d_model, T)
+        Returns:
+            denoised_audio: (B, 1, L)
+        """
+        if self._stored_skips is None:
+            raise RuntimeError("encode() must be called before decode()")
+
+        x = latent
+        
+        # Bottleneck: Part 2 (Transformer Output -> Conv)
+        x = self.tsfm_conv2(x)
+
+        # Decoder Pass
+        for i, upsampling_block in enumerate(self.decoder):
+            skip_i = self._stored_skips[i]
+            # Crop skip to match current length (due to conv artifacts/padding)
+            if skip_i.shape[-1] > x.shape[-1]:
+                skip_i = skip_i[..., :x.shape[-1]]
+            
+            x = x + skip_i
+            x = upsampling_block(x)
+
+        # Crop to original length and denormalize
+        if self._original_len is not None:
+            x = x[:, :, :self._original_len]
+        
+        if self._stored_std is not None:
+            x = x * self._stored_std
+            
+        return x
 
 # ---------------------------
 # Quick self-test / example usage when running as script

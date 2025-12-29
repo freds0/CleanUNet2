@@ -1,0 +1,53 @@
+# Stage-1: Training with X-Vectors
+experiment_name: "cleanunet2_xvector_stage1"
+stage: "stage1"
+seed: 42
+
+checkpoint_loading:
+  load_cleanunet: true
+  # Update this path to your actual .ckpt or .pth file
+  cleanunet_checkpoint: "/path/to/your/pretrained_cleanunet.ckpt"
+  
+model:
+  channels_input: 1
+  channels_output: 1
+  latent_dim: 512
+  xvector_dim: 512
+  use_xvector: true
+  xvector_stage: "stage1"
+
+losses:
+  fft_sizes: [512, 1024, 2048]
+  hop_sizes: [128, 256, 512]
+  win_lengths: [512, 1024, 2048]
+  weights:
+    l1: 0.5
+    stft: 0.5
+
+optimizer:
+  lr: 0.0001
+  betas: [0.9, 0.999]
+
+data:
+  root_dir: "/home/fred/Projetos/DATASETS/VoiceBank-DEMAND-16k/"
+  # Keys updated to match train_xvector.py expectations (train_filelist, val_filelist)
+  train_filelist: "filelists/train.csv"
+  # Using 'test.csv' for validation to match the structure in your train.yaml
+  val_filelist: "filelists/test.csv"
+  batch_size: 2
+  num_workers: 4
+  sample_rate: 16000
+  # Optional: Define a segment length (in samples) if you don't want full-length audio
+  # segment_length: 16000 
+
+trainer:
+  max_epochs: 100
+  gpus: 1
+  precision: 16
+  accumulate_grad_batches: 4
+  gradient_clip_val: 5.0
+  val_check_interval: 1.0
+
+# Directory to store extracted latent vectors for Stage 2
+latents_dir: "stored_latents"
+early_stopping_patience: 15
