@@ -6,7 +6,8 @@ seed: 42
 checkpoint_loading:
   load_cleanunet: true
   # Update this path to your actual .ckpt or .pth file
-  cleanunet_checkpoint: "/path/to/your/pretrained_cleanunet.ckpt"
+  cleanunet_checkpoint: "/home/fred/Projetos/AKCIT/github/CleanUNet2-GAN/checkpoints/cleanunet/last.ckpt"
+  cleanspecnet_checkpoint: "/home/fred/Projetos/AKCIT/github/CleanUNet2-GAN/checkpoints/cleanspecnet/last.ckpt"
   
 model:
   channels_input: 1
@@ -34,7 +35,7 @@ data:
   train_filelist: "filelists/train.csv"
   # Using 'test.csv' for validation to match the structure in your train.yaml
   val_filelist: "filelists/test.csv"
-  batch_size: 2
+  batch_size: 4
   num_workers: 4
   sample_rate: 16000
   # Optional: Define a segment length (in samples) if you don't want full-length audio
@@ -51,3 +52,9 @@ trainer:
 # Directory to store extracted latent vectors for Stage 2
 latents_dir: "stored_latents"
 early_stopping_patience: 15
+
+
+wandb:
+  project: "cleanunet-xvector"
+  log_model: true                # Salva checkpoints no cloud do WandB
+  offline: false                 # Mude para true se não tiver internet

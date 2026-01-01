@@ -7,7 +7,7 @@ import argparse
 import yaml
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, LearningRateMonitor
-from pytorch_lightning.loggers import TensorBoardLogger
+from pytorch_lightning.loggers import WandbLogger, TensorBoardLogger
 from lightning_modules.cleanunet_xvector_module import CleanUNet2XVectorModule
 from lightning_modules.data_module import SpeechEnhancementDataModule
 import torch
@@ -51,8 +51,9 @@ def train_stage1(config):
     # Callbacks
     checkpoint_callback = ModelCheckpoint(
         dirpath=f"logs/{config['experiment_name']}/checkpoints",
-        filename='epoch={epoch:03d}-pesq={val/pesq:.3f}',
-        monitor='val/pesq',
+        # Atualiza o nome do arquivo para incluir o score ponderado
+        filename='epoch={epoch:03d}-score={val/weighted_score:.3f}', 
+        monitor='val/weighted_score',  # MUDANÇA AQUI: Monitora a métrica combinada
         mode='max',
         save_top_k=3,
         save_last=True,
@@ -60,7 +61,7 @@ def train_stage1(config):
     )
     
     early_stop_callback = EarlyStopping(
-        monitor='val/pesq',
+        monitor='val/weighted_score',  # MUDANÇA AQUI: Para se o score não melhorar
         patience=config.get('early_stopping_patience', 15),
         mode='max',
         verbose=True
@@ -69,10 +70,24 @@ def train_stage1(config):
     lr_monitor = LearningRateMonitor(logging_interval='epoch')
     
     # Logger
+    '''
     logger = TensorBoardLogger(
         save_dir='logs',
         name=config['experiment_name'],
         version=config.get('version', None)
+    )
+    '''
+
+    wandb_config = config.get('wandb', {})
+
+    logger = WandbLogger(
+        project=wandb_config.get('project', 'cleanunet-default'),
+        entity=wandb_config.get('entity', None),
+        name=f"{config['experiment_name']}_stage1", # Add stage suffix
+        version=config.get('version', None),
+        log_model=wandb_config.get('log_model', False),
+        offline=wandb_config.get('offline', False),
+        config=config
     )
     
     # Trainer
