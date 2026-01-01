@@ -4,26 +4,28 @@ torchaudio>=2.1.0
 pytorch-lightning>=2.2.0
 
 # --- Audio Processing ---
+speechbrain>=1.0.0
 librosa>=0.10.1
 soundfile>=0.12.1
-tqdm>=4.65.0
+tqdm>=4.66.0
 
-# --- Metrics (PESQ/STOI) ---
+# --- Metrics ---
 pesq>=0.0.4
 pystoi>=0.3.3
-torchmetrics[audio]
+torchmetrics[audio]>=1.0.0
 
 # --- Numeric / Utils ---
-numpy>=1.23.0
-scipy>=1.10.0
-PyYAML>=6.0
+numpy>=1.23.5
+scipy>=1.10.1
+PyYAML>=6.0.1
 json5>=0.9.14
 
 # --- Logging & Experimentation ---
 tensorboard>=2.14.0
-wandb
+wandb>=0.16.0
+huggingface_hub>=0.20.0
 
 # --- Optional but Recommended ---
-matplotlib>=3.6.0
+matplotlib>=3.7.0
 einops>=0.7.0
-
+pandas>=2.0.0

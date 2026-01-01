@@ -8,9 +8,28 @@ import torch.nn as nn
 import os
 import huggingface_hub
 
-# --- Compatibility Patch for huggingface_hub >= 0.27.0 and SpeechBrain ---
-# 1. Map 'use_auth_token' to 'token' (fixing the previous TypeError)
-# 2. Handle missing 'custom.py' for standard models (fixing the 404 RemoteEntryNotFoundError)
+# ------------------------------------------------------------------------------
+# FIX 1: Ruamel.yaml >= 0.18 Compatibility Patch
+# Error: AttributeError: 'Loader' object has no attribute 'max_depth'
+# ------------------------------------------------------------------------------
+try:
+    import ruamel.yaml
+    # Versões antigas do hyperpyyaml definem um Loader sem 'max_depth'.
+    # Versões novas do ruamel.yaml exigem esse atributo.
+    # Injetamos como atributo de classe para resolver o erro de herança.
+    if hasattr(ruamel.yaml, 'Loader') and not hasattr(ruamel.yaml.Loader, 'max_depth'):
+        ruamel.yaml.Loader.max_depth = None
+    if hasattr(ruamel.yaml, 'SafeLoader') and not hasattr(ruamel.yaml.SafeLoader, 'max_depth'):
+        ruamel.yaml.SafeLoader.max_depth = None
+except ImportError:
+    pass
+# ------------------------------------------------------------------------------
+
+# ------------------------------------------------------------------------------
+# FIX 2: Compatibility Patch for huggingface_hub >= 0.27.0 and SpeechBrain
+# 1. Map 'use_auth_token' to 'token' (fixing TypeError)
+# 2. Handle missing 'custom.py' for standard models (fixing 404 Not Found)
+# ------------------------------------------------------------------------------
 
 _original_hf_download = huggingface_hub.hf_hub_download
 
