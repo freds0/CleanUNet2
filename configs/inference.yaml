@@ -13,7 +13,7 @@ inference:
 
   # Path to the checkpoint to load for inference.
   # Use an absolute path or path relative to your project root.
-  checkpoint_path: "logs/checkpoints/last.ckpt"
+  checkpoint_path: "checkpoints_cleanunet_b200/best-model-epoch=9359.ckpt"
 
   # Force CPU usage even if CUDA is available. Set to true or false.
   force_cpu: false
@@ -25,30 +25,43 @@ inference:
   # Overwrite existing files in output_dir if True.
   overwrite: false
 
+  batch_size: 16   
+
+  use_amp: true # Mixed Precision
+
   # Number of worker processes used to load/process audio during inference.
   # 0 = single-threaded; >0 may speed up I/O for large datasets.
   num_workers: 0
 
-# Model hyperparameters required to instantiate the LightningModule.
-# These must match how the model was created/trained (sample rate, architecture flags, etc.).
+# ----------------------
+# Model & optimizer hyperparameters
+# ----------------------
 model:
-  # Learning rate value is not used for inference but kept for consistent object creation.
-  lr: 0.0001
-
-  # Expected sample rate for waveform inputs (resampling will be applied if needed).
+  # Learning rate used by the optimizer (AdamW in the training script)
+  lr: 1e-4
+  # Sample rate of audio data
   sample_rate: 16000
 
   # Select the conditioning method here:
   # Options: "addition", "concatenation", "film"
-  conditioning_type: "addition"
+  conditioning_type: "film"
 
-  # Loss configuration (only needed if LightningModule expects it on construction).
+    
+  cleanunet_checkpoint: "checkpoints/cleanunet/last.ckpt"
+  cleanspecnet_checkpoint: "checkpoints/cleanspecnet/last.ckpt"
+
+  # Controle de Congelamento (True = Treinar, False = Congelar)
+  train_cleanunet: true        # Mantém CleanUNet congelado
+  train_cleanspecnet: true     # Mantém CleanSpecNet congelado
+
+  # Loss configuration grouped for clarity
   loss_config:
-    ell_p: 1
-    ell_p_lambda: 1.0
-    stft_lambda: 1.0
-    sc_lambda: 0.5
-    mag_lambda: 0.5
+    ell_p: 1                 # 1 -> L1, 2 -> L2
+    ell_p_lambda: 1.0        # weight of the waveform reconstruction loss
+    stft_lambda: 1.0         # weight for STFT-based losses inside CleanUNet2Loss
+    sc_lambda: 0.5           # weight for spectral convergence inside MR-STFT
+    mag_lambda: 0.5          # weight for magnitude (log-magnitude) inside MR-STFT
+    # Multi-resolution STFT parameters (must be same length lists)
     stft_config:
       fft_sizes: [512, 1024, 2048]
       hop_sizes: [50, 120, 240]
