@@ -1,251 +1,292 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 """
-Optimized Inference Script for CleanUNet2.
-Features:
-- Batch processing (major speedup)
-- Multi-worker data loading
-- Dynamic padding
-- Mixed Precision (AMP) support
-- Torch Compile support (optional)
+CleanUNet2 – Inference Script (Config-aware Version)
+----------------------------------------------------
+Loads inference settings from a YAML file containing:
+
+  inference:
+  model:
+  audio:
+  output:
+  runtime:
+
+This version is fully compatible with CleanUNetLightningModule,
+which requires: forward(waveform, spectrogram).
 """
 
 import os
-import glob
-import yaml
+import json
+from pathlib import Path
+from glob import glob
 import argparse
-import traceback
-from argparse import Namespace
-from typing import List
+import yaml
 
 import torch
-import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader
 import torchaudio
-import torchaudio.transforms as T
 from tqdm import tqdm
+from argparse import Namespace
 
-# Import your LightningModule
-from lightning_modules.cleanunet_module import CleanUNetLightningModule
+# Lightning Module Wrapper
+try:
+    from lightning_modules.cleanunet_module import CleanUNetLightningModule
+except:
+    from cleanunet.cleanunet2 import CleanUNet2 as CleanUNetLightningModule
 
-class InferenceDataset(Dataset):
-    """
-    Efficient Dataset to load and pre-process audio files in parallel (CPU).
-    """
-    def __init__(self, file_paths: List[str], target_sr: int = 16000):
-        self.file_paths = file_paths
-        self.target_sr = target_sr
 
-    def __len__(self):
-        return len(self.file_paths)
+# -------------------------------------------------------
+# Utility functions
+# -------------------------------------------------------
 
-    def __getitem__(self, idx):
-        path = self.file_paths[idx]
-        try:
-            # 1. Load audio
-            waveform, sr = torchaudio.load(path)
-            
-            # 2. Mix to Mono if necessary
-            if waveform.shape[0] > 1:
-                waveform = torch.mean(waveform, dim=0, keepdim=True)
+def load_checkpoint(path, device):
+    if not os.path.exists(path):
+        raise FileNotFoundError(path)
+    ckpt = torch.load(path, map_location=device)
+    return ckpt
 
-            # 3. Resample if sampling rate differs from target
-            if sr != self.target_sr:
-                resampler = T.Resample(sr, self.target_sr)
-                waveform = resampler(waveform)
-            
-            # Return: waveform tensor, filename string, original sample rate (int), original length (int)
-            return waveform, os.path.basename(path), sr, waveform.shape[-1]
-        except Exception as e:
-            print(f"[ERROR] Failed to load {path}: {e}")
-            return None
 
-def inference_collate_fn(batch):
-    """
-    Collates a list of audio tensors with different lengths by padding dynamically.
-    """
-    # Filter out failed loads
-    batch = [b for b in batch if b is not None]
-    if not batch:
-        return None
+def mono_and_resample(wav, orig_sr, target_sr, device):
+    """Convert stereo to mono and resample if needed."""
+    if wav.shape[0] > 1:
+        wav = wav.mean(dim=0, keepdim=True)
+    if orig_sr != target_sr:
+        wav = torchaudio.transforms.Resample(orig_sr, target_sr).to(device)(wav)
+    return wav
 
-    waveforms, filenames, original_srs, original_lens = zip(*batch)
 
-    # Find max length in current batch
-    max_len = max([w.shape[-1] for w in waveforms])
+def normalize_audio(x):
+    """Peak-normalize audio."""
+    peak = x.abs().max()
+    if peak > 1e-9:
+        return x / peak
+    return x
 
-    # Pad all waveforms to match the max length
-    padded_wavs = []
-    for w in waveforms:
-        pad_amount = max_len - w.shape[-1]
-        if pad_amount > 0:
-            # Pad at the end (last dimension)
-            w = F.pad(w, (0, pad_amount))
-        padded_wavs.append(w)
 
-    # Stack into a single batch tensor (Batch, Channels, Time)
-    batch_tensor = torch.stack(padded_wavs)
+def undo_normalize(x, peak):
+    """Invert peak normalization."""
+    return x * peak
 
-    return batch_tensor, filenames, original_srs, original_lens
 
-def run_inference(config: dict):
-    # ---------------------------------------------------
-    # 1. Configuration Setup
-    # ---------------------------------------------------
-    inf_cfg = config.get('inference_params', config.get('inference', {})) # Fallback support
-    model_hparams = config.get('model_hparams', config.get('model', {}))
-    audio_cfg = config.get('audio_params', config.get('audio', {}))
+def sliding_windows(audio, segment_size, hop_size):
+    """Yield sliding windows [1, segment_size]."""
+    T = audio.shape[-1]
 
-    input_dir = inf_cfg.get('input_dir')
-    output_dir = inf_cfg.get('output_dir', 'denoised_results')
-    checkpoint_path = inf_cfg.get('checkpoint_path')
-    
-    # Performance parameters (Add these to your YAML or use defaults)
-    batch_size = inf_cfg.get('batch_size', 16) # Try 8, 16, 32 depending on VRAM
-    num_workers = inf_cfg.get('num_workers', 4)
-    use_amp = inf_cfg.get('use_amp', True)     # Automatic Mixed Precision
-    
-    use_cuda = torch.cuda.is_available() and not inf_cfg.get('cpu', False)
-    device = torch.device('cuda' if use_cuda else 'cpu')
-    
-    print(f"[INFO] Running on: {device} | Batch Size: {batch_size} | AMP: {use_amp}")
-
-    # ---------------------------------------------------
-    # 2. Load Model
-    # ---------------------------------------------------
-    try:
-        print(f"[INFO] Loading model from checkpoint: {checkpoint_path}")
-        model = CleanUNetLightningModule(Namespace(**model_hparams))
-        
-        # Load weights directly to target device to save CPU RAM
-        checkpoint = torch.load(checkpoint_path, map_location=device)
-        state_dict = checkpoint.get('state_dict', checkpoint)
-        model.load_state_dict(state_dict, strict=False)
-        
-        model.to(device)
-        model.eval()
-        
-        # Optimization: Torch Compile (PyTorch 2.0+)
-        # Note: 'reduce-overhead' is good for small batches, 'max-autotune' for speed
-        if hasattr(torch, 'compile') and use_cuda:
-            try:
-                print("[INFO] Compiling model with torch.compile...")
-                model = torch.compile(model) 
-            except Exception as e:
-                print(f"[WARNING] torch.compile failed: {e}. Running eager mode.")
-
-    except Exception as e:
-        print(f"[ERROR] Failed to load model: {e}")
-        traceback.print_exc()
+    if T <= segment_size:
+        seg = torch.zeros((1, segment_size), device=audio.device)
+        seg[0, :T] = audio
+        yield 0, T, seg
         return
 
-    # ---------------------------------------------------
-    # 3. Data Preparation
-    # ---------------------------------------------------
-    os.makedirs(output_dir, exist_ok=True)
-    search_path = os.path.join(input_dir, '*.wav')
-    audio_files = glob.glob(search_path)
+    start = 0
+    while start < T:
+        end = start + segment_size
+        if end <= T:
+            yield start, end, audio[:, start:end]
+        else:
+            seg = torch.zeros((1, segment_size), device=audio.device)
+            L = T - start
+            seg[0, :L] = audio[:, start:start + L]
+            yield start, T, seg
+            break
+        start += hop_size
 
-    if not audio_files:
-        print(f"[WARNING] No files found at {search_path}")
-        return
 
-    print(f"[INFO] Found {len(audio_files)} files to process.")
+def overlap_add(out_buf, seg_out, start, end, window):
+    seg_len = end - start
+    out_buf[:, start:end] += seg_out[:, :seg_len] * window[:seg_len].unsqueeze(0)
+    return out_buf
 
-    target_sr = audio_cfg.get('target_sample_rate', 16000)
-    dataset = InferenceDataset(audio_files, target_sr=target_sr)
-    
-    dataloader = DataLoader(
-        dataset, 
-        batch_size=batch_size, 
-        shuffle=False, 
-        num_workers=num_workers,
-        collate_fn=inference_collate_fn,
-        pin_memory=use_cuda # Faster transfer to GPU
+
+# -------------------------------------------------------
+# Main Inference Logic
+# -------------------------------------------------------
+
+def run_inference(cfg):
+    inf = cfg["inference"]
+    model_cfg = cfg["model"]
+    audio_cfg = cfg["audio"]
+    output_cfg = cfg["output"]
+    runtime_cfg = cfg["runtime"]
+
+    verbose = runtime_cfg.get("verbose", True)
+
+    # -----------------------------
+    # Device setup
+    # -----------------------------
+    device = torch.device(
+        "cpu" if inf.get("force_cpu", False) else
+        ("cuda" if torch.cuda.is_available() else "cpu")
     )
+    if verbose:
+        print(f"[INFO] Using device: {device}")
 
-    # ---------------------------------------------------
-    # 4. Inference Loop
-    # ---------------------------------------------------
-    # STFT parameters must match training configuration
+    # -----------------------------
+    # Instantiate model
+    # -----------------------------
+    if verbose:
+        print("[INFO] Instantiating CleanUNetLightningModule...")
+
+    model = CleanUNetLightningModule(Namespace(**model_cfg))
+    model.to(device)
+    model.eval()
+
+    # -----------------------------
+    # Load checkpoint
+    # -----------------------------
+    ckpt_path = inf["checkpoint_path"]
+    if verbose:
+        print(f"[INFO] Loading checkpoint: {ckpt_path}")
+
+    ckpt = load_checkpoint(ckpt_path, device)
+    state_dict = ckpt["state_dict"] if "state_dict" in ckpt else ckpt
+    model.load_state_dict(state_dict, strict=False)
+
+    # -----------------------------
+    # Collect files
+    # -----------------------------
+    input_dir = inf["input_dir"]
+    pattern = inf.get("input_pattern", "*.wav")
+
+    files = sorted(glob(os.path.join(input_dir, pattern)))
+    if len(files) == 0:
+        print("[WARN] No input WAV files found.")
+        return
+
+    out_dir = inf.get("output_dir", "denoised_results")
+    os.makedirs(out_dir, exist_ok=True)
+
+    if verbose:
+        print(f"[INFO] Found {len(files)} files.")
+
+    # -----------------------------
+    # Audio params
+    # -----------------------------
+    target_sr = audio_cfg["target_sample_rate"]
+    normalize_flag = audio_cfg.get("normalize", True)
+
+    segment_size = 16384
+    hop_size = segment_size // 2
+
+    # STFT params (matches training)
     n_fft = 1024
     hop_length = 256
     win_length = 1024
-    window = torch.hann_window(win_length).to(device)
+    stft_window = torch.hann_window(n_fft).to(device)
 
-    # AMP Context
-    amp_context = torch.autocast(device_type="cuda") if use_amp and use_cuda else torch.no_grad()
+    window_ola = torch.hann_window(segment_size).to(device)
 
-    print("[INFO] Starting inference loop...")
-    with torch.no_grad():
-        for batch in tqdm(dataloader, desc="Denoising"):
-            if batch is None: continue
-            
-            # Unpack batch
-            waveforms, filenames, original_srs, original_lens = batch
-            waveforms = waveforms.to(device, non_blocking=True) # (B, 1, T_padded)
+    # Metrics report
+    save_metrics = runtime_cfg.get("save_metrics_report", False)
+    metrics_output = {}
 
-            with amp_context:
-                # Generate Spectrogram on GPU
-                spec_batch = torch.stft(
-                    waveforms.squeeze(1),
+    # AMP context
+    use_amp = inf.get("use_amp", True)
+    amp_dtype = torch.bfloat16 if device.type == "cpu" else torch.float16
+
+    # -----------------------------
+    # PROCESS FILES
+    # -----------------------------
+    for wav_path in tqdm(files, desc="Inference"):
+        try:
+            wav, orig_sr = torchaudio.load(wav_path)
+            wav = wav.to(device)
+
+            wav = mono_and_resample(wav, orig_sr, target_sr, device)
+            raw_peak = wav.abs().max()
+
+            if normalize_flag:
+                wav = normalize_audio(wav)
+
+            T = wav.shape[-1]
+            out_buf = torch.zeros((1, T), device=device)
+            weight_buf = torch.zeros((1, T), device=device)
+
+            for start, end, seg in sliding_windows(wav, segment_size, hop_size):
+
+                # Compute STFT magnitude spectrogram
+                spec = torch.stft(
+                    seg.squeeze(0),
                     n_fft=n_fft,
                     hop_length=hop_length,
                     win_length=win_length,
-                    window=window,
-                    center=True,
+                    window=stft_window,
                     return_complex=True
                 ).abs()
+                spec = spec.unsqueeze(0)  # [1, F, frames]
 
-                # Forward Pass
-                output = model(waveforms, spec_batch)
-                
-                # Handle return type
-                if isinstance(output, (tuple, list)):
-                    enhanced_batch = output[0]
-                else:
-                    enhanced_batch = output
+                wav_in = seg.unsqueeze(0)  # [1,1,T]
 
-            # Post-processing and Saving
-            # Move entire batch to CPU to unblock GPU
-            enhanced_batch = enhanced_batch.float().cpu()
+                # Mixed precision inference
+                with torch.no_grad():
+                    with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
+                        enhanced, _ = model(wav_in, spec)
 
-            for i, filename in enumerate(filenames):
-                # Crop padding to restore original length
-                length = original_lens[i]
-                audio = enhanced_batch[i, :, :length] # (1, Length)
+                if enhanced.dim() == 2:
+                    enhanced = enhanced.unsqueeze(1)
 
-                # Get original sample rate
-                orig_sr = original_srs[i] # removed .item() as it is int from collate
-                
-                # Resample back if needed
-                if orig_sr != target_sr:
-                     resampler_back = T.Resample(target_sr, orig_sr)
-                     audio = resampler_back(audio)
+                enhanced = enhanced.squeeze(0)  # [1,T]
 
-                # Save to disk
-                save_path = os.path.join(output_dir, filename)
-                torchaudio.save(save_path, audio, orig_sr)
+                seg_len = end - start
+                w = window_ola[:seg_len]
+                out_buf = overlap_add(out_buf, enhanced[:, :seg_len], start, end, w)
+                weight_buf[:, start:end] += w.unsqueeze(0)
 
-    print(f"[INFO] Done! Results saved to '{output_dir}'")
+            mask = weight_buf > 1e-8
+            out_buf[mask] /= weight_buf[mask]
+
+            enhanced = out_buf[:, :T]
+
+            if normalize_flag and output_cfg.get("undo_normalize", True):
+                enhanced = undo_normalize(enhanced, raw_peak)
+
+            enhanced = enhanced.squeeze(0).cpu()
+
+            if orig_sr != target_sr:
+                enhanced = torchaudio.transforms.Resample(target_sr, orig_sr)(enhanced.unsqueeze(0)).squeeze(0)
+
+            # Save file
+            out_path = os.path.join(out_dir, Path(wav_path).stem + "." + output_cfg.get("format", "wav"))
+
+            if not inf.get("overwrite", False) and os.path.exists(out_path):
+                print(f"[WARN] File exists, skipping: {out_path}")
+                continue
+
+            torchaudio.save(out_path, enhanced.unsqueeze(0), orig_sr)
+
+            # Save metrics?
+            metrics_output[Path(wav_path).name] = {
+                "length": int(T),
+                "peak_before": float(raw_peak),
+                "peak_after": float(enhanced.abs().max()),
+            }
+
+        except Exception as e:
+            print(f"[ERROR] Failed processing {wav_path}: {e}")
+
+    # Metrics JSON
+    if save_metrics:
+        json_path = runtime_cfg.get("metrics_report_path", "inference_metrics.json")
+        with open(json_path, "w") as f:
+            json.dump(metrics_output, f, indent=2)
+        print(f"[INFO] Metrics report saved to: {json_path}")
+
+    print(f"[INFO] Inference complete. Output stored in: {out_dir}")
+
+
+# -------------------------------------------------------
+# CLI
+# -------------------------------------------------------
+
+def parse_args():
+    p = argparse.ArgumentParser(description="CleanUNet2 inference script")
+    p.add_argument("--config", required=True, help="YAML configuration path")
+    return p.parse_args()
+
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, required=True, help="Path to inference config YAML")
-    args = parser.parse_args()
+    args = parse_args()
 
-    if not os.path.exists(args.config):
-        print(f"[ERROR] Config file not found: {args.config}")
-        exit(1)
+    with open(args.config, "r") as f:
+        cfg = yaml.safe_load(f)
 
-    with open(args.config, 'r') as f:
-        config = yaml.safe_load(f)
-
-    # Enable cuDNN benchmark for optimized kernel selection
-    if torch.cuda.is_available():
-        torch.backends.cudnn.benchmark = True
-        
-        # Set higher precision for matrix multiplication on Ampere+ GPUs (RTX 30xx, 40xx, A100)
-        if hasattr(torch, 'set_float32_matmul_precision'):
-            torch.set_float32_matmul_precision('medium')
-
-    run_inference(config)
+    torch.backends.cudnn.benchmark = True
+    run_inference(cfg)
