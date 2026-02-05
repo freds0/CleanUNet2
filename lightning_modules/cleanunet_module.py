@@ -157,7 +157,13 @@ class CleanUNetLightningModule(pl.LightningModule):
         self.weight_waveform = float(getattr(self.hparams, "weight_waveform", 10.0))
         self.weight_spec = float(getattr(self.hparams, "weight_spec", 1.0))
         self.weight_phase = float(getattr(self.hparams, "weight_phase", 1.0))
-        # self.weight_consistency = 1.0 
+        # self.weight_consistency = 1.0
+
+        # ------------------------------------------------------------------
+        # 6. Audio Samples for Logging (6 samples: noisy, clean, denoised)
+        # ------------------------------------------------------------------
+        self.val_audio_samples = []
+        self.max_audio_samples = 6 
 
     # -------------------------
     # Helpers
@@ -272,33 +278,86 @@ class CleanUNetLightningModule(pl.LightningModule):
         # We ensure values are on the correct device for logging
         weighted_score = (val_stoi + (val_pesq / 4.5) + (val_sisdr / 30.0)) / 3.0
 
-        # --- 4. Logging ---
+        # --- 4. Collect Audio Samples for Logging ---
+        if len(self.val_audio_samples) < self.max_audio_samples:
+            # Collect first sample from batch
+            self.val_audio_samples.append({
+                'noisy': noisy[0].detach().cpu(),
+                'clean': clean[0].detach().cpu(),
+                'denoised': enhanced[0].detach().cpu()
+            })
+
+        # --- 5. Logging ---
         # Log 'val_loss' explicitly for ModelCheckpoint
         self.log("val_loss", total_loss, prog_bar=False, on_epoch=True, sync_dist=True)
         self.log("val/total_loss", total_loss, prog_bar=True, on_epoch=True, sync_dist=True)
-        
+
         # Log Metrics (on_epoch=True ensures accumulation and averaging)
         self.log("val/pesq", val_pesq, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         self.log("val/stoi", val_stoi, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         self.log("val/si_sdr", val_sisdr, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         self.log("val/weighted_score", weighted_score, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
 
-        # --- 5. Log Audio Examples (First batch only) ---
-        if batch_idx == 0 and hasattr(self.logger, "experiment"):
-            tb = self.logger.experiment
-            num_examples = min(4, batch_idx) if batch_idx > 4 else 4
-            num_examples = min(num_examples, clean.shape[0])
-            
-            sample_rate = int(getattr(self.hparams, "sample_rate", 16000))
-            for i in range(num_examples):
-                try:
-                    tb.add_audio(f"val/sample_{i}/noisy", noisy[i].squeeze().cpu().unsqueeze(0), global_step=self.global_step, sample_rate=sample_rate)
-                    tb.add_audio(f"val/sample_{i}/enhanced", enhanced[i].squeeze().cpu().unsqueeze(0), global_step=self.global_step, sample_rate=sample_rate)
-                    tb.add_audio(f"val/sample_{i}/clean", clean[i].squeeze().cpu().unsqueeze(0), global_step=self.global_step, sample_rate=sample_rate)
-                except Exception as e:
-                    print(f"[WARNING] Failed to add audio to TensorBoard for index {i}: {e}")
-
         return total_loss
+
+    def on_validation_epoch_end(self):
+        """
+        Called at the end of validation epoch.
+        Logs collected audio samples to TensorBoard and WandB.
+        """
+        if len(self.val_audio_samples) > 0:
+            sample_rate = int(getattr(self.hparams, "sample_rate", 16000))
+
+            for idx, sample in enumerate(self.val_audio_samples):
+                # Log to TensorBoard
+                if self.logger and hasattr(self.logger, 'experiment'):
+                    try:
+                        # TensorBoard logger
+                        if hasattr(self.logger.experiment, 'add_audio'):
+                            self.logger.experiment.add_audio(
+                                f'audio/sample_{idx}_noisy',
+                                sample['noisy'],
+                                self.current_epoch,
+                                sample_rate=sample_rate
+                            )
+                            self.logger.experiment.add_audio(
+                                f'audio/sample_{idx}_clean',
+                                sample['clean'],
+                                self.current_epoch,
+                                sample_rate=sample_rate
+                            )
+                            self.logger.experiment.add_audio(
+                                f'audio/sample_{idx}_denoised',
+                                sample['denoised'],
+                                self.current_epoch,
+                                sample_rate=sample_rate
+                            )
+
+                        # WandB logger
+                        try:
+                            import wandb
+                            if isinstance(self.logger.experiment, wandb.sdk.wandb_run.Run):
+                                self.logger.experiment.log({
+                                    f'audio/sample_{idx}_noisy': wandb.Audio(
+                                        sample['noisy'].numpy(), sample_rate=sample_rate, caption=f'Noisy {idx}'
+                                    ),
+                                    f'audio/sample_{idx}_clean': wandb.Audio(
+                                        sample['clean'].numpy(), sample_rate=sample_rate, caption=f'Clean {idx}'
+                                    ),
+                                    f'audio/sample_{idx}_denoised': wandb.Audio(
+                                        sample['denoised'].numpy(), sample_rate=sample_rate, caption=f'Denoised {idx}'
+                                    )
+                                })
+                        except (ImportError, AttributeError):
+                            pass  # WandB not available
+
+                    except Exception as e:
+                        print(f"[WARNING] Could not log audio sample {idx}: {e}")
+
+            print(f"[INFO] Logged {len(self.val_audio_samples)} audio samples to TensorBoard/WandB")
+
+            # Clear samples for next epoch
+            self.val_audio_samples = []
 
     # -------------------------
     # Optimizers

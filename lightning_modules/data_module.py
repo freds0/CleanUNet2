@@ -20,6 +20,8 @@ class CleanUNetDataModule(pl.LightningDataModule):
         batch_size (int): Batch size for all dataloaders.
         num_workers (int): Number of worker processes for dataloading.
         persistent_workers (bool): Keep workers alive between epochs (faster).
+        segment_size (int): Segment size for audio cropping.
+        augmentation (dict): Augmentation configuration (optional).
     """
     def __init__(
         self,
@@ -29,7 +31,8 @@ class CleanUNetDataModule(pl.LightningDataModule):
         batch_size: int = 8,
         num_workers: int = 4,
         persistent_workers: bool = False,
-        segment_size: int = None
+        segment_size: int = None,
+        augmentation: dict = None
     ):
         super().__init__()
 
@@ -40,6 +43,7 @@ class CleanUNetDataModule(pl.LightningDataModule):
         self.num_workers = num_workers
         self.persistent_workers = persistent_workers
         self.segment_size = segment_size
+        self.augmentation = augmentation
 
         self.train_dataset = None
         self.val_dataset = None
@@ -57,12 +61,18 @@ class CleanUNetDataModule(pl.LightningDataModule):
         if self.segment_size is not None:
             dataset_kwargs["segment_size"] = self.segment_size
 
+        # Add augmentation to training dataset only (not validation)
+        train_kwargs = dataset_kwargs.copy()
+        if self.augmentation is not None:
+            train_kwargs["augmentation"] = self.augmentation
+
         self.train_dataset = MelDataset(
             data_dir=self.data_dir,
             data_files=self.train_list_path,
-            **dataset_kwargs
+            **train_kwargs
         )
 
+        # Validation dataset without augmentation
         self.val_dataset = MelDataset(
             data_dir=self.data_dir,
             data_files=self.val_list_path,

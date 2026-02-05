@@ -1,0 +1,199 @@
+# configs/train_ljspeech_augmentation.yaml
+# Configuração para treinamento com dataset LJSpeech usando data augmentation
+# LJSpeech contém ~13100 arquivos de áudio limpo de uma única falante
+
+# ----------------------
+# Trainer configuration
+# ----------------------
+trainer:
+  accelerator: "auto"
+  devices: 1
+  max_epochs: 10000
+  precision: "16-mixed"
+  log_every_n_steps: 100
+  check_val_every_n_epoch: 10
+  gradient_clip_val: 1.0
+  deterministic: false
+  benchmark: true
+
+# ----------------------
+# Global / runtime
+# ----------------------
+seed: 1234
+checkpoint_dir: "logs/ljspeech_checkpoints"
+logging_dir: "logs"
+
+# ----------------------
+# Model & optimizer hyperparameters
+# ----------------------
+model:
+  lr: 1e-4
+  sample_rate: 22050  # LJSpeech usa 22050 Hz
+  conditioning_type: "film"
+
+  cleanunet_checkpoint: "checkpoints/cleanunet/last.ckpt"
+  cleanspecnet_checkpoint: "checkpoints/cleanspecnet/last.ckpt"
+
+  train_cleanunet: true
+  train_cleanspecnet: true
+
+  loss_config:
+    ell_p: 1
+    ell_p_lambda: 1.0
+    stft_lambda: 1.0
+    sc_lambda: 0.5
+    mag_lambda: 0.5
+    stft_config:
+      fft_sizes: [512, 1024, 2048]
+      hop_sizes: [50, 120, 240]
+      win_lengths: [240, 600, 1200]
+
+# ----------------------
+# Data configuration
+# ----------------------
+data:
+  # Estrutura do LJSpeech:
+  # LJSpeech-1.1/
+  # ├── wavs/
+  # │   ├── LJ001-0001.wav
+  # │   ├── LJ001-0002.wav
+  # │   └── ... (~13100 arquivos)
+  # └── metadata.csv
+
+  # OPÇÃO 1: Usar diretório direto (RECOMENDADO)
+  # =========================================
+  # Aponta para a pasta 'wavs' do LJSpeech
+  # O sistema irá encontrar automaticamente todos os arquivos .wav
+
+  data_dir: "/home/fred/Projetos/DATASETS/LJSpeech-1.1/"
+  train_list_path: "wavs"  # Pasta com todos os áudios
+  val_list_path: "wavs"    # Mesma pasta, mas vamos usar split interno
+
+  # OPÇÃO 2: Usar filelists separadas (alternativa)
+  # ================================================
+  # Se você quiser controle manual do split treino/validação,
+  # primeiro crie os arquivos CSV:
+  #
+  # train_list_path: "filelists/ljspeech_train.csv"
+  # val_list_path: "filelists/ljspeech_val.csv"
+  #
+  # Onde ljspeech_train.csv contém linhas como:
+  # wavs/LJ001-0001.wav|wavs/LJ001-0001.wav
+  # wavs/LJ001-0002.wav|wavs/LJ001-0002.wav
+  # ...
+
+  batch_size: 8  # Ajuste conforme sua GPU
+  num_workers: 8
+  persistent_workers: true
+  segment_size: 32768  # ~1.5 segundos a 22050 Hz
+
+  # ----------------------
+  # Augmentation configuration
+  # ----------------------
+  # LJSpeech só tem áudio limpo, então usamos modo "clean_only"
+  # para gerar dados com ruído sinteticamente
+
+  augmentation:
+    enabled: true
+    mode: "clean_only"
+
+    augmentations:
+      # 1. Adiciona ruído de fundo de arquivos WAV
+      # IMPORTANTE: Você precisa fornecer uma pasta com arquivos de ruído
+      # Exemplos de datasets de ruído:
+      #   - DEMAND: https://zenodo.org/record/1227121
+      #   - FSD50K: https://zenodo.org/record/4060432
+      #   - AudioSet: https://research.google.com/audioset/
+      #   - UrbanSound8K: https://urbansounddataset.weebly.com/urbansound8k.html
+      - name: AddBackgroundNoise
+        params:
+          background_paths: "/home/fred/Projetos/DATASETS/ESC-50-master/audio/"  # <<<< AJUSTE ESTE CAMINHO
+          min_snr_in_db: 0.0    # Muito ruidoso
+          max_snr_in_db: 20.0   # Pouco ruidoso
+          p: 0.8                # 80% de chance de aplicar
+
+      # 2. Adiciona ruído colorido sintético
+      # Útil quando você não tem arquivos de ruído real
+      - name: AddColoredNoise
+        params:
+          min_snr_in_db: 5.0
+          max_snr_in_db: 25.0
+          min_f_decay: -2.0  # -2 = pink noise, 0 = white, 2 = brown/red
+          max_f_decay: 2.0
+          p: 0.6
+
+      # 3. Aplica resposta ao impulso (simulação de ambiente)
+      # Opcional: descomente se você tiver arquivos de impulse response
+      # - name: ApplyImpulseResponse
+      #   params:
+      #     ir_paths: "/path/to/impulse/responses"
+      #     p: 0.3
+
+      # 4. Varia o ganho (volume)
+      - name: Gain
+        params:
+          min_gain_in_db: -8.0
+          max_gain_in_db: 8.0
+          p: 0.4
+
+      # 5. Filtros de frequência (opcional)
+      # Simula diferentes condições de gravação
+
+      # Filtro passa-baixa (simula telefone, rádio)
+      - name: LowPassFilter
+        params:
+          min_cutoff_freq: 3000
+          max_cutoff_freq: 8000
+          p: 0.2
+
+      # Filtro passa-alta (remove baixas frequências)
+      - name: HighPassFilter
+        params:
+          min_cutoff_freq: 200
+          max_cutoff_freq: 800
+          p: 0.2
+
+# ----------------------
+# Callbacks
+# ----------------------
+callbacks:
+  best_checkpoint:
+    _target_: "pytorch_lightning.callbacks.ModelCheckpoint"
+    monitor: "val/weighted_score"
+    dirpath: "logs/ljspeech_checkpoints"
+    filename: "ljspeech-best-{epoch:02d}-{val\/weighted_score:.4f}"
+    save_top_k: 1
+    mode: "max"
+
+  periodic_checkpoint:
+    _target_: "pytorch_lightning.callbacks.ModelCheckpoint"
+    dirpath: "logs/ljspeech_checkpoints"
+    filename: "ljspeech-epoch-{epoch:04d}"
+    every_n_epochs: 10
+    save_top_k: 3
+    save_last: true
+    monitor: "val_loss"
+    mode: "min"
+
+# ----------------------
+# Logger
+# ----------------------
+logger:
+  choice: "tensorboard"
+
+  tensorboard:
+    _target_: pytorch_lightning.loggers.TensorBoardLogger
+    save_dir: "logs"
+    name: "ljspeech_denoising"
+    default_hp_metric: false
+
+  # Descomente para usar Weights & Biases
+  # wandb:
+  #   _target_: pytorch_lightning.loggers.WandbLogger
+  #   project: "CleanUNet2_LJSpeech"
+  #   name: "ljspeech_augmentation"
+  #   save_dir: "logs"
+  #   offline: false
+  #   log_model: true
+
+resume_from_checkpoint: "checkpoints_cleanunet2_paper/last.ckpt"

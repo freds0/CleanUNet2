@@ -71,13 +71,101 @@ model:
 # ----------------------
 data:
   data_dir: "/home/fred/Projetos/DATASETS/VoiceBank-DEMAND-16k/"
+
+  # File list configuration - Two options:
+  #
+  # Option 1: CSV file with pairs (clean|noisy)
   train_list_path: "filelists/train.csv"
   val_list_path: "filelists/test.csv"
+  #
+  # Option 2: Directory path (auto-scan for .wav files)
+  # Examples:
+  #   - Single directory: "path/to/audio" (all .wav files treated as clean)
+  #   - Paired directories: "path/to/dataset" with subdirs "clean/" and "noisy/"
+  #
+  # train_list_path: "path/to/train/audio"
+  # val_list_path: "path/to/val/audio"
+
   batch_size: 30
   num_workers: 8
   persistent_workers: true
   # Optional: segment length (samples) used by dataset sampling (if supported). Default: 8192
   segment_size: 24576
+
+  # ----------------------
+  # Augmentation configuration
+  # ----------------------
+  # Two modes are supported:
+  #
+  # MODE 1: "two_folders" - You already have paired clean/noisy data
+  # ---------------------------------------------------------------
+  # When your filelist (train.csv) contains pairs like "clean_path|noisy_path"
+  # The model will train using the existing noisy files.
+  # Augmentation is NOT applied (the data is already noisy).
+  #
+  # MODE 2: "clean_only" - Generate noisy data on-the-fly
+  # -------------------------------------------------------
+  # When you only have clean audio, augmentation will be applied during training
+  # to synthetically add noise from a specified folder.
+  # Your filelist still needs the format "clean_path|noisy_path", but the noisy_path
+  # will be ignored, and noise will be generated from clean audio + noise files.
+  #
+  # EXAMPLE CONFIGURATION:
+  # ----------------------
+
+  # Disable augmentation (use existing noisy files from filelist)
+  augmentation:
+    enabled: false
+    mode: "two_folders"
+
+  # ------- OR -------
+
+  # Enable augmentation (generate noisy data from clean audio)
+  # augmentation:
+  #   enabled: true
+  #   mode: "clean_only"
+  #   augmentations:
+  #     - name: AddBackgroundNoise
+  #       params:
+  #         background_paths: "/path/to/noise/wav/folder"  # Folder with .wav noise files
+  #         min_snr_in_db: 0.0
+  #         max_snr_in_db: 15.0
+  #         p: 0.8  # Probability of applying this augmentation
+  #
+  #     # Optional: Add colored noise (pink, brown, white noise)
+  #     - name: AddColoredNoise
+  #       params:
+  #         min_snr_in_db: 5.0
+  #         max_snr_in_db: 20.0
+  #         min_f_decay: -2.0
+  #         max_f_decay: 2.0
+  #         p: 0.5
+  #
+  #     # Optional: Apply impulse response (room reverb simulation)
+  #     - name: ApplyImpulseResponse
+  #       params:
+  #         ir_paths: "/path/to/impulse/responses"
+  #         p: 0.3
+  #
+  #     # Optional: Random gain adjustment
+  #     - name: Gain
+  #       params:
+  #         min_gain_in_db: -12.0
+  #         max_gain_in_db: 12.0
+  #         p: 0.5
+  #
+  #     # Optional: Frequency filters
+  #     # - name: LowPassFilter
+  #     #   params:
+  #     #     min_cutoff_freq: 2000
+  #     #     max_cutoff_freq: 7500
+  #     #     p: 0.3
+  #     #
+  #     # - name: HighPassFilter
+  #     #   params:
+  #     #     min_cutoff_freq: 200
+  #     #     max_cutoff_freq: 1200
+  #     #     p: 0.3
 
 # ----------------------
 # Callbacks

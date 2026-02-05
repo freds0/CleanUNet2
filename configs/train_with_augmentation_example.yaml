@@ -1,0 +1,179 @@
+# configs/train_with_augmentation_example.yaml
+# Exemplo completo de configuração usando augmentation com diretórios
+
+# ----------------------
+# Trainer configuration
+# ----------------------
+trainer:
+  accelerator: "auto"
+  devices: 1
+  max_epochs: 10000
+  precision: "16-mixed"
+  log_every_n_steps: 100
+  check_val_every_n_epoch: 10
+  gradient_clip_val: 1.0
+  deterministic: false
+  benchmark: true
+
+# ----------------------
+# Global / runtime
+# ----------------------
+seed: 1234
+checkpoint_dir: "logs/checkpoints"
+logging_dir: "logs"
+
+# ----------------------
+# Model & optimizer hyperparameters
+# ----------------------
+model:
+  lr: 1e-4
+  sample_rate: 16000
+  conditioning_type: "film"
+
+  cleanunet_checkpoint: "checkpoints/cleanunet/last.ckpt"
+  cleanspecnet_checkpoint: "checkpoints/cleanspecnet/last.ckpt"
+
+  train_cleanunet: true
+  train_cleanspecnet: true
+
+  loss_config:
+    ell_p: 1
+    ell_p_lambda: 1.0
+    stft_lambda: 1.0
+    sc_lambda: 0.5
+    mag_lambda: 0.5
+    stft_config:
+      fft_sizes: [512, 1024, 2048]
+      hop_sizes: [50, 120, 240]
+      win_lengths: [240, 600, 1200]
+
+# ----------------------
+# Data configuration
+# ----------------------
+data:
+  # EXEMPLO 1: Usando diretórios com áudio limpo e augmentation
+  # Descomente as linhas abaixo e ajuste os caminhos
+
+  data_dir: "/path/to/your/dataset"
+  train_list_path: "clean_train"  # Pasta com áudios limpos
+  val_list_path: "clean_val"      # Pasta com áudios limpos
+
+  # Estrutura esperada:
+  # /path/to/your/dataset/
+  # ├── clean_train/
+  # │   ├── audio1.wav
+  # │   ├── audio2.wav
+  # │   └── ...
+  # └── clean_val/
+  #     └── ...
+
+  batch_size: 30
+  num_workers: 8
+  persistent_workers: true
+  segment_size: 24576
+
+  # Configuração de augmentation
+  augmentation:
+    enabled: true
+    mode: "clean_only"  # Gera ruído a partir de áudio limpo
+
+    augmentations:
+      # Adiciona ruído de fundo de uma pasta
+      - name: AddBackgroundNoise
+        params:
+          background_paths: "/path/to/noise/folder"  # <<<< AJUSTE ESTE CAMINHO
+          min_snr_in_db: 0.0   # SNR mínimo
+          max_snr_in_db: 15.0  # SNR máximo
+          p: 0.8               # 80% de chance de aplicar
+
+      # Adiciona ruído colorido (opcional)
+      - name: AddColoredNoise
+        params:
+          min_snr_in_db: 5.0
+          max_snr_in_db: 20.0
+          min_f_decay: -2.0  # -2 = pink, 0 = white, 2 = brown
+          max_f_decay: 2.0
+          p: 0.5
+
+      # Ajuste de ganho aleatório (opcional)
+      - name: Gain
+        params:
+          min_gain_in_db: -6.0
+          max_gain_in_db: 6.0
+          p: 0.3
+
+
+# ----------------------
+# EXEMPLO 2: Usando diretórios com pares clean/noisy
+# ----------------------
+# Descomente abaixo para usar este modo:
+#
+# data:
+#   data_dir: "/path/to/voicebank"
+#   train_list_path: "train"  # Detecta automaticamente clean/ e noisy/
+#   val_list_path: "test"
+#
+#   # Estrutura esperada:
+#   # /path/to/voicebank/
+#   # ├── train/
+#   # │   ├── clean/
+#   # │   │   ├── p226_001.wav
+#   # │   │   └── ...
+#   # │   └── noisy/
+#   # │       ├── p226_001.wav
+#   # │       └── ...
+#   # └── test/
+#   #     ├── clean/
+#   #     └── noisy/
+#
+#   batch_size: 30
+#   num_workers: 8
+#   persistent_workers: true
+#   segment_size: 24576
+#
+#   augmentation:
+#     enabled: false  # Não precisa, já tem pares
+#     mode: "two_folders"
+
+
+# ----------------------
+# Callbacks
+# ----------------------
+callbacks:
+  best_checkpoint:
+    _target_: "pytorch_lightning.callbacks.ModelCheckpoint"
+    monitor: "val/weighted_score"
+    dirpath: "logs/checkpoints"
+    filename: "best-model-{epoch:02d}-{val\/weighted_score:.4f}"
+    save_top_k: 1
+    mode: "max"
+
+  periodic_checkpoint:
+    _target_: "pytorch_lightning.callbacks.ModelCheckpoint"
+    dirpath: "logs/checkpoints"
+    filename: "epoch-{epoch:04d}"
+    every_n_epochs: 10
+    save_top_k: 3
+    save_last: true
+    monitor: "val_loss"
+    mode: "min"
+
+# ----------------------
+# Logger
+# ----------------------
+logger:
+  choice: "tensorboard"
+
+  tensorboard:
+    _target_: pytorch_lightning.loggers.TensorBoardLogger
+    save_dir: "logs"
+    name: "cleanunet2_augmentation"
+    default_hp_metric: false
+
+  wandb:
+    _target_: pytorch_lightning.loggers.WandbLogger
+    project: "CleanUNet2_Augmentation"
+    name: "cleanunet2_with_noise_aug"
+    save_dir: "logs"
+    offline: false
+    log_model: true
