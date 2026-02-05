@@ -1,0 +1,153 @@
+# configs/train_xvector_vanilla_stage1.yaml
+# Stage-1 Training Configuration: Training with X-Vectors
+# X-Vectors are extracted from clean audio and fused into latent space
+
+# ----------------------
+# Trainer configuration
+# ----------------------
+trainer:
+  accelerator: "auto"
+  devices: 1
+  max_epochs: 10000
+  precision: "16-mixed"
+  log_every_n_steps: 100
+  check_val_every_n_epoch: 10
+  gradient_clip_val: 1.0
+  deterministic: false
+  benchmark: true
+
+# ----------------------
+# Global / runtime
+# ----------------------
+seed: 1234
+checkpoint_dir: "logs/stage1_checkpoints"
+logging_dir: "logs/stage1"
+latents_dir: "stored_latents_stage1"  # Where to save fused latent vectors
+
+# ----------------------
+# Audio configuration
+# ----------------------
+audio:
+  sample_rate: 16000
+
+# ----------------------
+# Model Configuration
+# ----------------------
+model:
+  # X-Vector settings
+  xvector_dim: 512  # SpeechBrain X-Vector dimension
+  conditioning_type: "addition"  # Conditioning method for spec+waveform fusion
+
+  # Optional: Load vanilla CleanUNet2 checkpoint for warm start
+  # This will initialize CleanUNet, CleanSpecNet, etc. with pre-trained weights
+  # Only X-Vector related components will be trained from scratch
+  #vanilla_checkpoint: null  # e.g., "../CleanUNet2-Vanilla/logs/checkpoints/best-model.ckpt"
+  vanilla_checkpoint: "/home/fred/Projetos/AKCIT/INTERSPEECH2026/CleanUNet2-Vanilla/checkpoints_cleanunet2_paper/last.ckpt"
+
+  # CleanUNet parameters
+  cleanunet_params:
+    channels_input: 1
+    channels_output: 1
+    channels_H: 64
+    max_H: 768
+    encoder_n_layers: 8
+    kernel_size: 4
+    stride: 2
+    tsfm_n_layers: 5
+    tsfm_n_head: 8
+    tsfm_d_model: 512
+    tsfm_d_inner: 2048
+
+  # CleanSpecNet parameters
+  cleanspecnet_params:
+    input_channels: 513
+    num_conv_layers: 5
+    kernel_size: 4
+    stride: 1
+    conv_hidden_dim: 64
+    hidden_dim: 512
+    num_attention_layers: 5
+    num_heads: 8
+    dropout: 0.1
+
+# ----------------------
+# Loss Configuration
+# ----------------------
+losses:
+  weight_waveform: 10.0  # Weight for waveform reconstruction loss
+  weight_spec: 1.0       # Weight for spectrogram loss
+  weight_phase: 1.0      # Weight for phase loss
+
+  # STFT loss configuration
+  stft_config:
+    fft_sizes: [512, 1024, 2048]
+    hop_sizes: [128, 256, 512]
+    win_lengths: [512, 1024, 2048]
+
+# ----------------------
+# Optimizer Configuration
+# ----------------------
+optimizer:
+  lr: 1e-4
+  betas: [0.9, 0.999]
+
+# ----------------------
+# Data configuration
+# ----------------------
+data:
+  data_dir: "/home/fred/Projetos/DATASETS/VoiceBank-DEMAND-16k/"
+  train_list_path: "filelists/train.csv"
+  val_list_path: "filelists/test.csv"
+  batch_size: 30
+  num_workers: 8
+  persistent_workers: true
+  segment_size: 24576
+
+# ----------------------
+# Callbacks
+# ----------------------
+callbacks:
+  # Save best checkpoint based on weighted score
+  best_checkpoint:
+    _target_: "pytorch_lightning.callbacks.ModelCheckpoint"
+    monitor: "val/weighted_score"
+    dirpath: "logs/stage1_checkpoints"
+    filename: "stage1-best-{epoch:02d}-{val/weighted_score:.4f}"
+    save_top_k: 1
+    mode: "max"
+
+  # Periodic checkpointing
+  periodic_checkpoint:
+    _target_: "pytorch_lightning.callbacks.ModelCheckpoint"
+    dirpath: "logs/stage1_checkpoints"
+    filename: "stage1-epoch-{epoch:04d}"
+    every_n_epochs: 10
+    save_top_k: 3
+    save_last: true
+    monitor: "val_loss"
+    mode: "min"
+
+# ----------------------
+# Logger
+# ----------------------
+logger:
+  choice: "tensorboard"
+
+  tensorboard:
+    _target_: pytorch_lightning.loggers.TensorBoardLogger
+    save_dir: "logs/stage1"
+    name: "xvector_stage1"
+    default_hp_metric: false
+
+  wandb:
+    _target_: pytorch_lightning.loggers.WandbLogger
+    project: "CleanUNet2_XVector"
+    name: "stage1_with_xvectors"
+    save_dir: "logs/stage1"
+    offline: false
+    log_model: true
+
+# ----------------------
+# Resume / checkpoints
+# ----------------------
+# resume_from_checkpoint: "logs/stage1_checkpoints/last.ckpt"

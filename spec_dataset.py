@@ -146,17 +146,25 @@ def mel_spectrogram(
 # ---------------------------
 def get_dataset_filelist(filelist_path: str) -> List[Tuple[str, str]]:
     """
-    Read a filelist where each line is 'clean_path|noisy_path' and return list of tuples.
+    Read a filelist where each line is 'clean_path|noisy_path' or 'clean_path,noisy_path' and return list of tuples.
+    Supports both pipe (|) and comma (,) separators.
     """
     with open(filelist_path, "r", encoding="utf-8") as ifile:
         lines = [l.strip() for l in ifile.readlines() if l.strip()]
     pairs = []
     for l in lines:
-        parts = l.split("|")
+        # Try pipe separator first, then comma
+        if "|" in l:
+            parts = l.split("|")
+        elif "," in l:
+            parts = l.split(",")
+        else:
+            raise ValueError(f"Invalid line in filelist (expected 'clean|noisy' or 'clean,noisy'): {l}")
+
         if len(parts) >= 2:
             pairs.append((parts[0].strip(), parts[1].strip()))
         else:
-            raise ValueError(f"Invalid line in filelist (expected 'clean|noisy'): {l}")
+            raise ValueError(f"Invalid line in filelist (expected 'clean|noisy' or 'clean,noisy'): {l}")
     return pairs
 
 
@@ -244,8 +252,14 @@ class MelDataset(torch.utils.data.Dataset):
         self.fmax_loss = fmax_loss
         self.noise_addition = noise_addition
 
-        # Placeholder for optional audio augmentation pipeline (user can pass augmentations)
-        # self.audio_augmenter = AudioAugmenter(augmentations) if augmentations else None
+        # Audio augmentation pipeline (on-the-fly augmentation)
+        self.augmentations = augmentations
+        if augmentations:
+            from augmentation import AudioAugmenter
+            self.audio_augmenter = AudioAugmenter(augmentations, device='cpu')
+            print(f"[MelDataset] Audio augmentation enabled with {len(augmentations)} augmentations")
+        else:
+            self.audio_augmenter = None
 
         # Simple caching (reuse last loaded wav for a few iterations)
         self.cached_wav = None
@@ -295,6 +309,12 @@ class MelDataset(torch.utils.data.Dataset):
             clean_audio = self.cached_wav
             noisy_audio = self.cached_wav_input
             self._cache_ref_count -= 1
+
+        # Apply augmentation to clean audio (before cropping) if enabled
+        # This creates synthetic "noisy" audio from clean audio
+        if self.audio_augmenter is not None:
+            # Apply augmentation to create noisy version
+            noisy_audio = self.audio_augmenter.apply(clean_audio, self.sampling_rate)
 
         # Crop or pad to fixed segment length if requested
         if self.split:

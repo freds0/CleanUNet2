@@ -79,63 +79,179 @@ class XVectorExtractor(nn.Module):
     Extracts speaker embeddings that can be used for speech enhancement.
     """
     
-    def __init__(self, device='cuda'):
+    def __init__(self, device='cpu', local_path=None):
         """
         Initialize the X-Vector extractor.
-        
+
         Args:
-            device (str): Device to run the model on ('cuda' or 'cpu')
+            device (str): Device to run the model on ('cpu' recommended for stability)
+            local_path (str): Optional local path to pre-downloaded model directory
         """
         super().__init__()
-        self.device = device
-        
-        # Load pre-trained model from HuggingFace
-        print(f"[XVectorExtractor] Loading pre-trained model from HuggingFace...")
-        
-        # Determine run_opts device string
-        run_opts_device = device
-        if device == 'cuda' and not torch.cuda.is_available():
-            print("[XVectorExtractor] Warning: CUDA requested but not available. Using CPU.")
-            run_opts_device = 'cpu'
 
-        self.classifier = EncoderClassifier.from_hparams(
-            source="speechbrain/spkrec-xvect-voxceleb",
-            savedir="pretrained_models/spkrec-xvect-voxceleb",
-            run_opts={"device": run_opts_device}
-        )
-        
-        # Freeze all parameters (we only use it for inference)
+        # FORCE CPU for X-Vector extractor to avoid device/dtype conflicts
+        # The model is frozen anyway, so CPU performance is acceptable
+        self.device = 'cpu'
+        run_opts_device = 'cpu'
+
+        print("[XVectorExtractor] X-Vector model will run on CPU (avoids device/dtype conflicts)")
+
+        # Try loading from local path first if provided
+        if local_path and os.path.exists(local_path):
+            print(f"[XVectorExtractor] Loading model from local path: {local_path}")
+            try:
+                self.classifier = EncoderClassifier.from_hparams(
+                    source=local_path,
+                    savedir=local_path,
+                    run_opts={"device": run_opts_device}
+                )
+                print("[XVectorExtractor] Model loaded successfully from local path!")
+            except Exception as e:
+                print(f"[XVectorExtractor] Failed to load from local path: {e}")
+                print("[XVectorExtractor] Falling back to HuggingFace download...")
+                local_path = None  # Fall back to HuggingFace
+
+        # Load pre-trained model from HuggingFace if no local path
+        if not local_path:
+            print(f"[XVectorExtractor] Loading pre-trained model from HuggingFace...")
+            print(f"[XVectorExtractor] This requires internet connection for first-time download.")
+
+            try:
+                self.classifier = EncoderClassifier.from_hparams(
+                    source="speechbrain/spkrec-xvect-voxceleb",
+                    savedir="pretrained_models/spkrec-xvect-voxceleb",
+                    run_opts={"device": run_opts_device}
+                )
+                print(f"[XVectorExtractor] Model loaded successfully!")
+                print(f"[XVectorExtractor] Model cached at: pretrained_models/spkrec-xvect-voxceleb")
+            except Exception as e:
+                print("\n" + "=" * 80)
+                print("[ERROR] Failed to download X-Vector model from HuggingFace!")
+                print("=" * 80)
+                print(f"Error: {type(e).__name__}: {str(e)[:200]}\n")
+                print("SOLUTION 1: Download the model manually on a machine with internet")
+                print("-" * 80)
+                print("Run this Python code:")
+                print("")
+                print("  from speechbrain.pretrained import EncoderClassifier")
+                print("  classifier = EncoderClassifier.from_hparams(")
+                print("      source='speechbrain/spkrec-xvect-voxceleb',")
+                print("      savedir='pretrained_models/spkrec-xvect-voxceleb'")
+                print("  )")
+                print("")
+                print("Then copy 'pretrained_models/spkrec-xvect-voxceleb' to this machine.")
+                print("")
+                print("SOLUTION 2: Use pre-downloaded model")
+                print("-" * 80)
+                print("If you already have the model downloaded, add to your config:")
+                print("")
+                print("  model:")
+                print("    xvector_local_path: '/path/to/pretrained_models/spkrec-xvect-voxceleb'")
+                print("")
+                print("SOLUTION 3: Skip Stage-1 (if you have a Stage-1 checkpoint)")
+                print("-" * 80)
+                print("If you already have a Stage-1 checkpoint, go directly to Stage-2:")
+                print("")
+                print("  python train_xvector.py --config configs/train_xvector_vanilla_stage2.yaml --stage stage2")
+                print("")
+                print("=" * 80 + "\n")
+                raise RuntimeError("X-Vector model download failed. See instructions above.") from e
+
+        # Freeze all parameters first (we only use it for inference)
         for param in self.classifier.parameters():
             param.requires_grad = False
-        
+
         # Set to evaluation mode
         self.classifier.eval()
-        print(f"[XVectorExtractor] Model loaded successfully!")
+
+        # CRITICAL: Aggressively move model to CPU and convert to float32
+        # This must be done AFTER loading to override SpeechBrain's device placement
+        print("[XVectorExtractor] Force moving model to CPU...")
+
+        # Move entire model to CPU
+        self.classifier = self.classifier.to('cpu')
+
+        # Force float32 on entire model
+        self.classifier = self.classifier.float()
+
+        # Recursively ensure ALL submodules are on CPU and float32
+        def move_module_to_cpu_float32(module):
+            """Recursively move module to CPU and float32"""
+            module.to('cpu')
+            module.float()
+
+            # Move all parameters
+            for param in module._parameters.values():
+                if param is not None:
+                    param.data = param.data.to('cpu').float()
+                    if param.grad is not None:
+                        param.grad.data = param.grad.data.to('cpu').float()
+
+            # Move all buffers
+            for buffer in module._buffers.values():
+                if buffer is not None:
+                    buffer.data = buffer.data.to('cpu').float()
+
+            # Recurse to children
+            for child in module.children():
+                move_module_to_cpu_float32(child)
+
+        move_module_to_cpu_float32(self.classifier)
+
+        # Verify model is on CPU
+        sample_param = next(self.classifier.parameters())
+        print(f"[XVectorExtractor] Model device: {sample_param.device}, dtype: {sample_param.dtype}")
+
+        if sample_param.device.type != 'cpu':
+            raise RuntimeError(f"Failed to move X-Vector model to CPU! Device is: {sample_param.device}")
+
+        print(f"[XVectorExtractor] Model ready on CPU with float32!")
     
     def extract_embeddings(self, waveform, sample_rate=16000):
         """
         Extract X-Vector embeddings from audio waveform.
-        
+
         Args:
             waveform (torch.Tensor): Audio tensor of shape (batch, samples) or (batch, 1, samples)
             sample_rate (int): Sample rate of the audio (default: 16000)
-            
+
         Returns:
             embeddings (torch.Tensor): X-Vector embeddings of shape (batch, 512)
         """
-        with torch.no_grad():
+        # CRITICAL: Disable AMP/autocast for X-Vector extraction
+        # This prevents any automatic dtype conversion that could cause mismatches
+        with torch.no_grad(), torch.amp.autocast('cuda', enabled=False):
+            # Save original device for restoration
+            original_device = waveform.device
+
             # Ensure correct format (batch, samples)
             if waveform.dim() == 3:
                 waveform = waveform.squeeze(1)
-            
+
+            # CRITICAL: Convert to float32 and move to CPU
+            # X-Vector model always runs on CPU to avoid device/dtype conflicts
+            waveform_cpu = waveform.float().cpu()
+
             # Normalize audio if necessary
-            max_val = waveform.abs().max()
+            max_val = waveform_cpu.abs().max()
             if max_val > 1.0:
-                waveform = waveform / max_val
-            
-            # Extract embeddings using SpeechBrain's encoder
-            embeddings = self.classifier.encode_batch(waveform)
-            
+                waveform_cpu = waveform_cpu / max_val
+
+            # Double-check model is on CPU (safety check)
+            model_device = next(self.classifier.parameters()).device
+            if model_device.type != 'cpu':
+                print(f"[XVectorExtractor] WARNING: Model drifted to {model_device}, moving back to CPU!")
+                self.classifier = self.classifier.to('cpu')
+
+            # Extract embeddings using SpeechBrain's encoder (on CPU)
+            embeddings = self.classifier.encode_batch(waveform_cpu)
+
+            # Move embeddings back to original device (GPU if training on GPU)
+            embeddings = embeddings.to(original_device)
+
+            # Ensure output is float32 (don't convert to float16)
+            embeddings = embeddings.float()
+
         return embeddings
     
     @torch.no_grad()

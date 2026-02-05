@@ -1,0 +1,71 @@
+# -----------------------------------------------------------
+# Inference configuration for CleanUNet2 with X-Vectors (Stage-2)
+# -----------------------------------------------------------
+# This config is for Stage-2 model inference, which does NOT require
+# the X-Vector extractor at inference time.
+
+# Inference runtime options
+inference:
+  # Directory containing noisy input audio files
+  input_dir: "/home/fred/Projetos/DATASETS/VoiceBank-DEMAND-16k/test/noisy/"
+
+  # Output directory for denoised audio
+  output_dir: "denoised_xvector_results"
+
+  # Path to Stage-2 checkpoint (trained without X-Vectors)
+  checkpoint_path: "logs/stage2_checkpoints/stage2-best.ckpt"
+
+  # Force CPU usage (default: false, will use GPU if available)
+  force_cpu: false
+
+  # File pattern to search for audio files
+  input_pattern: "*.wav"
+
+  # Overwrite existing files if True
+  overwrite: false
+
+  # Use automatic mixed precision (faster inference)
+  use_amp: true
+
+# Audio processing parameters
+audio:
+  # Target sample rate (must match training)
+  target_sample_rate: 16000
+
+  # Number of audio channels (1 for mono)
+  target_channels: 1
+
+  # Normalize audio amplitude before processing
+  normalize: true
+
+  # Segment size for processing long audio files
+  # Larger values = more GPU memory, potentially better quality
+  segment_size: 16384
+
+# Output audio settings
+output:
+  # Output file format
+  format: "wav"
+
+  # Bit depth for output WAV files
+  bit_depth: 16
+
+  # Undo normalization after inference
+  undo_normalize: true
+
+# Logging and runtime options
+runtime:
+  # Print progress information
+  verbose: true
+
+  # Save metrics report to JSON
+  save_metrics_report: true
+
+  # Path for metrics report
+  metrics_report_path: "inference_xvector_metrics.json"
+
+# Notes:
+# - This inference script uses the Stage-2 model, which learned to replicate
+#   Stage-1's latent vectors without using the X-Vector extractor.
+# - No speaker embeddings are needed at inference time - fast inference!
+# - The model still benefits from speaker information learned during Stage-1 training.

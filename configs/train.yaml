@@ -14,7 +14,7 @@ trainer:
   # Optionally use max_steps instead of max_epochs
   # max_steps: 1000000
   # Numerical precision: choose "32-true" (full float32) or "16-mixed" for AMP
-  precision: "32-true"
+  precision: "16-mixed"
   # How often (in steps) Lightning logs metrics
   log_every_n_steps: 100
   # Validate every N epochs (float allowed for fraction of epoch)
@@ -37,13 +37,21 @@ logging_dir: "logs"   # base dir for loggers (TensorBoard, etc.)
 # ----------------------
 model:
   # Learning rate used by the optimizer (AdamW in the training script)
-  lr: 1e-5
+  lr: 1e-4
   # Sample rate of audio data
   sample_rate: 16000
 
   # Select the conditioning method here:
   # Options: "addition", "concatenation", "film"
-  conditioning_type: "addition"
+  conditioning_type: "film"
+
+    
+  cleanunet_checkpoint: "checkpoints/cleanunet/last.ckpt"
+  cleanspecnet_checkpoint: "checkpoints/cleanspecnet/last.ckpt"
+
+  # Controle de Congelamento (True = Treinar, False = Congelar)
+  train_cleanunet: true        # Mantém CleanUNet congelado
+  train_cleanspecnet: true     # Mantém CleanSpecNet congelado
 
   # Loss configuration grouped for clarity
   loss_config:
@@ -65,11 +73,11 @@ data:
   data_dir: "/home/fred/Projetos/DATASETS/VoiceBank-DEMAND-16k/"
   train_list_path: "filelists/train.csv"
   val_list_path: "filelists/test.csv"
-  batch_size: 10
+  batch_size: 30
   num_workers: 8
   persistent_workers: true
-  # Optional: segment length (samples) used by dataset sampling (if supported)
-  #segment_size: 16384
+  # Optional: segment length (samples) used by dataset sampling (if supported). Default: 8192
+  segment_size: 24576
 
 # ----------------------
 # Callbacks
@@ -78,11 +86,11 @@ callbacks:
   # Save best checkpoint based on validation loss
   best_checkpoint:
     _target_: "pytorch_lightning.callbacks.ModelCheckpoint"
-    monitor: "val_loss"
+    monitor: "val/weighted_score"
     dirpath: "logs/checkpoints"
-    filename: "best-model-{epoch:02d}-{val_loss:.4f}"
+    filename: "best-model-{epoch:02d}-{val\/weighted_score:.4f}"
     save_top_k: 1
-    mode: "min"
+    mode: "max"
   # Periodic checkpointing (every N epochs)
   periodic_checkpoint:
     _target_: "pytorch_lightning.callbacks.ModelCheckpoint"

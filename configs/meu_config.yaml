@@ -1,0 +1,50 @@
+inference_params:
+  checkpoint_path: "logs/checkpoints/last.ckpt"
+  input_dir: "/home/fred/Projetos/DATASETS/VoiceBank-DEMAND-16k/test/noisy/"
+  output_dir: "denoised_results"
+  cpu: false
+  process_subdirs: false
+  input_glob: "*.wav"
+  apply_ema: true
+  file_list: null
+
+model_hparams:
+  # (mínimo necessário para instanciar CleanUNetLightningModule)
+  lr_g: 0.0001
+  lr_d: 0.00005
+  conditioning_type: "film"
+
+  cleanunet_params:
+    channels_input: 1
+    channels_output: 1
+    channels_H: 64
+    max_H: 768
+    encoder_n_layers: 8
+    kernel_size: 4
+    stride: 2
+    tsfm_n_layers: 5
+    tsfm_n_head: 8
+    tsfm_d_model: 512
+    tsfm_d_inner: 2048
+
+  cleanspecnet_params:
+    input_channels: 513
+    num_conv_layers: 5
+    kernel_size: 4
+    stride: 1
+    conv_hidden_dim: 64
+    hidden_dim: 512
+    num_attention_layers: 5
+    num_heads: 8
+    dropout: 0.1
+
+audio_params:
+  target_sample_rate: 16000
+  segment_size: 16384
+  hop_size: 8192
+  use_mel_spec: true
+  n_fft: 1024
+  hop_length: 256
+  n_mels: 80
+  fmin: 0.0
+  fmax: null

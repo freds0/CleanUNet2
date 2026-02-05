@@ -1,0 +1,351 @@
+"""
+PyTorch Lightning module for CleanUNet2 Stage-2 training.
+
+Stage-2: Training without X-Vectors, replicating latent vectors from Stage-1.
+The model learns to predict the fused latents without using the X-Vector extractor,
+enabling fast inference while maintaining the benefits of speaker information.
+"""
+
+import torch
+import torch.nn.functional as F
+import pytorch_lightning as pl
+from pathlib import Path
+
+from cleanunet.cleanunet2_with_xvector import CleanUNet2WithXVector
+from losses import CleanUNet2Loss, MultiResolutionSTFTLoss, AntiWrappingPhaseLoss
+
+# Import TorchMetrics
+from torchmetrics.audio import PerceptualEvaluationSpeechQuality
+from torchmetrics.audio import ShortTimeObjectiveIntelligibility
+from torchmetrics.audio import ScaleInvariantSignalNoiseRatio
+
+
+class CleanUNet2Stage2Module(pl.LightningModule):
+    """
+    Lightning module for Stage-2 training (without X-Vectors).
+
+    Trains the model to replicate Stage-1's fused latent vectors using
+    only the noisy audio (no X-Vector extractor).
+    """
+
+    def __init__(self, config):
+        super().__init__()
+        self.save_hyperparameters(config)
+        self.config = config
+
+        print("=" * 80)
+        print("STAGE-2: Replicating Latents (without X-Vectors)")
+        print("=" * 80)
+
+        # ===== Model Initialization =====
+        model_config = config.get('model', {})
+
+        self.model = CleanUNet2WithXVector(
+            stage='stage2',
+            use_xvector=True,  # Architecture uses it, but no extractor
+            xvector_dim=model_config.get('xvector_dim', 512),
+            conditioning_type=model_config.get('conditioning_type', 'addition'),
+            cleanunet_params=model_config.get('cleanunet_params', {}),
+            cleanspecnet_params=model_config.get('cleanspecnet_params', {}),
+            xvector_local_path=model_config.get('xvector_local_path', None)
+        )
+
+        # ===== Load Stage-1 Checkpoint =====
+        stage1_ckpt = config.get('stage1_checkpoint')
+        if stage1_ckpt:
+            print(f"[Stage-2] Loading Stage-1 checkpoint: {stage1_ckpt}")
+            self.model.load_stage1_weights(stage1_ckpt)
+        else:
+            print("[WARNING] No Stage-1 checkpoint provided. Training from scratch.")
+
+        # ===== Loss Initialization =====
+        loss_cfg = config.get('losses', {})
+
+        # Multi-Resolution STFT Loss
+        stft_cfg = loss_cfg.get('stft_config', {})
+        mrstft_loss = MultiResolutionSTFTLoss(
+            fft_sizes=stft_cfg.get('fft_sizes', [512, 1024, 2048]),
+            hop_sizes=stft_cfg.get('hop_sizes', [128, 256, 512]),
+            win_lengths=stft_cfg.get('win_lengths', [512, 1024, 2048])
+        )
+
+        # Primary waveform loss
+        self.criterion = CleanUNet2Loss(
+            ell_p=1,
+            ell_p_lambda=1.0,
+            stft_lambda=1.0,
+            mrstftloss=mrstft_loss
+        )
+
+        # Phase loss
+        self.phase_loss = AntiWrappingPhaseLoss(
+            n_fft=1024,
+            hop_length=256,
+            win_length=1024
+        )
+
+        # Loss weights
+        self.weight_waveform = float(loss_cfg.get('weight_waveform', 10.0))
+        self.weight_spec = float(loss_cfg.get('weight_spec', 1.0))
+        self.weight_phase = float(loss_cfg.get('weight_phase', 1.0))
+        self.gamma_latent = float(loss_cfg.get('gamma_latent', 0.05))  # From paper
+
+        print(f"[Stage-2] Loss weights: waveform={self.weight_waveform}, "
+              f"spec={self.weight_spec}, phase={self.weight_phase}")
+        print(f"[Stage-2] Latent replication weight (γ): {self.gamma_latent}")
+
+        # ===== Metrics Initialization =====
+        sr = config.get('audio', {}).get('sample_rate', 16000)
+        self.val_pesq = PerceptualEvaluationSpeechQuality(fs=sr, mode='wb')
+        self.val_stoi = ShortTimeObjectiveIntelligibility(fs=sr, extended=False)
+        self.val_sisdr = ScaleInvariantSignalNoiseRatio()
+
+        # ===== Load Stored Latents from Stage-1 =====
+        self.latents_dir = Path(config.get('latents_dir', 'stored_latents_stage1'))
+
+        if not self.latents_dir.exists():
+            raise ValueError(f"Latents directory not found: {self.latents_dir}. "
+                           "Please run Stage-1 training first.")
+
+        self.stored_latents = self._load_stored_latents()
+        print(f"[Stage-2] Loaded {len(self.stored_latents)} latent files from Stage-1")
+
+        # Validation batch counter
+        self.global_val_batch_idx = 0
+
+        # Audio samples for logging (6 samples: noisy, clean, denoised)
+        self.val_audio_samples = []
+        self.max_audio_samples = 6
+
+    def _load_stored_latents(self):
+        """Load all stored latents from Stage-1."""
+        latent_files = sorted(self.latents_dir.glob('val_batch_*.pt'))
+
+        if not latent_files:
+            raise ValueError(f"No latent files found in {self.latents_dir}. "
+                           "Please run Stage-1 training first.")
+
+        stored_latents = {}
+
+        for latent_file in latent_files:
+            try:
+                data = torch.load(latent_file, map_location='cpu')
+                batch_idx = data.get('batch_idx', None)
+
+                if batch_idx is not None:
+                    stored_latents[batch_idx] = data
+                else:
+                    # Fallback: extract batch_idx from filename
+                    filename = latent_file.stem  # val_batch_000123
+                    idx = int(filename.split('_')[-1])
+                    stored_latents[idx] = data
+
+            except Exception as e:
+                print(f"[WARNING] Failed to load {latent_file}: {e}")
+
+        print(f"[Stage-2] Successfully loaded {len(stored_latents)} latent files")
+        return stored_latents
+
+    def forward(self, noisy_wav, noisy_spec):
+        return self.model(noisy_wav, noisy_spec, clean_audio=None)
+
+    def training_step(self, batch, batch_idx):
+        noisy_wav, noisy_spec, clean_wav, clean_spec = batch
+
+        # Forward without X-Vectors
+        enhanced, enhanced_spec, latents = self.model(
+            noisy_wav, noisy_spec, clean_audio=None,
+            return_latents=True
+        )
+
+        predicted_latent = latents['predicted_latent']
+
+        # ===== Compute Reconstruction Losses =====
+        loss_waveform = self.criterion(clean_wav, enhanced)
+
+        loss_spec = F.l1_loss(
+            torch.log1p(F.relu(enhanced_spec) * 1000),
+            torch.log1p(clean_spec * 1000)
+        )
+
+        loss_phase = self.phase_loss(enhanced, clean_wav)
+
+        loss_recon = (self.weight_waveform * loss_waveform +
+                     self.weight_spec * loss_spec +
+                     self.weight_phase * loss_phase)
+
+        # ===== Compute Latent Replication Loss =====
+        # Note: In training, we don't have direct correspondence with validation batches
+        # So we skip latent loss during training (only reconstruction)
+        # Latent loss is primarily for validation/evaluation
+        loss_latent = torch.tensor(0.0, device=self.device)
+
+        # Total loss (Eq. 5 from paper)
+        total_loss = loss_recon + self.gamma_latent * loss_latent
+
+        # Logging
+        self.log('train/loss', total_loss, on_step=True, on_epoch=True, prog_bar=True)
+        self.log('train/loss_recon', loss_recon, on_step=False, on_epoch=True)
+        self.log('train/loss_waveform', loss_waveform, on_step=False, on_epoch=True)
+        self.log('train/loss_spec', loss_spec, on_step=False, on_epoch=True)
+        self.log('train/loss_phase', loss_phase, on_step=False, on_epoch=True)
+        self.log('train/loss_latent', loss_latent, on_step=False, on_epoch=True)
+
+        return total_loss
+
+    def validation_step(self, batch, batch_idx):
+        noisy_wav, noisy_spec, clean_wav, clean_spec = batch
+
+        # Forward without X-Vectors
+        enhanced, enhanced_spec, latents = self.model(
+            noisy_wav, noisy_spec, clean_audio=None,
+            return_latents=True
+        )
+
+        predicted_latent = latents['predicted_latent']
+
+        # ===== Compute Reconstruction Losses =====
+        loss_waveform = self.criterion(clean_wav, enhanced)
+
+        loss_spec = F.l1_loss(
+            torch.log1p(F.relu(enhanced_spec) * 1000),
+            torch.log1p(clean_spec * 1000)
+        )
+
+        loss_phase = self.phase_loss(enhanced, clean_wav)
+
+        loss_recon = (self.weight_waveform * loss_waveform +
+                     self.weight_spec * loss_spec +
+                     self.weight_phase * loss_phase)
+
+        # ===== Compute Latent Replication Loss =====
+        if self.global_val_batch_idx in self.stored_latents:
+            stored_data = self.stored_latents[self.global_val_batch_idx]
+            stored_latent = stored_data['fused_latent'].to(self.device)
+
+            # L2 loss between predicted and stored latents
+            loss_latent = F.mse_loss(predicted_latent, stored_latent)
+        else:
+            loss_latent = torch.tensor(0.0, device=self.device)
+
+        # Total loss
+        total_loss = loss_recon + self.gamma_latent * loss_latent
+
+        self.global_val_batch_idx += 1
+
+        # ===== Compute Metrics (Safe Mode) =====
+        preds = enhanced.squeeze(1)
+        target = clean_wav.squeeze(1)
+
+        is_silent_or_nan = (preds.abs().max() < 1e-5) or torch.isnan(preds).any()
+
+        if is_silent_or_nan:
+            val_pesq = torch.tensor(1.0, device=self.device)
+            val_stoi = torch.tensor(1e-5, device=self.device)
+            val_sisdr = torch.tensor(-50.0, device=self.device)
+        else:
+            try:
+                val_pesq = self.val_pesq(preds, target)
+            except Exception:
+                val_pesq = torch.tensor(1.0, device=self.device)
+
+            try:
+                val_stoi = self.val_stoi(preds, target)
+            except Exception:
+                val_stoi = torch.tensor(1e-5, device=self.device)
+
+            try:
+                val_sisdr = self.val_sisdr(preds, target)
+            except Exception:
+                val_sisdr = torch.tensor(-50.0, device=self.device)
+
+        # Weighted score
+        weighted_score = (val_stoi + (val_pesq / 4.5) + (val_sisdr / 30.0)) / 3.0
+
+        # ===== Collect Audio Samples for Logging =====
+        if len(self.val_audio_samples) < self.max_audio_samples:
+            # Collect first sample from batch
+            self.val_audio_samples.append({
+                'noisy': noisy_wav[0].detach().cpu(),
+                'clean': clean_wav[0].detach().cpu(),
+                'denoised': enhanced[0].detach().cpu()
+            })
+
+        # Logging
+        self.log('val_loss', total_loss, prog_bar=False, on_epoch=True, sync_dist=True)
+        self.log('val/loss', total_loss, prog_bar=True, on_epoch=True, sync_dist=True)
+        self.log('val/loss_recon', loss_recon, on_epoch=True, sync_dist=True)
+        self.log('val/loss_latent', loss_latent, on_epoch=True, sync_dist=True)
+        self.log('val/pesq', val_pesq, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log('val/stoi', val_stoi, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log('val/si_sdr', val_sisdr, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log('val/weighted_score', weighted_score, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+
+        return total_loss
+
+    def on_validation_epoch_end(self):
+        # ===== Log Audio Samples =====
+        if len(self.val_audio_samples) > 0:
+            sr = self.config.get('audio', {}).get('sample_rate', 16000)
+
+            for idx, sample in enumerate(self.val_audio_samples):
+                # Log to TensorBoard
+                if self.logger and hasattr(self.logger, 'experiment'):
+                    try:
+                        # TensorBoard logger
+                        if hasattr(self.logger.experiment, 'add_audio'):
+                            self.logger.experiment.add_audio(
+                                f'audio/sample_{idx}_noisy',
+                                sample['noisy'],
+                                self.current_epoch,
+                                sample_rate=sr
+                            )
+                            self.logger.experiment.add_audio(
+                                f'audio/sample_{idx}_clean',
+                                sample['clean'],
+                                self.current_epoch,
+                                sample_rate=sr
+                            )
+                            self.logger.experiment.add_audio(
+                                f'audio/sample_{idx}_denoised',
+                                sample['denoised'],
+                                self.current_epoch,
+                                sample_rate=sr
+                            )
+
+                        # WandB logger
+                        import wandb
+                        if isinstance(self.logger.experiment, wandb.sdk.wandb_run.Run):
+                            self.logger.experiment.log({
+                                f'audio/sample_{idx}_noisy': wandb.Audio(
+                                    sample['noisy'].numpy(), sample_rate=sr, caption=f'Noisy {idx}'
+                                ),
+                                f'audio/sample_{idx}_clean': wandb.Audio(
+                                    sample['clean'].numpy(), sample_rate=sr, caption=f'Clean {idx}'
+                                ),
+                                f'audio/sample_{idx}_denoised': wandb.Audio(
+                                    sample['denoised'].numpy(), sample_rate=sr, caption=f'Denoised {idx}'
+                                )
+                            })
+                    except Exception as e:
+                        print(f"[Stage-2] Warning: Could not log audio sample {idx}: {e}")
+
+            print(f"[Stage-2] Logged {len(self.val_audio_samples)} audio samples")
+
+            # Clear samples for next epoch
+            self.val_audio_samples = []
+
+        # Reset counter for next epoch
+        self.global_val_batch_idx = 0
+
+    def configure_optimizers(self):
+        optimizer_cfg = self.config.get('optimizer', {})
+        lr = float(optimizer_cfg.get('lr', 1e-4))
+        betas = optimizer_cfg.get('betas', [0.9, 0.999])
+
+        # All parameters are trainable in Stage-2 (no frozen X-Vector extractor)
+        optimizer = torch.optim.AdamW(self.parameters(), lr=lr, betas=betas)
+
+        print(f"[Stage-2] Optimizer: AdamW(lr={lr}, betas={betas})")
+
+        return optimizer

@@ -44,6 +44,9 @@ class SpecUpsampler(nn.Module):
         )
         self.act2 = nn.LeakyReLU(leaky_slope)
 
+        # Option 2
+        self.freq_projector = nn.Conv1d(513, 1, kernel_size=1)
+
     def forward(self, spec: torch.Tensor) -> torch.Tensor:
         # Add channel dimension -> (B, 1, F, T)
         x = spec.unsqueeze(1) if spec.dim() == 3 else spec
@@ -51,7 +54,22 @@ class SpecUpsampler(nn.Module):
         x = self.act2(self.up2(self.act1(self.up1(x))))
 
         # Average across frequency axis to obtain 1D temporal feature
-        return x.mean(dim=2, keepdim=True).squeeze(2)
+        #return x.mean(dim=2, keepdim=True).squeeze(2)
+
+        # The article describes upsampling the predicted spectrogram 256 times using two 2D transposed convolutions. It states: "we combined the noisy waveform and the upsampled spectrogram through a conditioning method". There is no explicit mention of discarding frequency information prior to this combination.
+
+        # Option 1
+        # Calculates weights via Softmax along the frequency dimension (dim 2)
+        ''' 
+        attn_weights = F.softmax(x, dim=2)
+        Multiply by the weights and sum (weighted average)
+        return (x * attn_weights).sum(dim=2)
+        ''' 
+        # Option 2
+        # Instead of forcing an average, you let the model learn a weight for each frequency. You will need to "flatten" the frequency dimension to the channel dimension and then project it back.
+        B, C, F, T = x.shape
+        x = x.view(B, C * F, T) # Flatten Frequency and Channels: (B, F, T)
+        return self.freq_projector(x) # Learn how to combine frequencies.
 
 
 class Conditioner(nn.Module):
@@ -196,7 +214,7 @@ class CleanUNet2(nn.Module):
             raise ValueError(f"No compatible keys found in checkpoint. Check the prefix. Available keys: {state_dict.keys()}")
 
         self.clean_unet.load_state_dict(clean_unet_state_dict)
-        print("Weights loaded successfully into self.clean_unet.")
+        print("[SUCCESS] Weights loaded successfully into self.clean_unet.")
 
 
     def load_cleanspecnet_weights(self, checkpoint_path):
@@ -217,11 +235,11 @@ class CleanUNet2(nn.Module):
             raise ValueError(f"No compatible keys found in checkpoint for CleanSpecNet. Check the prefix. Available keys: {state_dict.keys()}")
 
         self.clean_spec_net.load_state_dict(clean_spec_net_state_dict)
-        print("Weights loaded successfully into self.clean_spec_net.")
+        print("[SUCCESS] Weights loaded successfully into self.clean_spec_net.")
 
 
     def load_cleanunet2_weights(self, checkpoint_path):
         """Loads pre-trained weights for the full CleanUNet2 model."""
         state_dict = self._load_and_extract_state_dict(checkpoint_path)
         self.load_state_dict(state_dict)
-        print("Weights loaded successfully into the full CleanUNet2 model.")
+        print("[SUCCESS] Weights loaded successfully into the full CleanUNet2 model.")
