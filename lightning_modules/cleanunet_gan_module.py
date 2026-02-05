@@ -54,19 +54,35 @@ class CleanUNetGANModule(pl.LightningModule):
         )
 
         # ---------------------------------------
-        # 1.1 Load Generator Sub-module Checkpoints
+        # 1.1 Load Complete CleanUNet2 Checkpoint (from Vanilla training)
         # ---------------------------------------
+        ckpt_cleanunet2 = getattr(self.hparams, "cleanunet2_checkpoint", None)
+
+        if ckpt_cleanunet2:
+            print(f"[INFO] Loading complete CleanUNet2 model from Vanilla checkpoint: {ckpt_cleanunet2}")
+            try:
+                self._load_cleanunet2_from_vanilla(ckpt_cleanunet2)
+                print("[SUCCESS] CleanUNet2 weights loaded successfully from Vanilla checkpoint.")
+            except Exception as e:
+                print(f"[WARNING] Could not load CleanUNet2 from Vanilla checkpoint: {e}")
+                import traceback
+                traceback.print_exc()
+
+        # ---------------------------------------
+        # 1.2 Load Generator Sub-module Checkpoints (Alternative)
+        # ---------------------------------------
+        # These are used if you want to load individual components instead of full model
         ckpt_cleanunet = getattr(self.hparams, "cleanunet_checkpoint", None)
         ckpt_cleanspecnet = getattr(self.hparams, "cleanspecnet_checkpoint", None)
 
-        if ckpt_cleanunet:
+        if ckpt_cleanunet and not ckpt_cleanunet2:
             print(f"[INFO] Loading CleanUNet weights from: {ckpt_cleanunet}")
             try:
                 self.generator.load_cleanunet_weights(ckpt_cleanunet)
             except Exception as e:
                 print(f"[WARNING] Could not load CleanUNet weights: {e}")
 
-        if ckpt_cleanspecnet:
+        if ckpt_cleanspecnet and not ckpt_cleanunet2:
             print(f"[INFO] Loading CleanSpecNet weights from: {ckpt_cleanspecnet}")
             try:
                 self.generator.load_cleanspecnet_weights(ckpt_cleanspecnet)
@@ -125,6 +141,12 @@ class CleanUNetGANModule(pl.LightningModule):
         self.val_stoi = ShortTimeObjectiveIntelligibility(fs=16000, extended=False)
         self.val_pesq = PerceptualEvaluationSpeechQuality(fs=16000, mode='wb')
 
+        # ---------------------------------------
+        # 5. Audio Samples for Logging (6 samples: noisy, clean, denoised)
+        # ---------------------------------------
+        self.val_audio_samples = []
+        self.max_audio_samples = 6
+
     def _set_requires_grad(self, module, requires_grad):
         """Helper to freeze/unfreeze weights safely."""
         if module is None:
@@ -133,6 +155,62 @@ class CleanUNetGANModule(pl.LightningModule):
             p.requires_grad = requires_grad
         status = "Training" if requires_grad else "Frozen"
         print(f"[INFO] Module {type(module).__name__}: {status}")
+
+    def _load_cleanunet2_from_vanilla(self, checkpoint_path):
+        """
+        Load a complete CleanUNet2 checkpoint from Vanilla (LightningModule) training.
+
+        This method handles:
+        - PyTorch Lightning checkpoints (with 'state_dict' key)
+        - Direct state_dict files
+        - Removal of 'model.' prefix added by Lightning
+
+        Args:
+            checkpoint_path: Path to the Vanilla checkpoint file (.ckpt)
+        """
+        print(f"[INFO] Loading Vanilla checkpoint from: {checkpoint_path}")
+
+        # Load checkpoint to CPU to avoid device compatibility issues
+        checkpoint = torch.load(checkpoint_path, map_location='cpu')
+
+        # Extract state_dict from Lightning checkpoint structure
+        if 'state_dict' in checkpoint:
+            state_dict = checkpoint['state_dict']
+            print(f"[INFO] Found 'state_dict' key in checkpoint (Lightning format)")
+        else:
+            state_dict = checkpoint
+            print(f"[INFO] Using checkpoint directly as state_dict")
+
+        # Remove 'model.' prefix from keys (Lightning adds this)
+        cleanunet2_state_dict = {}
+        prefix = "model."
+
+        for key, value in state_dict.items():
+            if key.startswith(prefix):
+                # Remove 'model.' prefix
+                new_key = key[len(prefix):]
+                cleanunet2_state_dict[new_key] = value
+            else:
+                # Keep keys that don't have the prefix (shouldn't happen, but safe)
+                cleanunet2_state_dict[key] = value
+
+        if not cleanunet2_state_dict:
+            raise ValueError(
+                f"No compatible keys found after prefix removal. "
+                f"Expected keys starting with '{prefix}'. "
+                f"Found keys: {list(state_dict.keys())[:5]}..."
+            )
+
+        # Load into generator
+        missing_keys, unexpected_keys = self.generator.load_state_dict(cleanunet2_state_dict, strict=False)
+
+        # Report loading status
+        if missing_keys:
+            print(f"[WARNING] Missing keys in checkpoint: {missing_keys}")
+        if unexpected_keys:
+            print(f"[WARNING] Unexpected keys in checkpoint: {unexpected_keys}")
+
+        print(f"[SUCCESS] Loaded {len(cleanunet2_state_dict)} parameters into CleanUNet2 generator")
 
     def forward(self, noisy, noisy_spec):
         """Forward pass of the generator."""
@@ -256,60 +334,130 @@ class CleanUNetGANModule(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         """
         Validation loop: calculate Mel Loss and metrics.
-        The execution of metrics (PESQ, STOI, SI-SDR) is controlled by `metrics_interval_epochs`.
+        Metrics (PESQ, STOI, SI-SDR) are now calculated on every validation step.
         """
         noisy, noisy_spec, clean, clean_spec = batch
-        
+
         if clean.dim() == 2: clean = clean.unsqueeze(1)
         if noisy.dim() == 2: noisy = noisy.unsqueeze(1)
-        
+
         enhanced, _ = self(noisy, noisy_spec)
-        
+
         # 1. GPU Loss (Always computed for monitoring)
         loss_mel_sc, loss_mel_mag = self.mrstft(enhanced.squeeze(1), clean.squeeze(1))
         total_mel_loss = loss_mel_sc + loss_mel_mag
+
+        # Log val_loss explicitly for ModelCheckpoint
+        self.log("val_loss", total_mel_loss, prog_bar=False, on_epoch=True, sync_dist=True)
         self.log("val/loss_mel", total_mel_loss, on_epoch=True, prog_bar=True, sync_dist=True)
 
-        # 2. Metrics Calculation (Configurable Interval)
-        # Default: 5 epochs if not specified
-        val_metrics_interval = int(getattr(self.hparams, "val_metrics_interval_epochs", 5))
-        
-        # Calculate metrics if it's the current epoch OR if it's the last epoch (sanity check)
-        should_run_metrics = (self.current_epoch % val_metrics_interval == 0)
+        # 2. Calculate Metrics (Safe Mode) - Now on every validation step
+        # Note: Input shape to metrics should be (Batch, Time). Squeeze channels.
+        preds = enhanced.squeeze(1)
+        target = clean.squeeze(1)
 
-        if should_run_metrics:
+        # Check for Silence or NaNs to prevent PESQ crashes (NoUtterancesError)
+        # If the max amplitude is too low, PESQ considers it empty.
+        is_silent_or_nan = (preds.abs().max() < 1e-5) or torch.isnan(preds).any()
+
+        if is_silent_or_nan:
+            # Assign worst-case values if model collapsed
+            val_pesq = torch.tensor(1.0, device=self.device)   # Min PESQ is ~1.0
+            val_stoi = torch.tensor(1e-5, device=self.device)  # Min STOI is 0.0
+            val_sisdr = torch.tensor(-50.0, device=self.device) # Very low SI-SDR
+        else:
+            # PESQ calculation
             try:
-                preds = enhanced.squeeze(1)
-                target = clean.squeeze(1)
-
-                # SI-SDR (Fast, GPU)
-                self.val_sisdr(preds, target)
-                self.log("val/si_sdr", self.val_sisdr, on_step=False, on_epoch=True, prog_bar=True)
-
-                # STOI & PESQ (Slow, CPU)
-                self.val_stoi(preds, target)
-                self.log("val/stoi", self.val_stoi, on_step=False, on_epoch=True, prog_bar=True)
-                
-                self.val_pesq(preds, target)
-                self.log("val/pesq", self.val_pesq, on_step=False, on_epoch=True, prog_bar=True)
+                val_pesq = self.val_pesq(preds, target)
             except Exception as e:
-                pass
+                val_pesq = torch.tensor(1.0, device=self.device)
 
-        # 3. Sparse Audio Logging
-        LOG_AUDIO_EVERY_N_EPOCHS = 100
-        should_log_audio = (self.current_epoch % LOG_AUDIO_EVERY_N_EPOCHS == 0)
+            # STOI calculation
+            try:
+                val_stoi = self.val_stoi(preds, target)
+            except Exception:
+                val_stoi = torch.tensor(1e-5, device=self.device)
 
-        if should_log_audio and hasattr(self.logger, "experiment") and hasattr(self.logger.experiment, "add_audio"):
-            if batch_idx == 0:
-                MAX_AUDIO_LOGS = 4
-                sr = int(getattr(self.hparams, "sampling_rate", 16000))
-                count = min(noisy.shape[0], MAX_AUDIO_LOGS)
-                
-                for i in range(count):
-                    noisy_audio = noisy[i].squeeze().cpu().float().clamp(-1, 1)
-                    clean_audio = clean[i].squeeze().cpu().float().clamp(-1, 1)
-                    enhanced_audio = enhanced[i].squeeze().cpu().float().clamp(-1, 1)
-                    
-                    self.logger.experiment.add_audio(f"val_{i}/noisy", noisy_audio, self.global_step, sr)
-                    self.logger.experiment.add_audio(f"val_{i}/clean", clean_audio, self.global_step, sr)
-                    self.logger.experiment.add_audio(f"val_{i}/enhanced", enhanced_audio, self.global_step, sr)
+            # SI-SDR calculation
+            try:
+                val_sisdr = self.val_sisdr(preds, target)
+            except Exception:
+                val_sisdr = torch.tensor(-50.0, device=self.device)
+
+        # 3. Calculate Custom Weighted Score
+        # Formula: (STOI + PESQ/4.5 + SI_SDR/30.0) / 3.0
+        weighted_score = (val_stoi + (val_pesq / 4.5) + (val_sisdr / 30.0)) / 3.0
+
+        # 4. Collect Audio Samples for Logging
+        if len(self.val_audio_samples) < self.max_audio_samples:
+            # Collect first sample from batch
+            self.val_audio_samples.append({
+                'noisy': noisy[0].detach().cpu(),
+                'clean': clean[0].detach().cpu(),
+                'denoised': enhanced[0].detach().cpu()
+            })
+
+        # 5. Logging Metrics
+        self.log("val/pesq", val_pesq, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("val/stoi", val_stoi, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("val/si_sdr", val_sisdr, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("val/weighted_score", weighted_score, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+
+    def on_validation_epoch_end(self):
+        """
+        Called at the end of validation epoch.
+        Logs collected audio samples to TensorBoard and WandB.
+        """
+        if len(self.val_audio_samples) > 0:
+            sample_rate = int(getattr(self.hparams, "sampling_rate", 16000))
+
+            for idx, sample in enumerate(self.val_audio_samples):
+                # Log to TensorBoard
+                if self.logger and hasattr(self.logger, 'experiment'):
+                    try:
+                        # TensorBoard logger
+                        if hasattr(self.logger.experiment, 'add_audio'):
+                            self.logger.experiment.add_audio(
+                                f'audio/sample_{idx}_noisy',
+                                sample['noisy'],
+                                self.current_epoch,
+                                sample_rate=sample_rate
+                            )
+                            self.logger.experiment.add_audio(
+                                f'audio/sample_{idx}_clean',
+                                sample['clean'],
+                                self.current_epoch,
+                                sample_rate=sample_rate
+                            )
+                            self.logger.experiment.add_audio(
+                                f'audio/sample_{idx}_denoised',
+                                sample['denoised'],
+                                self.current_epoch,
+                                sample_rate=sample_rate
+                            )
+
+                        # WandB logger
+                        try:
+                            import wandb
+                            if isinstance(self.logger.experiment, wandb.sdk.wandb_run.Run):
+                                self.logger.experiment.log({
+                                    f'audio/sample_{idx}_noisy': wandb.Audio(
+                                        sample['noisy'].numpy(), sample_rate=sample_rate, caption=f'Noisy {idx}'
+                                    ),
+                                    f'audio/sample_{idx}_clean': wandb.Audio(
+                                        sample['clean'].numpy(), sample_rate=sample_rate, caption=f'Clean {idx}'
+                                    ),
+                                    f'audio/sample_{idx}_denoised': wandb.Audio(
+                                        sample['denoised'].numpy(), sample_rate=sample_rate, caption=f'Denoised {idx}'
+                                    )
+                                })
+                        except (ImportError, AttributeError):
+                            pass  # WandB not available
+
+                    except Exception as e:
+                        print(f"[WARNING] Could not log audio sample {idx}: {e}")
+
+            print(f"[INFO] Logged {len(self.val_audio_samples)} audio samples to TensorBoard/WandB")
+
+            # Clear samples for next epoch
+            self.val_audio_samples = []

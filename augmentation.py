@@ -6,10 +6,38 @@ import torchaudio
 import soundfile as sf
 import torch
 import random
+from pathlib import Path
 
 from torch_audiomentations import (
     Compose, Gain, AddBackgroundNoise, ApplyImpulseResponse, LowPassFilter, HighPassFilter, BandPassFilter, AddColoredNoise
 )
+
+
+def get_audio_files_recursively(directory, extensions=('.wav', '.flac', '.mp3', '.ogg')):
+    """
+    Busca recursivamente por arquivos de áudio em um diretório.
+
+    Args:
+        directory (str): Caminho do diretório para buscar
+        extensions (tuple): Extensões de arquivos de áudio a serem buscados
+
+    Returns:
+        list: Lista de caminhos absolutos dos arquivos encontrados
+    """
+    audio_files = []
+    directory_path = Path(directory)
+
+    if not directory_path.exists():
+        print(f"Warning: Directory {directory} does not exist")
+        return audio_files
+
+    for ext in extensions:
+        # Busca recursiva usando glob com **
+        pattern = f"**/*{ext}"
+        audio_files.extend([str(f) for f in directory_path.glob(pattern)])
+
+    print(f"Found {len(audio_files)} audio files in {directory}")
+    return sorted(audio_files)
 
 class AudioAugmenter:
     def __init__(self, augmentations, device='cpu', seed=42):
@@ -22,17 +50,60 @@ class AudioAugmenter:
         aug_list = []
         for aug in augmentations:
             name = aug['name']
-            params = aug.get('params', {})
+            params = aug.get('params', {}).copy()  # Create a copy to avoid modifying original
+
             if name == 'AddBackgroundNoise':
                 if 'background_paths' not in params:
                     raise ValueError("The 'background_paths' parameter is required for AddBackgroundNoise")
+
+                # Se background_paths for um diretório, buscar recursivamente
+                bg_paths = params['background_paths']
+                if isinstance(bg_paths, str) and os.path.isdir(bg_paths):
+                    print(f"Searching recursively for noise files in: {bg_paths}")
+                    params['background_paths'] = get_audio_files_recursively(bg_paths)
+                    if not params['background_paths']:
+                        raise ValueError(f"No audio files found in directory: {bg_paths}")
+                elif isinstance(bg_paths, list):
+                    # Se for uma lista, expandir cada diretório recursivamente
+                    expanded_paths = []
+                    for path in bg_paths:
+                        if os.path.isdir(path):
+                            expanded_paths.extend(get_audio_files_recursively(path))
+                        elif os.path.isfile(path):
+                            expanded_paths.append(path)
+                    params['background_paths'] = expanded_paths
+                    if not params['background_paths']:
+                        raise ValueError(f"No audio files found in provided paths")
+
                 aug_list.append(AddBackgroundNoise(**params))
+
             elif name == 'ApplyImpulseResponse':
                 if 'ir_paths' not in params:
                     raise ValueError("The 'ir_paths' parameter is required for ApplyImpulseResponse")
+
+                # Se ir_paths for um diretório, buscar recursivamente
+                ir_paths = params['ir_paths']
+                if isinstance(ir_paths, str) and os.path.isdir(ir_paths):
+                    print(f"Searching recursively for IR files in: {ir_paths}")
+                    params['ir_paths'] = get_audio_files_recursively(ir_paths)
+                    if not params['ir_paths']:
+                        raise ValueError(f"No audio files found in directory: {ir_paths}")
+                elif isinstance(ir_paths, list):
+                    # Se for uma lista, expandir cada diretório recursivamente
+                    expanded_paths = []
+                    for path in ir_paths:
+                        if os.path.isdir(path):
+                            expanded_paths.extend(get_audio_files_recursively(path))
+                        elif os.path.isfile(path):
+                            expanded_paths.append(path)
+                    params['ir_paths'] = expanded_paths
+                    if not params['ir_paths']:
+                        raise ValueError(f"No audio files found in provided paths")
+
                 aug_list.append(ApplyImpulseResponse(**params))
+
             elif name == 'Gain':
-                aug_list.append(Gain(**params))                
+                aug_list.append(Gain(**params))
             elif name == 'LowPassFilter':
                 aug_list.append(LowPassFilter(**params))
             elif name == 'HighPassFilter':

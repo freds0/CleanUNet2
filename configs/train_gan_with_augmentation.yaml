@@ -1,0 +1,248 @@
+# -------------------------------------------------------------------------
+# Training configuration for CleanUNet2-GAN with Data Augmentation
+# -------------------------------------------------------------------------
+
+# ----------------------
+# Trainer (PyTorch Lightning)
+# ----------------------
+trainer:
+  accelerator: "auto"    # "gpu" or "cpu"
+  devices: 1             # Number of GPUs
+  max_epochs: 10000
+  precision: "16"
+  log_every_n_steps: 10
+  check_val_every_n_epoch: 2
+  gradient_clip_val: null # Manual clipping in GAN module
+  benchmark: true
+  num_sanity_val_steps: 0
+
+# ----------------------
+# Global / Runtime
+# ----------------------
+seed: 1234
+checkpoint_dir: "logs/checkpoints"
+logging_dir: "logs"
+
+# ----------------------
+# Model Hyperparameters
+# ----------------------
+model:
+  # Learning rates (lower for fine-tuning from Vanilla checkpoint)
+  lr_g: 5e-5
+  lr_d: 5e-5
+
+  lr_decay: 0.999          # Exponential decay by epoch (Gamma)
+  grad_clip_threshold: 1.0 # Maximum gradient value (Manual)
+  warmup_epochs: 10        # Epochs training only the generator (Loss Mel)
+
+  adam_b1: 0.8
+  adam_b2: 0.99
+
+  train_cleanunet: true
+  train_cleanspecnet: true
+
+  conditioning_type: "addition"  # Options: addition, concatenation, film
+
+  # ----------------------
+  # Checkpoint Loading Options
+  # ----------------------
+  # Load complete CleanUNet2 model from Vanilla training (RECOMMENDED)
+  cleanunet2_checkpoint: null  # e.g., "../CleanUNet2-Vanilla/logs/checkpoints/best-model.ckpt"
+
+  # Alternative: Load individual submodules (only if cleanunet2_checkpoint is null)
+  cleanunet_checkpoint: null
+  cleanspecnet_checkpoint: null
+
+  # CleanUNet parameters (Waveform Generator)
+  cleanunet_params:
+    channels_input: 1
+    channels_output: 1
+    channels_H: 64
+    max_H: 768
+    encoder_n_layers: 8
+    kernel_size: 4
+    stride: 2
+    tsfm_n_layers: 5
+    tsfm_n_head: 8
+    tsfm_d_model: 512
+    tsfm_d_inner: 2048
+
+  # CleanSpecNet parameters (Spectrogram Denoising)
+  cleanspecnet_params:
+    input_channels: 513 # n_fft // 2 + 1
+    num_conv_layers: 5
+    kernel_size: 4
+    stride: 1
+    conv_hidden_dim: 64
+    hidden_dim: 512
+    num_attention_layers: 5
+    num_heads: 8
+    dropout: 0.1
+
+# ----------------------
+# Loss Configuration
+# ----------------------
+loss_config:
+  # Standard weights for HiFi-GAN V1
+  lambda_mel: 10.0   # Spectral Reconstruction (very important)
+  lambda_fm: 2.0     # Feature Matching (stability)
+  lambda_adv: 1.0    # Adversarial Loss
+
+  weight_waveform: 100.0  # L1 on waveform usually needs high weight
+  weight_spec: 1.0
+  weight_phase: 10.0
+
+  # Configuration for Multi-Resolution STFT Loss
+  stft_config:
+    fft_sizes: [1024, 2048, 512]
+    hop_sizes: [120, 240, 50]
+    win_lengths: [600, 1200, 240]
+    window: "hann_window"
+
+# ----------------------
+# Data Configuration with Augmentation
+# ----------------------
+data:
+  # ===== OPTION 1: Using directory with clean audio + augmentation =====
+  # Uncomment and adjust paths below
+
+  # data_dir: "/path/to/your/dataset"
+  # train_list_path: "clean_train"  # Folder with clean audio
+  # val_list_path: "clean_val"      # Folder with clean audio
+
+  # Expected structure:
+  # /path/to/your/dataset/
+  # ├── clean_train/
+  # │   ├── audio1.wav
+  # │   ├── audio2.wav
+  # │   └── ...
+  # └── clean_val/
+  #     └── ...
+
+  # ===== OPTION 2: Using directory with clean/noisy pairs =====
+  # Use this for VoiceBank-DEMAND or similar datasets
+
+  data_dir: "/root/DATASETS/VoiceBank-DEMAND-16k/"
+  train_list_path: "train"  # Automatically detects clean/ and noisy/
+  val_list_path: "test"
+
+  # Expected structure:
+  # /root/DATASETS/VoiceBank-DEMAND-16k/
+  # ├── train/
+  # │   ├── clean/
+  # │   │   ├── p226_001.wav
+  # │   │   └── ...
+  # │   └── noisy/
+  # │       ├── p226_001.wav
+  # │       └── ...
+  # └── test/
+  #     ├── clean/
+  #     └── noisy/
+
+  # GANs need larger segments to capture periodicity
+  # 16384 samples ~= 1 second at 16kHz (ideal for MPD Discriminator)
+  segment_size: 16384
+
+  batch_size: 8        # Reduced due to high VRAM consumption of discriminators
+  num_workers: 8
+  persistent_workers: true
+  sampling_rate: 16000
+
+  use_mel_spec: false  # Use linear spectrogram for CleanSpecNet
+
+  # Audio processing parameters (Spectrogram)
+  n_fft: 1024
+  num_mels: 80
+  hop_size: 256
+  win_size: 1024
+  fmin: 0
+  fmax: 8000
+
+  # ===== DATA AUGMENTATION CONFIGURATION =====
+  augmentation:
+    enabled: false  # Set to true to enable augmentation
+    mode: "two_folders"  # Options: "two_folders" (use existing noisy), "clean_only" (generate noisy)
+
+    # When mode is "clean_only", these augmentations are applied to clean audio
+    # to generate synthetic noisy audio on-the-fly
+    augmentations:
+      # Add background noise from a folder
+      - name: AddBackgroundNoise
+        params:
+          background_paths: "/path/to/noise/folder"  # <<<< ADJUST THIS PATH
+          min_snr_in_db: 0.0   # Minimum SNR
+          max_snr_in_db: 15.0  # Maximum SNR
+          p: 0.8               # 80% probability of applying
+
+      # Add colored noise (pink, white, brown)
+      - name: AddColoredNoise
+        params:
+          min_snr_in_db: 5.0
+          max_snr_in_db: 20.0
+          min_f_decay: -2.0  # -2 = pink, 0 = white, 2 = brown
+          max_f_decay: 2.0
+          p: 0.5
+
+      # Random gain adjustment
+      - name: Gain
+        params:
+          min_gain_in_db: -6.0
+          max_gain_in_db: 6.0
+          p: 0.3
+
+      # Low-pass filter (simulates bandwidth limitation)
+      # - name: LowPassFilter
+      #   params:
+      #     min_cutoff_freq: 4000
+      #     max_cutoff_freq: 8000
+      #     p: 0.3
+
+      # Apply impulse response (room acoustics)
+      # - name: ApplyImpulseResponse
+      #   params:
+      #     ir_paths: "/path/to/impulse_responses/"
+      #     p: 0.5
+
+# ----------------------
+# Callbacks
+# ----------------------
+callbacks:
+  # Saves the model with lowest spectral reconstruction error on validation
+  best_checkpoint:
+    _target_: "pytorch_lightning.callbacks.ModelCheckpoint"
+    monitor: "val/loss_mel"
+    dirpath: "logs/checkpoints"
+    filename: "best-model-{epoch:02d}-{val/loss_mel:.4f}"
+    save_top_k: 3
+    mode: "min"
+    save_last: true
+
+  # Saves periodically to ensure resumption
+  periodic_checkpoint:
+    _target_: "pytorch_lightning.callbacks.ModelCheckpoint"
+    dirpath: "logs/checkpoints"
+    filename: "epoch-{epoch:04d}"
+    every_n_epochs: 3
+    save_top_k: -1  # Keep all (be careful with disk space) or set a fixed number
+
+# ----------------------
+# Logger
+# ----------------------
+logger:
+  choice: "both"
+
+  tensorboard:
+    _target_: pytorch_lightning.loggers.TensorBoardLogger
+    save_dir: "logs"
+    name: "cleanunet_gan_augmentation"
+    default_hp_metric: false
+
+  wandb:
+    _target_: pytorch_lightning.loggers.WandbLogger
+    project: "CleanUNet2-GAN_Augmentation"
+    name: "cleanunet2_gan_aug_run"
+    save_dir: "logs"
+    offline: false
+    log_model: true
+
+#resume_from_checkpoint: "logs/checkpoints/last.ckpt"

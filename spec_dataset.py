@@ -9,6 +9,9 @@ from torchaudio import load as torchaudio_load
 import torchaudio.transforms as T
 from librosa.filters import mel as librosa_mel_fn
 import torchaudio
+from augmentation import AudioAugmenter
+from glob import glob
+from pathlib import Path
 
 # Use "spawn" multiprocessing start method for dataloaders (safer for CUDA in some setups)
 # import torch.multiprocessing as mp
@@ -120,15 +123,94 @@ def get_spectrogram(
 # ---------------------------
 # File list helper
 # ---------------------------
-def get_dataset_filelist(filelist_path: str) -> List[Tuple[str, str]]:
-    with open(filelist_path, "r", encoding="utf-8") as ifile:
-        lines = [l.strip() for l in ifile.readlines() if l.strip()]
-    pairs = []
-    for l in lines:
-        parts = l.split("|")
-        if len(parts) >= 2:
-            pairs.append((parts[0].strip(), parts[1].strip()))
-    return pairs
+def get_dataset_filelist(filelist_path: str, data_dir: str = "") -> List[Tuple[str, str]]:
+    """
+    Load dataset filelist. Supports three modes:
+    1. CSV file with format: clean_path|noisy_path
+    2. Directory with clean/ and noisy/ subdirectories
+    3. Single directory (for clean_only augmentation mode)
+
+    Args:
+        filelist_path: Path to CSV file or directory name
+        data_dir: Base directory (used when filelist_path is a relative directory name)
+
+    Returns:
+        List of (clean_path, noisy_path) tuples
+    """
+    # Build full path
+    filelist_full_path = os.path.join(data_dir, filelist_path) if data_dir else filelist_path
+
+    # MODE 1 & 2: Directory-based loading
+    if os.path.isdir(filelist_full_path):
+        print(f"Loading from directory: {filelist_full_path}")
+
+        # Check for two_folders mode (clean/ and noisy/ subdirectories)
+        clean_dir = os.path.join(filelist_full_path, "clean")
+        noisy_dir = os.path.join(filelist_full_path, "noisy")
+
+        if os.path.isdir(clean_dir) and os.path.isdir(noisy_dir):
+            # Two folders mode (VoiceBank-DEMAND structure)
+            print(f"  Detected two_folders mode (clean/ and noisy/)")
+            clean_files = sorted(glob(os.path.join(clean_dir, "*.wav")))
+
+            pairs = []
+            for clean_path in clean_files:
+                filename = os.path.basename(clean_path)
+                noisy_path = os.path.join(noisy_dir, filename)
+
+                # Get relative paths from data_dir
+                rel_path = os.path.relpath(clean_path, data_dir) if data_dir else clean_path
+
+                if os.path.exists(noisy_path):
+                    if data_dir:
+                        clean_rel = os.path.relpath(clean_path, data_dir)
+                        noisy_rel = os.path.relpath(noisy_path, data_dir)
+                        pairs.append((clean_rel, noisy_rel))
+                    else:
+                        pairs.append((clean_path, noisy_path))
+                else:
+                    print(f"  Warning: No matching noisy file for {rel_path}, skipping")
+
+            if not pairs:
+                raise ValueError(f"No matching pairs found between {clean_dir} and {noisy_dir}")
+
+            print(f"  Found {len(pairs)} paired files")
+        else:
+            # Single directory mode - all files are clean (for clean_only augmentation)
+            print(f"  Single directory mode - treating all files as clean audio")
+            wav_files = sorted(glob(os.path.join(filelist_full_path, "*.wav")))
+
+            pairs = []
+            for wav_path in wav_files:
+                if data_dir:
+                    rel_path = os.path.relpath(wav_path, data_dir)
+                    pairs.append((rel_path, rel_path))
+                else:
+                    pairs.append((wav_path, wav_path))
+
+            print(f"  Found {len(pairs)} audio files")
+
+        return pairs
+
+    # MODE 3: CSV file
+    elif os.path.isfile(filelist_full_path):
+        print(f"Reading filelist from CSV: {filelist_full_path}")
+        with open(filelist_full_path, "r", encoding="utf-8") as ifile:
+            lines = [l.strip() for l in ifile.readlines() if l.strip()]
+
+        pairs = []
+        for l in lines:
+            parts = l.split("|")
+            if len(parts) >= 2:
+                pairs.append((parts[0].strip(), parts[1].strip()))
+            else:
+                raise ValueError(f"Invalid line in filelist (expected 'clean|noisy'): {l}")
+
+        print(f"  Loaded {len(pairs)} file pairs from CSV")
+        return pairs
+
+    else:
+        raise ValueError(f"Path not found or invalid: {filelist_full_path}")
 
 # ---------------------------
 # Collate function
@@ -180,14 +262,14 @@ class MelDataset(torch.utils.data.Dataset):
         device: Optional[torch.device] = None,
         fmax_loss: Optional[int] = None,
         noise_addition: bool = False,
-        augmentations = None,
-        use_mel_spec: bool = True, # NOVO PARÂMETRO (Default True para manter compatibilidade)
+        augmentation: Optional[dict] = None,  # ATUALIZADO: augmentation config dict
+        use_mel_spec: bool = True,
         **kwargs
     ):
         super().__init__()
         self.data_dir = data_dir
-        self.audio_files = get_dataset_filelist(data_files)
-        
+        self.audio_files = get_dataset_filelist(data_files, data_dir)  # Updated to pass data_dir
+
         random.seed(1234)
         if shuffle:
             random.shuffle(self.audio_files)
@@ -203,13 +285,39 @@ class MelDataset(torch.utils.data.Dataset):
         self.fmax = fmax
         self.fmax_loss = fmax_loss
         self.noise_addition = noise_addition
-        
+        self.use_mel_spec = use_mel_spec
+
         self.cached_wav = None
         self.cached_wav_input = None
         self.n_cache_reuse = n_cache_reuse
         self._cache_ref_count = 0
         self.device = device
-        self.use_mel_spec = use_mel_spec # Salva a configuração
+
+        # ===== AUGMENTATION SETUP =====
+        self.augmentation_config = augmentation
+        self.audio_augmenter = None
+        self.augmentation_enabled = False
+        self.augmentation_mode = "two_folders"  # default mode
+
+        if augmentation and augmentation.get("enabled", False):
+            self.augmentation_enabled = True
+            self.augmentation_mode = augmentation.get("mode", "two_folders")
+            augmentations_list = augmentation.get("augmentations", [])
+
+            if augmentations_list:
+                try:
+                    self.audio_augmenter = AudioAugmenter(
+                        augmentations=augmentations_list,
+                        device='cpu',  # Apply on CPU during data loading
+                        seed=1234
+                    )
+                    print(f"[INFO] Audio augmentation enabled in '{self.augmentation_mode}' mode with {len(augmentations_list)} augmentations.")
+                except Exception as e:
+                    print(f"[WARNING] Failed to initialize AudioAugmenter: {e}")
+                    self.augmentation_enabled = False
+            else:
+                print("[WARNING] Augmentation enabled but no augmentations specified.")
+                self.augmentation_enabled = False
 
     def __getitem__(self, index: int):
         clean_rel, noisy_rel = self.audio_files[index]
@@ -243,15 +351,32 @@ class MelDataset(torch.utils.data.Dataset):
                 clean_audio = torch.nn.functional.pad(clean_audio, (0, pad_len))
                 noisy_audio = torch.nn.functional.pad(noisy_audio, (0, pad_len))
 
+        # ===== APPLY AUGMENTATION =====
+        # In "clean_only" mode, generate noisy audio from clean audio using augmentation
+        if self.augmentation_enabled and self.augmentation_mode == "clean_only" and self.audio_augmenter is not None:
+            try:
+                # Apply augmentation to generate noisy audio from clean audio
+                # clean_audio shape: (channels, samples)
+                noisy_audio = self.audio_augmenter.apply(clean_audio.squeeze(0), self.sampling_rate)
+                # Normalize augmented audio
+                noisy_audio = noisy_audio / (noisy_audio.abs().max() + 1e-9)
+                # Ensure shape matches (1, samples)
+                if noisy_audio.dim() == 1:
+                    noisy_audio = noisy_audio.unsqueeze(0)
+            except Exception as e:
+                print(f"[WARNING] Augmentation failed for index {index}: {e}")
+                # Fall back to using original noisy audio if augmentation fails
+                pass
+
         # Geração do espectrograma (Linear ou Mel, dependendo de self.use_mel_spec)
         noisy_spec = get_spectrogram(
-            noisy_audio, self.n_fft, self.num_mels, self.sampling_rate, 
-            self.hop_size, self.win_size, self.fmin, self.fmax, 
+            noisy_audio, self.n_fft, self.num_mels, self.sampling_rate,
+            self.hop_size, self.win_size, self.fmin, self.fmax,
             use_mel=self.use_mel_spec
         )
         clean_spec = get_spectrogram(
-            clean_audio, self.n_fft, self.num_mels, self.sampling_rate, 
-            self.hop_size, self.win_size, self.fmin, self.fmax, 
+            clean_audio, self.n_fft, self.num_mels, self.sampling_rate,
+            self.hop_size, self.win_size, self.fmin, self.fmax,
             use_mel=self.use_mel_spec
         )
 

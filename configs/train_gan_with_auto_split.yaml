@@ -1,0 +1,162 @@
+# -------------------------------------------------------------------------
+# Training configuration for CleanUNet2-GAN with AUTOMATIC VALIDATION SPLIT
+# -------------------------------------------------------------------------
+# Use este arquivo quando tiver apenas um arquivo de lista de treino
+# e quiser dividir automaticamente para validação
+
+# ----------------------
+# Trainer (PyTorch Lightning)
+# ----------------------
+trainer:
+  accelerator: "auto"
+  devices: 1
+  max_epochs: 10000
+  precision: "16"
+  log_every_n_steps: 10
+  check_val_every_n_epoch: 2
+  gradient_clip_val: null
+  benchmark: true
+  num_sanity_val_steps: 0
+
+# ----------------------
+# Global / Runtime
+# ----------------------
+seed: 1234
+checkpoint_dir: "logs/checkpoints"
+logging_dir: "logs"
+
+# ----------------------
+# Model Hyperparameters
+# ----------------------
+model:
+  lr_g: 5e-5
+  lr_d: 5e-5
+  lr_decay: 0.999
+  grad_clip_threshold: 1.0
+  warmup_epochs: 0
+  adam_b1: 0.8
+  adam_b2: 0.99
+
+  train_cleanunet: true
+  train_cleanspecnet: true
+  conditioning_type: "film"
+
+  cleanunet2_checkpoint: null
+  cleanunet_checkpoint: null
+  cleanspecnet_checkpoint: null
+
+  val_metrics_interval_epochs: 1
+
+  cleanunet_params:
+    channels_input: 1
+    channels_output: 1
+    channels_H: 64
+    max_H: 768
+    encoder_n_layers: 8
+    kernel_size: 4
+    stride: 2
+    tsfm_n_layers: 5
+    tsfm_n_head: 8
+    tsfm_d_model: 512
+    tsfm_d_inner: 2048
+
+  cleanspecnet_params:
+    input_channels: 513
+    num_conv_layers: 5
+    kernel_size: 4
+    stride: 1
+    conv_hidden_dim: 64
+    hidden_dim: 512
+    num_attention_layers: 5
+    num_heads: 8
+    dropout: 0.1
+
+# ----------------------
+# Loss Configuration
+# ----------------------
+loss_config:
+  lambda_mel: 10.0
+  lambda_fm: 2.0
+  lambda_adv: 1.0
+  weight_waveform: 100.0
+  weight_spec: 1.0
+  weight_phase: 10.0
+
+  stft_config:
+    fft_sizes: [1024, 2048, 512]
+    hop_sizes: [120, 240, 50]
+    win_lengths: [600, 1200, 240]
+    window: "hann_window"
+
+# ----------------------
+# Data Configuration
+# ----------------------
+data:
+  data_dir: "/root/DATASETS/VoiceBank-DEMAND-16k/"
+  train_list_path: "filelists/train.csv"
+
+  # ============================================================
+  # SPLIT AUTOMÁTICO - 10% dos dados de treino para validação
+  # ============================================================
+  # NÃO especificamos val_list_path, usamos val_split:
+  val_split: 0.1  # 10% para validação, 90% para treino
+  # Outras opções: 0.15 (15%), 0.2 (20%), etc.
+
+  segment_size: 16384
+  batch_size: 8
+  num_workers: 8
+  persistent_workers: true
+  sampling_rate: 16000
+
+  use_mel_spec: false
+
+  n_fft: 1024
+  num_mels: 80
+  hop_size: 256
+  win_size: 1024
+  fmin: 0
+  fmax: 8000
+
+  # Augmentation desabilitado por padrão
+  # augmentation:
+  #   enabled: false
+
+# ----------------------
+# Callbacks
+# ----------------------
+callbacks:
+  best_checkpoint:
+    _target_: "pytorch_lightning.callbacks.ModelCheckpoint"
+    monitor: "val/loss_mel"
+    dirpath: "logs/checkpoints"
+    filename: "best-model-{epoch:02d}-{val/loss_mel:.4f}"
+    save_top_k: 3
+    mode: "min"
+    save_last: true
+
+  periodic_checkpoint:
+    _target_: "pytorch_lightning.callbacks.ModelCheckpoint"
+    dirpath: "logs/checkpoints"
+    filename: "epoch-{epoch:04d}"
+    every_n_epochs: 3
+    save_top_k: -1
+
+# ----------------------
+# Logger
+# ----------------------
+logger:
+  choice: "tensorboard"
+
+  tensorboard:
+    _target_: pytorch_lightning.loggers.TensorBoardLogger
+    save_dir: "logs"
+    name: "cleanunet_gan_autosplit"
+    default_hp_metric: false
+
+  wandb:
+    _target_: pytorch_lightning.loggers.WandbLogger
+    project: "CleanUNet2-GAN_Project"
+    name: "cleanunet2_gan_autosplit"
+    save_dir: "logs"
+    offline: false
+    log_model: true

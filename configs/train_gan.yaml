@@ -42,10 +42,21 @@ model:
 
   conditioning_type: "film"  # Options: addition, concatenation, film
 
-  cleanunet_checkpoint: "checkpoints/cleanunet/last.ckpt"
-  cleanspecnet_checkpoint: "checkpoints/cleanspecnet/last.ckpt"
+  # ----------------------
+  # Checkpoint Loading Options (Choose ONE strategy)
+  # ----------------------
 
-  val_metrics_interval_epochs: 1 # Calculate PESQ/STOI/SDR every 5 epochs (e.g., 5, 10, 15...)
+  # OPTION 1: Load complete CleanUNet2 model from Vanilla training
+  # Use this to initialize the GAN with a pre-trained CleanUNet2 model
+  # This loads ALL components: CleanUNet, CleanSpecNet, Conditioner, SpecUpsampler
+  cleanunet2_checkpoint: null  # e.g., "checkpoints/vanilla/best-model.ckpt"
+
+  # OPTION 2: Load individual submodules (only if cleanunet2_checkpoint is null)
+  # Use this if you have separate checkpoints for CleanUNet and CleanSpecNet
+  cleanunet_checkpoint: null   # e.g., "checkpoints/cleanunet/last.ckpt"
+  cleanspecnet_checkpoint: null  # e.g., "checkpoints/cleanspecnet/last.ckpt"
+
+  val_metrics_interval_epochs: 1 # Calculate PESQ/STOI/SDR every N epochs
 
   # CleanUNet parameters (Waveform Generator)
   cleanunet_params:
@@ -100,17 +111,27 @@ data:
   # Adjust paths according to your environment
   data_dir: "/root/DATASETS/VoiceBank-DEMAND-16k/"
   train_list_path: "filelists/train.csv"
+
+  # ============================================================
+  # CONFIGURAÇÃO DE VALIDAÇÃO - Escolha UMA das opções abaixo:
+  # ============================================================
+
+  # OPÇÃO 1: Usar arquivo/lista separada para validação
   val_list_path: "filelists/test.csv"
-  
+
+  # OPÇÃO 2: Split automático (porcentagem do conjunto de treino)
+  # Comente 'val_list_path' acima e descomente a linha abaixo:
+  # val_split: 0.1  # 10% do treino para validação (0.15 = 15%, 0.2 = 20%, etc.)
+
   # GANs need larger segments to capture periodicity
   # 16384 samples ~= 1 second at 16kHz (ideal for MPD Discriminator)
-  segment_size: 16384  
-  
+  segment_size: 16384
+
   batch_size: 8        # Reduced (vs 10) due to high VRAM consumption of discriminators
   num_workers: 8
   persistent_workers: true
   sampling_rate: 16000
-  
+
   use_mel_spec: false
 
   # Audio processing parameters (Spectrogram)
@@ -120,6 +141,26 @@ data:
   win_size: 1024
   fmin: 0
   fmax: 8000
+
+  # ============================================================
+  # DATA AUGMENTATION (Opcional)
+  # ============================================================
+  # Desabilitado por padrão. Para habilitar, veja train_gan_with_augmentation.yaml
+  # ou descomente e configure abaixo:
+  #
+  # augmentation:
+  #   enabled: true
+  #   mode: "two_folders"  # ou "clean_only"
+  #   augmentations:
+  #     - name: AddBackgroundNoise
+  #       params:
+  #         # SUPORTA BUSCA RECURSIVA! Especifique apenas o diretório:
+  #         background_paths: "/path/to/noise/folder"  # Busca .wav/.flac/.mp3/.ogg recursivamente
+  #         min_snr_in_db: 5.0
+  #         max_snr_in_db: 25.0
+  #         p: 0.5
+  #
+  # NOTA: Arquivos de ruído são automaticamente reamostrados para sampling_rate (16kHz)
 
 # ----------------------
 # Callbacks
