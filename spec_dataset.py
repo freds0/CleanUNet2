@@ -339,10 +339,12 @@ class MelDataset(torch.utils.data.Dataset):
         self.audio_augmenter = None
         self.augmentation_enabled = False
         self.augmentation_mode = "two_folders"  # default mode
+        self.apply_to_noisy = False  # Whether to apply augmentation to noisy audio in two_folders mode
 
         if augmentation and augmentation.get("enabled", False):
             self.augmentation_enabled = True
             self.augmentation_mode = augmentation.get("mode", "two_folders")
+            self.apply_to_noisy = augmentation.get("apply_to_noisy", False)  # New option
             augmentations_list = augmentation.get("augmentations", [])
 
             if augmentations_list:
@@ -352,7 +354,10 @@ class MelDataset(torch.utils.data.Dataset):
                         device='cpu',  # Apply on CPU during data loading
                         seed=1234
                     )
-                    print(f"Audio augmentation enabled in '{self.augmentation_mode}' mode with {len(augmentations_list)} augmentations.")
+                    mode_desc = f"'{self.augmentation_mode}' mode"
+                    if self.augmentation_mode == "two_folders" and self.apply_to_noisy:
+                        mode_desc += " (augmenting noisy audio)"
+                    print(f"Audio augmentation enabled in {mode_desc} with {len(augmentations_list)} augmentations.")
                 except Exception as e:
                     print(f"Warning: Failed to initialize AudioAugmenter: {e}")
                     self.augmentation_enabled = False
@@ -427,15 +432,24 @@ class MelDataset(torch.utils.data.Dataset):
                 clean_audio = torch.nn.functional.pad(clean_audio, (0, pad_len_clean), "constant")
                 noisy_audio = torch.nn.functional.pad(noisy_audio, (0, pad_len_noisy), "constant")
 
-        # Apply augmentation if enabled and mode is "clean_only"
-        # In "clean_only" mode, we generate noisy audio from clean audio using augmentation
-        if self.augmentation_enabled and self.augmentation_mode == "clean_only" and self.audio_augmenter is not None:
+        # Apply augmentation based on mode
+        if self.augmentation_enabled and self.audio_augmenter is not None:
             try:
-                # Apply augmentation to generate noisy audio from clean audio
-                # clean_audio shape: (channels, samples)
-                noisy_audio = self.audio_augmenter.apply(clean_audio.squeeze(0), self.sampling_rate)
-                # Normalize augmented audio
-                noisy_audio = noisy_audio / (noisy_audio.abs().max() + 1e-9)
+                if self.augmentation_mode == "clean_only":
+                    # In "clean_only" mode, we generate noisy audio from clean audio using augmentation
+                    # clean_audio shape: (channels, samples)
+                    noisy_audio = self.audio_augmenter.apply(clean_audio.squeeze(0), self.sampling_rate)
+                    # Normalize augmented audio
+                    noisy_audio = noisy_audio / (noisy_audio.abs().max() + 1e-9)
+
+                elif self.augmentation_mode == "two_folders" and self.apply_to_noisy:
+                    # In "two_folders" mode with apply_to_noisy=True, augment the noisy audio further
+                    # This adds additional augmentation on top of existing noisy audio
+                    noisy_audio_squeezed = noisy_audio.squeeze(0)
+                    noisy_audio = self.audio_augmenter.apply(noisy_audio_squeezed, self.sampling_rate)
+                    # Normalize augmented audio
+                    noisy_audio = noisy_audio / (noisy_audio.abs().max() + 1e-9)
+
             except Exception as e:
                 print(f"Warning: Augmentation failed for index {index}: {e}")
                 # Fall back to using original noisy audio if augmentation fails

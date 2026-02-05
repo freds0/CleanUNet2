@@ -13,7 +13,7 @@ inference:
 
   # Path to the checkpoint to load for inference.
   # Use an absolute path or path relative to your project root.
-  checkpoint_path: "checkpoints_cleanunet_b200/best-model-epoch=9359.ckpt"
+  checkpoint_path: "checkpoints_cleanunet2_paper/last.ckpt"
 
   # Force CPU usage even if CUDA is available. Set to true or false.
   force_cpu: false

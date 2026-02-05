@@ -31,8 +31,9 @@ model:
   sample_rate: 22050  # LJSpeech usa 22050 Hz
   conditioning_type: "film"
 
-  cleanunet_checkpoint: "checkpoints/cleanunet/last.ckpt"
-  cleanspecnet_checkpoint: "checkpoints/cleanspecnet/last.ckpt"
+  cleanunet_checkpoint: "../checkpoints/cleanunet/last.ckpt"
+  cleanspecnet_checkpoint: "../
+checkpoints/cleanspecnet/last.ckpt"
 
   train_cleanunet: true
   train_cleanspecnet: true
@@ -196,4 +197,4 @@ logger:
   #   offline: false
   #   log_model: true
 
-resume_from_checkpoint: "checkpoints_cleanunet2_paper/last.ckpt"
+resume_from_checkpoint: "/home/fred/Projetos/AKCIT/INTERSPEECH2026/checkpoints/cleanunet2_vanilla_VoiceBank-DEMAND-16k/last.ckpt"

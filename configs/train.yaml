@@ -72,19 +72,24 @@ model:
 data:
   data_dir: "/home/fred/Projetos/DATASETS/VoiceBank-DEMAND-16k/"
 
-  # File list configuration - Two options:
-  #
+  # ============================================================
+  # CONFIGURAÇÃO DE ARQUIVO - Duas opções:
+  # ============================================================
   # Option 1: CSV file with pairs (clean|noisy)
+  # Option 2: Directory path (auto-scan for .wav files recursively)
+
   train_list_path: "filelists/train.csv"
+
+  # ============================================================
+  # CONFIGURAÇÃO DE VALIDAÇÃO - Escolha UMA das opções abaixo:
+  # ============================================================
+
+  # OPÇÃO 1: Usar arquivo/lista separada para validação
   val_list_path: "filelists/test.csv"
-  #
-  # Option 2: Directory path (auto-scan for .wav files)
-  # Examples:
-  #   - Single directory: "path/to/audio" (all .wav files treated as clean)
-  #   - Paired directories: "path/to/dataset" with subdirs "clean/" and "noisy/"
-  #
-  # train_list_path: "path/to/train/audio"
-  # val_list_path: "path/to/val/audio"
+
+  # OPÇÃO 2: Split automático (porcentagem do conjunto de treino)
+  # Comente 'val_list_path' acima e descomente a linha abaixo:
+  # val_split: 0.1  # 10% do treino para validação (0.15 = 15%, 0.2 = 20%, etc.)
 
   batch_size: 30
   num_workers: 8
@@ -92,69 +97,90 @@ data:
   # Optional: segment length (samples) used by dataset sampling (if supported). Default: 8192
   segment_size: 24576
 
-  # ----------------------
-  # Augmentation configuration
-  # ----------------------
-  # Two modes are supported:
+  # ============================================================
+  # Configuração de Data Augmentation
+  # ============================================================
+  # Três modos são suportados:
   #
-  # MODE 1: "two_folders" - You already have paired clean/noisy data
+  # MODE 1: "two_folders" - Você já tem pares clean/noisy
   # ---------------------------------------------------------------
-  # When your filelist (train.csv) contains pairs like "clean_path|noisy_path"
-  # The model will train using the existing noisy files.
-  # Augmentation is NOT applied (the data is already noisy).
+  # Quando sua filelist contém pares "clean_path|noisy_path".
+  # O modelo treina usando os arquivos ruidosos existentes.
+  # Augmentation NÃO é aplicado (os dados já são ruidosos).
   #
-  # MODE 2: "clean_only" - Generate noisy data on-the-fly
+  # MODE 2: "two_folders" com apply_to_noisy=true - Augmentation adicional
+  # -----------------------------------------------------------------------
+  # Similar ao MODE 1, mas ADICIONA augmentations ao áudio ruidoso existente.
+  # Útil para aumentar a diversidade de ruídos além do que está nos arquivos.
+  #
+  # MODE 3: "clean_only" - Gerar dados ruidosos on-the-fly
   # -------------------------------------------------------
-  # When you only have clean audio, augmentation will be applied during training
-  # to synthetically add noise from a specified folder.
-  # Your filelist still needs the format "clean_path|noisy_path", but the noisy_path
-  # will be ignored, and noise will be generated from clean audio + noise files.
+  # Quando você tem apenas áudio limpo, augmentation será aplicado durante treino
+  # para adicionar ruído sinteticamente. O noisy_path na filelist é ignorado.
   #
-  # EXAMPLE CONFIGURATION:
-  # ----------------------
+  # EXEMPLO DE CONFIGURAÇÃO:
+  # ------------------------
 
-  # Disable augmentation (use existing noisy files from filelist)
+  # OPÇÃO A: Desabilitar augmentation (usar arquivos ruidosos existentes)
   augmentation:
     enabled: false
     mode: "two_folders"
 
-  # ------- OR -------
+  # ------- OU -------
 
-  # Enable augmentation (generate noisy data from clean audio)
+  # OPÇÃO B: Habilitar augmentation (modo clean_only - gerar ruído de áudio limpo)
   # augmentation:
   #   enabled: true
   #   mode: "clean_only"
   #   augmentations:
   #     - name: AddBackgroundNoise
   #       params:
-  #         background_paths: "/path/to/noise/wav/folder"  # Folder with .wav noise files
+  #         # SUPORTA BUSCA RECURSIVA! Especifique apenas o diretório:
+  #         background_paths: "/path/to/noise/folder"  # Busca .wav/.flac/.mp3/.ogg recursivamente
+  #         # Ou use lista de diretórios/arquivos:
+  #         # background_paths:
+  #         #   - "/path/to/noise/DEMAND"
+  #         #   - "/path/to/noise/FSDnoisy18k"
   #         min_snr_in_db: 0.0
   #         max_snr_in_db: 15.0
-  #         p: 0.8  # Probability of applying this augmentation
-  #
-  #     # Optional: Add colored noise (pink, brown, white noise)
-  #     - name: AddColoredNoise
+  #         p: 0.8  # Probabilidade de aplicar
+
+  # ------- OU -------
+
+  # OPÇÃO C: Adicionar augmentations ao áudio ruidoso existente (modo two_folders + apply_to_noisy)
+  # augmentation:
+  #   enabled: true
+  #   mode: "two_folders"
+  #   apply_to_noisy: true  # NOVO! Aplicar augmentations ao áudio ruidoso
+  #   augmentations:
+  #     # Adiciona ruído adicional ao áudio já ruidoso
+  #     - name: AddBackgroundNoise
   #       params:
-  #         min_snr_in_db: 5.0
-  #         max_snr_in_db: 20.0
-  #         min_f_decay: -2.0
-  #         max_f_decay: 2.0
+  #         background_paths: "/path/to/extra/noise"  # Busca recursiva automática!
+  #         min_snr_in_db: 10.0
+  #         max_snr_in_db: 30.0
   #         p: 0.5
   #
-  #     # Optional: Apply impulse response (room reverb simulation)
-  #     - name: ApplyImpulseResponse
-  #       params:
-  #         ir_paths: "/path/to/impulse/responses"
-  #         p: 0.3
-  #
-  #     # Optional: Random gain adjustment
-  #     - name: Gain
-  #       params:
-  #         min_gain_in_db: -12.0
-  #         max_gain_in_db: 12.0
-  #         p: 0.5
-  #
-  #     # Optional: Frequency filters
+  #     # Outros augmentations opcionais:
+  #     # - name: AddColoredNoise
+  #     #   params:
+  #     #     min_snr_in_db: 5.0
+  #     #     max_snr_in_db: 20.0
+  #     #     min_f_decay: -2.0
+  #     #     max_f_decay: 2.0
+  #     #     p: 0.5
+  #     #
+  #     # - name: ApplyImpulseResponse
+  #     #   params:
+  #     #     ir_paths: "/path/to/impulse/responses"  # Busca recursiva também!
+  #     #     p: 0.3
+  #     #
+  #     # - name: Gain
+  #     #   params:
+  #     #     min_gain_in_db: -12.0
+  #     #     max_gain_in_db: 12.0
+  #     #     p: 0.5
+  #     #
   #     # - name: LowPassFilter
   #     #   params:
   #     #     min_cutoff_freq: 2000
@@ -166,6 +192,8 @@ data:
   #     #     min_cutoff_freq: 200
   #     #     max_cutoff_freq: 1200
   #     #     p: 0.3
+  #
+  # NOTA: Arquivos de ruído/IR são automaticamente reamostrados para 16kHz (configurado em model.sample_rate)
 
 # ----------------------
 # Callbacks
