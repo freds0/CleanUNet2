@@ -87,6 +87,7 @@ data:
   num_workers: 8
   persistent_workers: true
   segment_size: 32768  # ~1.5 segundos a 22050 Hz
+  sampling_rate: 22050  # IMPORTANTE: Deve corresponder ao model.sample_rate
 
   # ----------------------
   # Augmentation configuration

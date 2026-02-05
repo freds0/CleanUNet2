@@ -26,6 +26,8 @@ class CleanUNetDataModule(pl.LightningDataModule):
         num_workers (int): Number of worker processes for dataloading.
         persistent_workers (bool): Keep workers alive between epochs (faster).
         segment_size (int): Segment size for audio cropping.
+        sampling_rate (int): Target sampling rate for audio (default: 16000 Hz).
+            Audio files will be automatically resampled to this rate.
         augmentation (dict): Augmentation configuration (optional).
     """
     def __init__(
@@ -38,6 +40,7 @@ class CleanUNetDataModule(pl.LightningDataModule):
         num_workers: int = 4,
         persistent_workers: bool = False,
         segment_size: int = None,
+        sampling_rate: int = 16000,
         augmentation: dict = None
     ):
         super().__init__()
@@ -50,6 +53,7 @@ class CleanUNetDataModule(pl.LightningDataModule):
         self.num_workers = num_workers
         self.persistent_workers = persistent_workers
         self.segment_size = segment_size
+        self.sampling_rate = sampling_rate
         self.augmentation = augmentation
 
         # Validar configuração
@@ -81,6 +85,8 @@ class CleanUNetDataModule(pl.LightningDataModule):
         dataset_kwargs = {}
         if self.segment_size is not None:
             dataset_kwargs["segment_size"] = self.segment_size
+        if self.sampling_rate is not None:
+            dataset_kwargs["sampling_rate"] = self.sampling_rate
 
         # OPÇÃO 1: val_list_path fornecido - usar arquivo separado para validação
         if self.val_list_path is not None:
