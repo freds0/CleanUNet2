@@ -314,19 +314,23 @@ class CleanUNet2Stage2Module(pl.LightningModule):
                             )
 
                         # WandB logger
-                        import wandb
-                        if isinstance(self.logger.experiment, wandb.sdk.wandb_run.Run):
-                            self.logger.experiment.log({
-                                f'audio/sample_{idx}_noisy': wandb.Audio(
-                                    sample['noisy'].numpy(), sample_rate=sr, caption=f'Noisy {idx}'
-                                ),
-                                f'audio/sample_{idx}_clean': wandb.Audio(
-                                    sample['clean'].numpy(), sample_rate=sr, caption=f'Clean {idx}'
-                                ),
-                                f'audio/sample_{idx}_denoised': wandb.Audio(
-                                    sample['denoised'].numpy(), sample_rate=sr, caption=f'Denoised {idx}'
-                                )
-                            })
+                        try:
+                            import wandb
+                            if isinstance(self.logger.experiment, wandb.sdk.wandb_run.Run):
+                                self.logger.experiment.log({
+                                    f'audio/sample_{idx}_noisy': wandb.Audio(
+                                        sample['noisy'].numpy(), sample_rate=sr, caption=f'Noisy {idx}'
+                                    ),
+                                    f'audio/sample_{idx}_clean': wandb.Audio(
+                                        sample['clean'].numpy(), sample_rate=sr, caption=f'Clean {idx}'
+                                    ),
+                                    f'audio/sample_{idx}_denoised': wandb.Audio(
+                                        sample['denoised'].numpy(), sample_rate=sr, caption=f'Denoised {idx}'
+                                    )
+                                })
+                        except (ImportError, AttributeError):
+                            pass  # WandB not available
+
                     except Exception as e:
                         print(f"[Stage-2] Warning: Could not log audio sample {idx}: {e}")
 
