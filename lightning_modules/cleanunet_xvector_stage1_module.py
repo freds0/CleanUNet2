@@ -10,6 +10,7 @@ import torch
 import torch.nn.functional as F
 import pytorch_lightning as pl
 from pathlib import Path
+import torchaudio
 
 from cleanunet.cleanunet2_with_xvector import CleanUNet2WithXVector
 from losses import CleanUNet2Loss, MultiResolutionSTFTLoss, AntiWrappingPhaseLoss
@@ -94,9 +95,36 @@ class CleanUNet2Stage1Module(pl.LightningModule):
 
         # ===== Metrics Initialization =====
         sr = config.get('audio', {}).get('sample_rate', 16000)
-        self.val_pesq = PerceptualEvaluationSpeechQuality(fs=sr, mode='wb')
+        self.sample_rate = sr
+
+        # PESQ only supports 8kHz or 16kHz
+        if sr < 8000:
+            raise ValueError(
+                f"[Stage-1] ERROR: Sample rate {sr} Hz is too low for PESQ metric. "
+                f"PESQ requires at least 8000 Hz. Please use sample_rate >= 8000 in your config."
+            )
+        elif sr in [8000, 16000]:
+            # Use sample rate directly for PESQ
+            self.pesq_sample_rate = sr
+            print(f"[Stage-1] Using sample rate {sr} Hz for PESQ metric")
+        else:
+            # Sample rate > 16000: downsample to 16kHz for PESQ calculation
+            self.pesq_sample_rate = 16000
+            print(f"[Stage-1] ⚠️  WARNING: Sample rate is {sr} Hz, but PESQ only supports 8kHz/16kHz.")
+            print(f"[Stage-1] Audio will be downsampled to {self.pesq_sample_rate} Hz for PESQ calculation.")
+
+        self.val_pesq = PerceptualEvaluationSpeechQuality(fs=self.pesq_sample_rate, mode='wb')
         self.val_stoi = ShortTimeObjectiveIntelligibility(fs=sr, extended=False)
         self.val_sisdr = ScaleInvariantSignalNoiseRatio()
+
+        # Create resampler if needed for PESQ
+        if self.sample_rate != self.pesq_sample_rate:
+            self.pesq_resampler = torchaudio.transforms.Resample(
+                orig_freq=self.sample_rate,
+                new_freq=self.pesq_sample_rate
+            )
+        else:
+            self.pesq_resampler = None
 
         # ===== Latents Storage =====
         self.latents_dir = Path(config.get('latents_dir', 'stored_latents_stage1'))
@@ -192,7 +220,15 @@ class CleanUNet2Stage1Module(pl.LightningModule):
             val_sisdr = torch.tensor(-50.0, device=self.device)
         else:
             try:
-                val_pesq = self.val_pesq(preds, target)
+                # Resample for PESQ if needed
+                if self.pesq_resampler is not None:
+                    preds_pesq = self.pesq_resampler(preds)
+                    target_pesq = self.pesq_resampler(target)
+                else:
+                    preds_pesq = preds
+                    target_pesq = target
+
+                val_pesq = self.val_pesq(preds_pesq, target_pesq)
             except Exception:
                 val_pesq = torch.tensor(1.0, device=self.device)
 
