@@ -2,6 +2,7 @@ import torch
 import pytorch_lightning as pl
 import itertools
 import torch.nn.functional as F
+import torchaudio
 
 # Project imports
 from cleanunet.cleanunet2 import CleanUNet2
@@ -136,10 +137,38 @@ class CleanUNetGANModule(pl.LightningModule):
         # 4. Initialize Validation Metrics
         # ---------------------------------------
         # SI-SDR runs on GPU (Fast)
+        # Get sample rate from config
+        sr = int(getattr(hparams, "sampling_rate", 16000))
+        self.sample_rate = sr
+
+        # PESQ only supports 8kHz or 16kHz
+        if sr < 8000:
+            raise ValueError(
+                f"[GAN] ERROR: Sample rate {sr} Hz is too low for PESQ metric. "
+                f"PESQ requires at least 8000 Hz. Please use sampling_rate >= 8000 in your config."
+            )
+        elif sr in [8000, 16000]:
+            # Use sample rate directly for PESQ
+            self.pesq_sample_rate = sr
+            print(f"[GAN] Using sample rate {sr} Hz for PESQ metric")
+        else:
+            # Sample rate > 16000: downsample to 16kHz for PESQ calculation
+            self.pesq_sample_rate = 16000
+            print(f"[GAN] ⚠️  WARNING: Sample rate is {sr} Hz, but PESQ only supports 8kHz/16kHz.")
+            print(f"[GAN] Audio will be downsampled to {self.pesq_sample_rate} Hz for PESQ calculation.")
+
         self.val_sisdr = ScaleInvariantSignalNoiseRatio()
-        # PESQ and STOI run on CPU (Slow)
-        self.val_stoi = ShortTimeObjectiveIntelligibility(fs=16000, extended=False)
-        self.val_pesq = PerceptualEvaluationSpeechQuality(fs=16000, mode='wb')
+        self.val_stoi = ShortTimeObjectiveIntelligibility(fs=sr, extended=False)
+        self.val_pesq = PerceptualEvaluationSpeechQuality(fs=self.pesq_sample_rate, mode='wb')
+
+        # Create resampler if needed for PESQ
+        if self.sample_rate != self.pesq_sample_rate:
+            self.pesq_resampler = torchaudio.transforms.Resample(
+                orig_freq=self.sample_rate,
+                new_freq=self.pesq_sample_rate
+            )
+        else:
+            self.pesq_resampler = None
 
         # ---------------------------------------
         # 5. Audio Samples for Logging (6 samples: noisy, clean, denoised)
@@ -368,7 +397,15 @@ class CleanUNetGANModule(pl.LightningModule):
         else:
             # PESQ calculation
             try:
-                val_pesq = self.val_pesq(preds, target)
+                # Resample for PESQ if needed
+                if self.pesq_resampler is not None:
+                    preds_pesq = self.pesq_resampler(preds)
+                    target_pesq = self.pesq_resampler(target)
+                else:
+                    preds_pesq = preds
+                    target_pesq = target
+
+                val_pesq = self.val_pesq(preds_pesq, target_pesq)
             except Exception as e:
                 val_pesq = torch.tensor(1.0, device=self.device)
 
