@@ -115,10 +115,15 @@ def test_augmentation_config(config_path):
     print(f"   Modo: {mode}")
     print(f"   Número de augmentations: {len(augmentations)}\n")
 
+    # Contador total de arquivos de ruído
+    total_noise_files = 0
+    noise_files_by_aug = {}
+
     # Testar cada augmentation
     for i, aug in enumerate(augmentations, 1):
         name = aug.get('name', 'Unknown')
         params = aug.get('params', {})
+        aug_noise_files = 0
 
         print(f"{i}. {name}")
         print(f"   Parâmetros:")
@@ -129,23 +134,40 @@ def test_augmentation_config(config_path):
                 if isinstance(value, str):
                     if os.path.isdir(value):
                         files = get_audio_files_recursively(value)
-                        print(f"       ✅ Diretório válido com {len(files)} arquivo(s)")
+                        aug_noise_files = len(files)
+                        print(f"       ✅ Diretório válido com {aug_noise_files} arquivo(s) de ruído")
                     elif os.path.isfile(value):
-                        print(f"       ✅ Arquivo válido")
+                        aug_noise_files = 1
+                        print(f"       ✅ Arquivo válido (1 arquivo de ruído)")
                     else:
                         print(f"       ❌ Caminho inválido ou não existe")
                 elif isinstance(value, list):
-                    total_files = 0
+                    aug_noise_files = 0
                     for path in value:
                         if os.path.isdir(path):
                             files = get_audio_files_recursively(path)
-                            total_files += len(files)
+                            aug_noise_files += len(files)
                         elif os.path.isfile(path):
-                            total_files += 1
-                    print(f"       ✅ {total_files} arquivo(s) encontrados no total")
+                            aug_noise_files += 1
+                    print(f"       ✅ {aug_noise_files} arquivo(s) de ruído encontrados no total")
             else:
                 print(f"     {key}: {value}")
+
+        # Armazenar contagem para este augmentation
+        if aug_noise_files > 0:
+            noise_files_by_aug[name] = aug_noise_files
+            total_noise_files += aug_noise_files
         print()
+
+    # Mostrar resumo de arquivos de ruído
+    if total_noise_files > 0:
+        print(f"{'='*60}")
+        print(f"📊 RESUMO DE ARQUIVOS DE RUÍDO PARA DATA AUGMENTATION")
+        print(f"{'='*60}")
+        for aug_name, count in noise_files_by_aug.items():
+            print(f"  • {aug_name}: {count} arquivo(s)")
+        print(f"\n  TOTAL: {total_noise_files} arquivo(s) de ruído disponíveis")
+        print(f"{'='*60}\n")
 
     # Tentar instanciar o AudioAugmenter
     print("Tentando instanciar AudioAugmenter...")
@@ -207,6 +229,40 @@ def apply_augmentation_to_files(config_path, input_dir, output_dir, num_files=10
     print(f"  - Sample rate: {sample_rate} Hz")
     print(f"  - Modo: {mode}")
     print(f"  - Número de augmentations: {len(augmentations)}\n")
+
+    # Contar arquivos de ruído disponíveis
+    print("Verificando arquivos de ruído para data augmentation:")
+    print("-" * 60)
+    total_noise_files = 0
+    for i, aug in enumerate(augmentations, 1):
+        name = aug.get('name', 'Unknown')
+        params = aug.get('params', {})
+        aug_noise_files = 0
+
+        for key, value in params.items():
+            if key in ['background_paths', 'ir_paths']:
+                if isinstance(value, str):
+                    if os.path.isdir(value):
+                        files = get_audio_files_recursively(value)
+                        aug_noise_files = len(files)
+                    elif os.path.isfile(value):
+                        aug_noise_files = 1
+                elif isinstance(value, list):
+                    for path in value:
+                        if os.path.isdir(path):
+                            files = get_audio_files_recursively(path)
+                            aug_noise_files += len(files)
+                        elif os.path.isfile(path):
+                            aug_noise_files += 1
+
+        if aug_noise_files > 0:
+            print(f"  {i}. {name}: {aug_noise_files} arquivo(s) de ruído")
+            total_noise_files += aug_noise_files
+        else:
+            print(f"  {i}. {name}: sem arquivos de ruído")
+
+    print(f"\n  📊 TOTAL: {total_noise_files} arquivo(s) de ruído disponíveis para augmentation")
+    print("-" * 60 + "\n")
 
     # Buscar arquivos de áudio no input_dir
     if not os.path.exists(input_dir):

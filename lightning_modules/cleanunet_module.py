@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 import pytorch_lightning as pl
+import torchaudio
 
 # Import TorchMetrics for Audio
 from torchmetrics.audio import PerceptualEvaluationSpeechQuality
@@ -146,9 +147,38 @@ class CleanUNetLightningModule(pl.LightningModule):
         # ------------------------------------------------------------------
         # 5. Metrics (TorchMetrics)
         # ------------------------------------------------------------------
-        self.val_pesq = PerceptualEvaluationSpeechQuality(fs=16000, mode='wb')
-        self.val_stoi = ShortTimeObjectiveIntelligibility(fs=16000, extended=False)
+        # Get sample rate from config
+        sr = int(getattr(hparams, "sample_rate", 16000))
+        self.sample_rate = sr
+
+        # PESQ only supports 8kHz or 16kHz
+        if sr < 8000:
+            raise ValueError(
+                f"[Vanilla] ERROR: Sample rate {sr} Hz is too low for PESQ metric. "
+                f"PESQ requires at least 8000 Hz. Please use sample_rate >= 8000 in your config."
+            )
+        elif sr in [8000, 16000]:
+            # Use sample rate directly for PESQ
+            self.pesq_sample_rate = sr
+            print(f"[Vanilla] Using sample rate {sr} Hz for PESQ metric")
+        else:
+            # Sample rate > 16000: downsample to 16kHz for PESQ calculation
+            self.pesq_sample_rate = 16000
+            print(f"[Vanilla] ⚠️  WARNING: Sample rate is {sr} Hz, but PESQ only supports 8kHz/16kHz.")
+            print(f"[Vanilla] Audio will be downsampled to {self.pesq_sample_rate} Hz for PESQ calculation.")
+
+        self.val_pesq = PerceptualEvaluationSpeechQuality(fs=self.pesq_sample_rate, mode='wb')
+        self.val_stoi = ShortTimeObjectiveIntelligibility(fs=sr, extended=False)
         self.val_sisdr = ScaleInvariantSignalNoiseRatio()
+
+        # Create resampler if needed for PESQ
+        if self.sample_rate != self.pesq_sample_rate:
+            self.pesq_resampler = torchaudio.transforms.Resample(
+                orig_freq=self.sample_rate,
+                new_freq=self.pesq_sample_rate
+            )
+        else:
+            self.pesq_resampler = None
 
         # Legacy Helper (kept unused for validation now)
         self.obj_metrics = ObjectiveMetricsPredictor()
@@ -256,7 +286,15 @@ class CleanUNetLightningModule(pl.LightningModule):
         else:
             # PESQ calculation
             try:
-                val_pesq = self.val_pesq(preds, target)
+                # Resample for PESQ if needed
+                if self.pesq_resampler is not None:
+                    preds_pesq = self.pesq_resampler(preds)
+                    target_pesq = self.pesq_resampler(target)
+                else:
+                    preds_pesq = preds
+                    target_pesq = target
+
+                val_pesq = self.val_pesq(preds_pesq, target_pesq)
             except Exception as e:
                 # print(f"[WARNING] PESQ computation failed: {e}")
                 val_pesq = torch.tensor(1.0, device=self.device)
