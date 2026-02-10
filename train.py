@@ -13,6 +13,8 @@ from argparse import Namespace
 import logging
 import copy
 import torch
+import tempfile
+import os
 from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
 from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger
@@ -171,10 +173,39 @@ def train(config: dict):
     if ckpt_path:
         logger.info("Resuming training from checkpoint: %s", ckpt_path)
 
+        # Clean incompatible keys from checkpoint before loading
+        logger.info("Cleaning incompatible keys from checkpoint...")
+        checkpoint = torch.load(ckpt_path, map_location='cpu')
+
+        if "state_dict" in checkpoint:
+            state_dict = checkpoint["state_dict"]
+            keys_to_remove = [k for k in state_dict.keys() if "pesq_resampler" in k]
+
+            for key in keys_to_remove:
+                logger.info(f"Removing incompatible key: {key}")
+                state_dict.pop(key)
+
+            # Save cleaned checkpoint temporarily
+            temp_ckpt = tempfile.NamedTemporaryFile(delete=False, suffix='.ckpt')
+            temp_ckpt_path = temp_ckpt.name
+            temp_ckpt.close()
+
+            torch.save(checkpoint, temp_ckpt_path)
+            ckpt_path = temp_ckpt_path
+            logger.info(f"Using cleaned checkpoint: {temp_ckpt_path}")
+
     # Start training
     logger.info("Starting training run.")
     trainer.fit(model, datamodule=data_module, ckpt_path=ckpt_path)
     logger.info("Training finished.")
+
+    # Clean up temporary checkpoint if created
+    if ckpt_path and ckpt_path.startswith(tempfile.gettempdir()):
+        try:
+            os.unlink(ckpt_path)
+            logger.info("Cleaned up temporary checkpoint file.")
+        except Exception as e:
+            logger.warning(f"Could not remove temporary checkpoint: {e}")
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Train CleanUNet2 using a YAML configuration.")
