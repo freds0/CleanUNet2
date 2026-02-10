@@ -13,13 +13,35 @@ from torch_audiomentations import (
 )
 
 
-def get_audio_files_recursively(directory, extensions=('.wav', '.flac', '.mp3', '.ogg')):
+def validate_audio_file(file_path, min_duration_sec=0.1):
+    """
+    Valida se um arquivo de áudio pode ser carregado e tem duração mínima.
+
+    Args:
+        file_path (str): Caminho do arquivo de áudio
+        min_duration_sec (float): Duração mínima em segundos
+
+    Returns:
+        bool: True se o arquivo é válido, False caso contrário
+    """
+    try:
+        info = torchaudio.info(file_path)
+        duration = info.num_frames / info.sample_rate
+        if duration < min_duration_sec:
+            return False
+        return True
+    except Exception:
+        return False
+
+
+def get_audio_files_recursively(directory, extensions=('.wav', '.flac', '.mp3', '.ogg'), validate=False):
     """
     Busca recursivamente por arquivos de áudio em um diretório.
 
     Args:
         directory (str): Caminho do diretório para buscar
         extensions (tuple): Extensões de arquivos de áudio a serem buscados
+        validate (bool): Se True, valida cada arquivo antes de incluir na lista
 
     Returns:
         list: Lista de caminhos absolutos dos arquivos encontrados
@@ -37,6 +59,21 @@ def get_audio_files_recursively(directory, extensions=('.wav', '.flac', '.mp3', 
         audio_files.extend([str(f) for f in directory_path.glob(pattern)])
 
     print(f"Found {len(audio_files)} audio files in {directory}")
+
+    if validate:
+        print(f"Validating audio files...")
+        valid_files = []
+        invalid_count = 0
+        from tqdm import tqdm
+        for file_path in tqdm(audio_files, desc="Validating files"):
+            if validate_audio_file(file_path):
+                valid_files.append(file_path)
+            else:
+                invalid_count += 1
+
+        print(f"Validation complete: {len(valid_files)} valid, {invalid_count} invalid/corrupted files removed")
+        return sorted(valid_files)
+
     return sorted(audio_files)
 
 class AudioAugmenter:
@@ -60,20 +97,24 @@ class AudioAugmenter:
                 bg_paths = params['background_paths']
                 if isinstance(bg_paths, str) and os.path.isdir(bg_paths):
                     print(f"Searching recursively for noise files in: {bg_paths}")
-                    params['background_paths'] = get_audio_files_recursively(bg_paths)
+                    params['background_paths'] = get_audio_files_recursively(bg_paths, validate=True)
                     if not params['background_paths']:
-                        raise ValueError(f"No audio files found in directory: {bg_paths}")
+                        raise ValueError(f"No valid audio files found in directory: {bg_paths}")
                 elif isinstance(bg_paths, list):
                     # Se for uma lista, expandir cada diretório recursivamente
                     expanded_paths = []
                     for path in bg_paths:
                         if os.path.isdir(path):
-                            expanded_paths.extend(get_audio_files_recursively(path))
+                            expanded_paths.extend(get_audio_files_recursively(path, validate=True))
                         elif os.path.isfile(path):
-                            expanded_paths.append(path)
+                            # Validar arquivo individual
+                            if validate_audio_file(path):
+                                expanded_paths.append(path)
+                            else:
+                                print(f"Warning: Skipping invalid file: {path}")
                     params['background_paths'] = expanded_paths
                     if not params['background_paths']:
-                        raise ValueError(f"No audio files found in provided paths")
+                        raise ValueError(f"No valid audio files found in provided paths")
 
                 aug_list.append(AddBackgroundNoise(**params))
 
@@ -85,20 +126,24 @@ class AudioAugmenter:
                 ir_paths = params['ir_paths']
                 if isinstance(ir_paths, str) and os.path.isdir(ir_paths):
                     print(f"Searching recursively for IR files in: {ir_paths}")
-                    params['ir_paths'] = get_audio_files_recursively(ir_paths)
+                    params['ir_paths'] = get_audio_files_recursively(ir_paths, validate=True)
                     if not params['ir_paths']:
-                        raise ValueError(f"No audio files found in directory: {ir_paths}")
+                        raise ValueError(f"No valid audio files found in directory: {ir_paths}")
                 elif isinstance(ir_paths, list):
                     # Se for uma lista, expandir cada diretório recursivamente
                     expanded_paths = []
                     for path in ir_paths:
                         if os.path.isdir(path):
-                            expanded_paths.extend(get_audio_files_recursively(path))
+                            expanded_paths.extend(get_audio_files_recursively(path, validate=True))
                         elif os.path.isfile(path):
-                            expanded_paths.append(path)
+                            # Validar arquivo individual
+                            if validate_audio_file(path):
+                                expanded_paths.append(path)
+                            else:
+                                print(f"Warning: Skipping invalid file: {path}")
                     params['ir_paths'] = expanded_paths
                     if not params['ir_paths']:
-                        raise ValueError(f"No audio files found in provided paths")
+                        raise ValueError(f"No valid audio files found in provided paths")
 
                 aug_list.append(ApplyImpulseResponse(**params))
 
@@ -120,16 +165,22 @@ class AudioAugmenter:
         # Set seed for reproducibility
         if self.seed is not None:
             self.seed += random.randint(1, 1000)
-            torch.manual_seed(self.seed) 
-            random.seed(self.seed) 
-            self.seed += 1            
+            torch.manual_seed(self.seed)
+            random.seed(self.seed)
+            self.seed += 1
 
         # Ensure waveform is a tensor with shape (batch_size, num_channels, num_samples)
         waveform = waveform.reshape(1, 1, -1)
-        # Apply augmentations
-        augmented_waveform = self.compose(waveform, sample_rate=sr)
-        augmented_waveform = augmented_waveform.reshape(1, -1)
-        return augmented_waveform
+
+        # Apply augmentations with error handling
+        try:
+            augmented_waveform = self.compose(waveform, sample_rate=sr)
+            augmented_waveform = augmented_waveform.reshape(1, -1)
+            return augmented_waveform
+        except (ValueError, RuntimeError) as e:
+            # If augmentation fails, return original waveform
+            print(f"Warning: Augmentation failed with error: {e}. Returning original waveform.")
+            return waveform.reshape(1, -1)
 
 def main():
     parser = argparse.ArgumentParser()
