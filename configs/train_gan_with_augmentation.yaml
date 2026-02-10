@@ -159,49 +159,45 @@ data:
   fmax: 8000
 
   # ===== DATA AUGMENTATION CONFIGURATION =====
-  augmentation:
-    enabled: false  # Set to true to enable augmentation
-    mode: "two_folders"  # Options: "two_folders" (use existing noisy), "clean_only" (generate noisy)
+  # When using clean audio only, these augmentations are applied to clean audio
+  # to generate synthetic noisy audio on-the-fly
+  augmentations:
+    # Add background noise from a folder
+    - name: AddBackgroundNoise
+      params:
+        background_paths: "/path/to/noise/folder"  # <<<< ADJUST THIS PATH
+        min_snr_in_db: 0.0   # Minimum SNR
+        max_snr_in_db: 15.0  # Maximum SNR
+        p: 0.8               # 80% probability of applying
 
-    # When mode is "clean_only", these augmentations are applied to clean audio
-    # to generate synthetic noisy audio on-the-fly
-    augmentations:
-      # Add background noise from a folder
-      - name: AddBackgroundNoise
-        params:
-          background_paths: "/path/to/noise/folder"  # <<<< ADJUST THIS PATH
-          min_snr_in_db: 0.0   # Minimum SNR
-          max_snr_in_db: 15.0  # Maximum SNR
-          p: 0.8               # 80% probability of applying
+    # Add colored noise (pink, white, brown)
+    - name: AddColoredNoise
+      params:
+        min_snr_in_db: 5.0
+        max_snr_in_db: 20.0
+        min_f_decay: -2.0  # -2 = pink, 0 = white, 2 = brown
+        max_f_decay: 2.0
+        p: 0.5
 
-      # Add colored noise (pink, white, brown)
-      - name: AddColoredNoise
-        params:
-          min_snr_in_db: 5.0
-          max_snr_in_db: 20.0
-          min_f_decay: -2.0  # -2 = pink, 0 = white, 2 = brown
-          max_f_decay: 2.0
-          p: 0.5
+    # Random gain adjustment
+    - name: Gain
+      params:
+        min_gain_in_db: -6.0
+        max_gain_in_db: 6.0
+        p: 0.3
 
-      # Random gain adjustment
-      - name: Gain
-        params:
-          min_gain_in_db: -6.0
-          max_gain_in_db: 6.0
-          p: 0.3
+    # Low-pass filter (simulates bandwidth limitation)
+    # - name: LowPassFilter
+    #   params:
+    #     min_cutoff_freq: 4000
+    #     max_cutoff_freq: 8000
+    #     p: 0.3
 
-      # Low-pass filter (simulates bandwidth limitation)
-      # - name: LowPassFilter
-      #   params:
-      #     min_cutoff_freq: 4000
-      #     max_cutoff_freq: 8000
-      #     p: 0.3
-
-      # Apply impulse response (room acoustics)
-      # - name: ApplyImpulseResponse
-      #   params:
-      #     ir_paths: "/path/to/impulse_responses/"
-      #     p: 0.5
+    # Apply impulse response (room acoustics)
+    # - name: ApplyImpulseResponse
+    #   params:
+    #     ir_paths: "/path/to/impulse_responses/"
+    #     p: 0.5
 
 # ----------------------
 # Callbacks

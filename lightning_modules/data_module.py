@@ -24,7 +24,7 @@ class CleanUNetDataModule(pl.LightningDataModule):
         num_workers (int): Number of worker processes for dataloading.
         persistent_workers (bool): Keep workers alive between epochs (faster).
         segment_size (int): Length of audio segments for training (samples).
-        augmentation (dict): Augmentation configuration (optional).
+        augmentations (list): List of augmentation configurations (optional).
     """
     def __init__(
         self,
@@ -36,7 +36,7 @@ class CleanUNetDataModule(pl.LightningDataModule):
         num_workers: int = 4,
         persistent_workers: bool = False,
         segment_size: int = None,
-        augmentation: dict = None,
+        augmentations: list = None,
         **kwargs # Captures sampling_rate, n_fft, hop_size, etc. from YAML
     ):
         super().__init__()
@@ -49,7 +49,7 @@ class CleanUNetDataModule(pl.LightningDataModule):
         self.num_workers = num_workers
         self.persistent_workers = persistent_workers
         self.segment_size = segment_size
-        self.augmentation = augmentation
+        self.augmentations = augmentations
 
         # Validar configuração
         if self.val_list_path is None and self.val_split is None:
@@ -92,8 +92,8 @@ class CleanUNetDataModule(pl.LightningDataModule):
 
             # Add augmentation to training dataset only (not validation)
             train_kwargs = dataset_params.copy()
-            if self.augmentation is not None:
-                train_kwargs["augmentation"] = self.augmentation
+            if self.augmentations is not None:
+                train_kwargs["augmentations"] = self.augmentations
                 print(f"[INFO] Data augmentation will be applied to training dataset")
 
             # Instantiate Training Dataset (with augmentation)
@@ -151,11 +151,11 @@ class CleanUNetDataModule(pl.LightningDataModule):
             self.val_dataset = Subset(full_dataset, val_indices.indices)
 
             # Dataset de treino com augmentation
-            if self.augmentation is not None:
+            if self.augmentations is not None:
                 print(f"Aplicando augmentation ao dataset de treino")
                 # Carregar novamente COM augmentation
                 train_kwargs = dataset_params.copy()
-                train_kwargs["augmentation"] = self.augmentation
+                train_kwargs["augmentations"] = self.augmentations
                 full_dataset_with_aug = MelDataset(
                     data_dir=self.data_dir,
                     data_files=self.train_list_path,
