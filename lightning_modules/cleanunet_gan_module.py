@@ -161,14 +161,14 @@ class CleanUNetGANModule(pl.LightningModule):
         self.val_stoi = ShortTimeObjectiveIntelligibility(fs=sr, extended=False)
         self.val_pesq = PerceptualEvaluationSpeechQuality(fs=self.pesq_sample_rate, mode='wb')
 
-        # Create resampler if needed for PESQ
-        if self.sample_rate != self.pesq_sample_rate:
-            self.pesq_resampler = torchaudio.transforms.Resample(
-                orig_freq=self.sample_rate,
-                new_freq=self.pesq_sample_rate
-            )
-        else:
-            self.pesq_resampler = None
+        # Store resampler config (but don't create the resampler itself yet)
+        # This avoids saving it in the checkpoint, preventing compatibility issues
+        self._pesq_resampler_config = {
+            'needed': self.sample_rate != self.pesq_sample_rate,
+            'orig_freq': self.sample_rate,
+            'new_freq': self.pesq_sample_rate
+        }
+        self._pesq_resampler_cache = None
 
         # ---------------------------------------
         # 5. Audio Samples for Logging (6 samples: noisy, clean, denoised)
@@ -240,6 +240,22 @@ class CleanUNetGANModule(pl.LightningModule):
             print(f"[WARNING] Unexpected keys in checkpoint: {unexpected_keys}")
 
         print(f"[SUCCESS] Loaded {len(cleanunet2_state_dict)} parameters into CleanUNet2 generator")
+
+    def _get_pesq_resampler(self):
+        """
+        Lazily creates and returns the PESQ resampler.
+        This avoids saving it in checkpoints, preventing compatibility issues.
+        """
+        if not self._pesq_resampler_config['needed']:
+            return None
+
+        if self._pesq_resampler_cache is None:
+            self._pesq_resampler_cache = torchaudio.transforms.Resample(
+                orig_freq=self._pesq_resampler_config['orig_freq'],
+                new_freq=self._pesq_resampler_config['new_freq']
+            )
+        return self._pesq_resampler_cache
+
 
     def forward(self, noisy, noisy_spec):
         """Forward pass of the generator."""
@@ -357,9 +373,10 @@ class CleanUNetGANModule(pl.LightningModule):
         # Exponential LR Decay
         scheduler_g = torch.optim.lr_scheduler.ExponentialLR(opt_g, gamma=lr_decay)
         scheduler_d = torch.optim.lr_scheduler.ExponentialLR(opt_d, gamma=lr_decay)
-        
+
         return [opt_g, opt_d], [scheduler_g, scheduler_d]
-    
+
+
     def validation_step(self, batch, batch_idx):
         """
         Validation loop: calculate Mel Loss and metrics.
@@ -398,9 +415,10 @@ class CleanUNetGANModule(pl.LightningModule):
             # PESQ calculation
             try:
                 # Resample for PESQ if needed
-                if self.pesq_resampler is not None:
-                    preds_pesq = self.pesq_resampler(preds)
-                    target_pesq = self.pesq_resampler(target)
+                pesq_resampler = self._get_pesq_resampler()
+                if pesq_resampler is not None:
+                    preds_pesq = pesq_resampler(preds)
+                    target_pesq = pesq_resampler(target)
                 else:
                     preds_pesq = preds
                     target_pesq = target
@@ -446,7 +464,8 @@ class CleanUNetGANModule(pl.LightningModule):
         Logs collected audio samples to TensorBoard and WandB.
         """
         if len(self.val_audio_samples) > 0:
-            sample_rate = int(getattr(self.hparams, "sampling_rate", 16000))
+            # Use the sample rate saved during initialization
+            sample_rate = self.sample_rate
 
             for idx, sample in enumerate(self.val_audio_samples):
                 # Log to TensorBoard
