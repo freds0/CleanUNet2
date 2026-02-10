@@ -272,7 +272,8 @@ class CleanUNet2Stage1Module(pl.LightningModule):
 
         # ===== Log Audio Samples =====
         if len(self.val_audio_samples) > 0:
-            sr = self.config.get('audio', {}).get('sample_rate', 16000)
+            # Use the sample rate saved during initialization
+            sr = self.sample_rate
 
             for idx, sample in enumerate(self.val_audio_samples):
                 # Log to TensorBoard
