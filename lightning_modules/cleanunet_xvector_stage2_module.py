@@ -390,3 +390,22 @@ class CleanUNet2Stage2Module(pl.LightningModule):
         print(f"[Stage-2] Optimizer: AdamW(lr={lr}, betas={betas})")
 
         return optimizer
+
+    def on_load_checkpoint(self, checkpoint):
+        """
+        Hook called before loading the state_dict from a checkpoint.
+        Removes incompatible keys like 'pesq_resampler.kernel' that may
+        cause issues when resuming from older checkpoints or different
+        torchaudio versions.
+        """
+        state_dict = checkpoint.get("state_dict", {})
+
+        # List of keys to remove (incompatible with checkpoint loading)
+        keys_to_remove = [k for k in state_dict.keys() if "pesq_resampler" in k]
+
+        for key in keys_to_remove:
+            print(f"[Stage-2] Removing incompatible key from checkpoint: {key}")
+            state_dict.pop(key)
+
+        # Update checkpoint with cleaned state_dict
+        checkpoint["state_dict"] = state_dict
