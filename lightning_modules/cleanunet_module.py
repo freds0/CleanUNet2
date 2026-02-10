@@ -344,7 +344,8 @@ class CleanUNetLightningModule(pl.LightningModule):
         Logs collected audio samples to TensorBoard and WandB.
         """
         if len(self.val_audio_samples) > 0:
-            sample_rate = int(getattr(self.hparams, "sample_rate", 16000))
+            # Use the sample rate saved during initialization
+            sample_rate = self.sample_rate
 
             for idx, sample in enumerate(self.val_audio_samples):
                 # Log to TensorBoard
