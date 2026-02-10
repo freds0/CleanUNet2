@@ -12,9 +12,6 @@ from librosa.filters import mel as librosa_mel_fn
 from torch.nn.utils.rnn import pad_sequence
 import torchaudio
 import torch.multiprocessing as mp
-from augmentation import AudioAugmenter
-from glob import glob
-from pathlib import Path
 
 # Use "spawn" multiprocessing start method for dataloaders (safer for CUDA in some setups)
 #mp.set_start_method("spawn", force=True)
@@ -147,106 +144,28 @@ def mel_spectrogram(
 # ---------------------------
 # File list helper
 # ---------------------------
-def get_dataset_filelist(filelist_path: str, data_dir: str = "") -> List[Tuple[str, str]]:
+def get_dataset_filelist(filelist_path: str) -> List[Tuple[str, str]]:
     """
-    Read a filelist or directory to get audio file pairs.
-
-    Supports two modes:
-    1. CSV file: Each line is 'clean_path|noisy_path'
-    2. Directory: Automatically finds all .wav files
-
-    Args:
-        filelist_path: Path to CSV file or directory
-        data_dir: Base directory (used for relative paths)
-
-    Returns:
-        List of tuples (clean_path, noisy_path)
+    Read a filelist where each line is 'clean_path|noisy_path' or 'clean_path,noisy_path' and return list of tuples.
+    Supports both pipe (|) and comma (,) separators.
     """
-    filelist_full_path = filelist_path
-    if data_dir and not os.path.isabs(filelist_path):
-        filelist_full_path = os.path.join(data_dir, filelist_path)
-
-    # Check if it's a directory
-    if os.path.isdir(filelist_full_path):
-        print(f"Detected directory mode: scanning for .wav files in {filelist_full_path}")
-
-        # Search for all .wav files recursively
-        wav_files = []
-        for ext in ['*.wav', '*.WAV']:
-            wav_files.extend(glob(os.path.join(filelist_full_path, '**', ext), recursive=True))
-
-        if not wav_files:
-            raise ValueError(f"No .wav files found in directory: {filelist_full_path}")
-
-        # Sort for reproducibility
-        wav_files.sort()
-
-        # Check if there are subdirectories named 'clean' and 'noisy' (two_folders mode)
-        clean_dir = os.path.join(filelist_full_path, 'clean')
-        noisy_dir = os.path.join(filelist_full_path, 'noisy')
-
-        pairs = []
-        if os.path.isdir(clean_dir) and os.path.isdir(noisy_dir):
-            print(f"  Found 'clean' and 'noisy' subdirectories - using paired mode")
-            # Find matching pairs
-            clean_files = glob(os.path.join(clean_dir, '**', '*.wav'), recursive=True)
-            clean_files.extend(glob(os.path.join(clean_dir, '**', '*.WAV'), recursive=True))
-
-            for clean_path in sorted(clean_files):
-                # Get relative path from clean_dir
-                rel_path = os.path.relpath(clean_path, clean_dir)
-                # Look for corresponding noisy file
-                noisy_path = os.path.join(noisy_dir, rel_path)
-
-                if os.path.exists(noisy_path):
-                    # Store relative paths if data_dir is provided
-                    if data_dir:
-                        clean_rel = os.path.relpath(clean_path, data_dir)
-                        noisy_rel = os.path.relpath(noisy_path, data_dir)
-                        pairs.append((clean_rel, noisy_rel))
-                    else:
-                        pairs.append((clean_path, noisy_path))
-                else:
-                    print(f"  Warning: No matching noisy file for {rel_path}, skipping")
-
-            if not pairs:
-                raise ValueError(f"No matching pairs found between {clean_dir} and {noisy_dir}")
-
-            print(f"  Found {len(pairs)} paired files")
-        else:
-            # Single directory mode - all files are treated as clean (for clean_only augmentation)
-            print(f"  Single directory mode - treating all files as clean audio")
-            for wav_path in wav_files:
-                # Store relative paths if data_dir is provided
-                if data_dir:
-                    rel_path = os.path.relpath(wav_path, data_dir)
-                    pairs.append((rel_path, rel_path))
-                else:
-                    pairs.append((wav_path, wav_path))
-
-            print(f"  Found {len(pairs)} audio files")
-
-        return pairs
-
-    # Otherwise, treat as CSV file
-    elif os.path.isfile(filelist_full_path):
-        print(f"Reading filelist from CSV: {filelist_full_path}")
-        with open(filelist_full_path, "r", encoding="utf-8") as ifile:
-            lines = [l.strip() for l in ifile.readlines() if l.strip()]
-
-        pairs = []
-        for l in lines:
+    with open(filelist_path, "r", encoding="utf-8") as ifile:
+        lines = [l.strip() for l in ifile.readlines() if l.strip()]
+    pairs = []
+    for l in lines:
+        # Try pipe separator first, then comma
+        if "|" in l:
             parts = l.split("|")
-            if len(parts) >= 2:
-                pairs.append((parts[0].strip(), parts[1].strip()))
-            else:
-                raise ValueError(f"Invalid line in filelist (expected 'clean|noisy'): {l}")
+        elif "," in l:
+            parts = l.split(",")
+        else:
+            raise ValueError(f"Invalid line in filelist (expected 'clean|noisy' or 'clean,noisy'): {l}")
 
-        print(f"  Loaded {len(pairs)} file pairs from CSV")
-        return pairs
-
-    else:
-        raise ValueError(f"Path not found or invalid: {filelist_full_path}")
+        if len(parts) >= 2:
+            pairs.append((parts[0].strip(), parts[1].strip()))
+        else:
+            raise ValueError(f"Invalid line in filelist (expected 'clean|noisy' or 'clean,noisy'): {l}")
+    return pairs
 
 
 # ---------------------------
@@ -291,7 +210,6 @@ class MelDataset(torch.utils.data.Dataset):
     - data_files: path to text file with lines "clean_path|noisy_path".
     - segment_size: number of audio samples to crop (if split=True).
     - spectrogram_fn: torchaudio transform used to compute spectrograms (magnitude).
-    - augmentation: dict with augmentation configuration (optional)
     """
     def __init__(
         self,
@@ -311,11 +229,11 @@ class MelDataset(torch.utils.data.Dataset):
         device: Optional[torch.device] = None,
         fmax_loss: Optional[int] = None,
         noise_addition: bool = False,
-        augmentation: Optional[dict] = None
+        augmentations = None
     ):
         super().__init__()
         self.data_dir = data_dir
-        self.audio_files = get_dataset_filelist(data_files, data_dir)  # list[(clean_rel, noisy_rel)]
+        self.audio_files = get_dataset_filelist(data_files)  # list[(clean_rel, noisy_rel)]
 
         # Deterministic shuffling seed for reproducibility
         random.seed(1234)
@@ -334,36 +252,14 @@ class MelDataset(torch.utils.data.Dataset):
         self.fmax_loss = fmax_loss
         self.noise_addition = noise_addition
 
-        # Audio augmentation configuration
-        self.augmentation_config = augmentation
-        self.audio_augmenter = None
-        self.augmentation_enabled = False
-        self.augmentation_mode = "two_folders"  # default mode
-        self.apply_to_noisy = False  # Whether to apply augmentation to noisy audio in two_folders mode
-
-        if augmentation and augmentation.get("enabled", False):
-            self.augmentation_enabled = True
-            self.augmentation_mode = augmentation.get("mode", "two_folders")
-            self.apply_to_noisy = augmentation.get("apply_to_noisy", False)  # New option
-            augmentations_list = augmentation.get("augmentations", [])
-
-            if augmentations_list:
-                try:
-                    self.audio_augmenter = AudioAugmenter(
-                        augmentations=augmentations_list,
-                        device='cpu',  # Apply on CPU during data loading
-                        seed=1234
-                    )
-                    mode_desc = f"'{self.augmentation_mode}' mode"
-                    if self.augmentation_mode == "two_folders" and self.apply_to_noisy:
-                        mode_desc += " (augmenting noisy audio)"
-                    print(f"Audio augmentation enabled in {mode_desc} with {len(augmentations_list)} augmentations.")
-                except Exception as e:
-                    print(f"Warning: Failed to initialize AudioAugmenter: {e}")
-                    self.augmentation_enabled = False
-            else:
-                print("Warning: Augmentation enabled but no augmentations specified.")
-                self.augmentation_enabled = False
+        # Audio augmentation pipeline (on-the-fly augmentation)
+        self.augmentations = augmentations
+        if augmentations:
+            from augmentation import AudioAugmenter
+            self.audio_augmenter = AudioAugmenter(augmentations, device='cpu')
+            print(f"[MelDataset] Audio augmentation enabled with {len(augmentations)} augmentations")
+        else:
+            self.audio_augmenter = None
 
         # Simple caching (reuse last loaded wav for a few iterations)
         self.cached_wav = None
@@ -414,7 +310,7 @@ class MelDataset(torch.utils.data.Dataset):
             noisy_audio = self.cached_wav_input
             self._cache_ref_count -= 1
 
-        # Crop or pad to fixed segment length if requested
+        # Crop or pad to fixed segment length if requested (BEFORE augmentation)
         if self.split:
             # Ensure we have shape (channels, samples)
             if clean_audio.size(1) >= self.segment_size:
@@ -425,35 +321,30 @@ class MelDataset(torch.utils.data.Dataset):
                     audio_start = audio_start - 1 if audio_start > 0 else 0
                 audio_end = audio_start + self.segment_size
                 clean_audio = clean_audio[:, audio_start:audio_end]
-                noisy_audio = noisy_audio[:, audio_start:audio_end]
             else:
-                pad_len_clean = self.segment_size - clean_audio.size(1)
-                pad_len_noisy = self.segment_size - noisy_audio.size(1)
-                clean_audio = torch.nn.functional.pad(clean_audio, (0, pad_len_clean), "constant")
-                noisy_audio = torch.nn.functional.pad(noisy_audio, (0, pad_len_noisy), "constant")
+                pad_len = self.segment_size - clean_audio.size(1)
+                clean_audio = torch.nn.functional.pad(clean_audio, (0, pad_len), "constant")
 
-        # Apply augmentation based on mode
-        if self.augmentation_enabled and self.audio_augmenter is not None:
-            try:
-                if self.augmentation_mode == "clean_only":
-                    # In "clean_only" mode, we generate noisy audio from clean audio using augmentation
-                    # clean_audio shape: (channels, samples)
-                    noisy_audio = self.audio_augmenter.apply(clean_audio.squeeze(0), self.sampling_rate)
-                    # Normalize augmented audio
-                    noisy_audio = noisy_audio / (noisy_audio.abs().max() + 1e-9)
-
-                elif self.augmentation_mode == "two_folders" and self.apply_to_noisy:
-                    # In "two_folders" mode with apply_to_noisy=True, augment the noisy audio further
-                    # This adds additional augmentation on top of existing noisy audio
-                    noisy_audio_squeezed = noisy_audio.squeeze(0)
-                    noisy_audio = self.audio_augmenter.apply(noisy_audio_squeezed, self.sampling_rate)
-                    # Normalize augmented audio
-                    noisy_audio = noisy_audio / (noisy_audio.abs().max() + 1e-9)
-
-            except Exception as e:
-                print(f"Warning: Augmentation failed for index {index}: {e}")
-                # Fall back to using original noisy audio if augmentation fails
-                pass
+        # Apply augmentation to clean audio (AFTER cropping) if enabled
+        # This creates synthetic "noisy" audio from clean audio
+        # Applying after cropping ensures fixed size, preventing shape mismatches
+        if self.audio_augmenter is not None:
+            # Apply augmentation to create noisy version
+            noisy_audio = self.audio_augmenter.apply(clean_audio, self.sampling_rate)
+        else:
+            # If no augmentation, use the noisy audio from the dataset
+            # Crop/pad it to match clean_audio size
+            if self.split:
+                if noisy_audio.size(1) >= self.segment_size:
+                    # Use same audio_start if available, otherwise center crop
+                    if 'audio_start' in locals():
+                        noisy_audio = noisy_audio[:, audio_start:audio_end]
+                    else:
+                        start = (noisy_audio.size(1) - self.segment_size) // 2
+                        noisy_audio = noisy_audio[:, start:start+self.segment_size]
+                else:
+                    pad_len = self.segment_size - noisy_audio.size(1)
+                    noisy_audio = torch.nn.functional.pad(noisy_audio, (0, pad_len), "constant")
 
         # Compute spectrograms (magnitude)
         # spectrogram_fn returns shape (channels, freq, time) when input shape is (channels, samples)
