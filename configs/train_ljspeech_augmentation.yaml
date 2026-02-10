@@ -32,8 +32,7 @@ model:
   conditioning_type: "film"
 
   cleanunet_checkpoint: "../checkpoints/cleanunet/last.ckpt"
-  cleanspecnet_checkpoint: "../
-checkpoints/cleanspecnet/last.ckpt"
+  cleanspecnet_checkpoint: "../checkpoints/cleanspecnet/last.ckpt"
 
   train_cleanunet: true
   train_cleanspecnet: true
@@ -92,68 +91,64 @@ data:
   # ----------------------
   # Augmentation configuration
   # ----------------------
-  # LJSpeech só tem áudio limpo, então usamos modo "clean_only"
+  # LJSpeech só tem áudio limpo, então usamos augmentações
   # para gerar dados com ruído sinteticamente
 
-  augmentation:
-    enabled: true
-    mode: "clean_only"
+  augmentations:
+    # 1. Adiciona ruído de fundo de arquivos WAV
+    # IMPORTANTE: Você precisa fornecer uma pasta com arquivos de ruído
+    # Exemplos de datasets de ruído:
+    #   - DEMAND: https://zenodo.org/record/1227121
+    #   - FSD50K: https://zenodo.org/record/4060432
+    #   - AudioSet: https://research.google.com/audioset/
+    #   - UrbanSound8K: https://urbansounddataset.weebly.com/urbansound8k.html
+    - name: AddBackgroundNoise
+      params:
+        background_paths: "/home/fred/Projetos/DATASETS/ESC-50-master/audio/"  # <<<< AJUSTE ESTE CAMINHO
+        min_snr_in_db: 0.0    # Muito ruidoso
+        max_snr_in_db: 20.0   # Pouco ruidoso
+        p: 0.8                # 80% de chance de aplicar
 
-    augmentations:
-      # 1. Adiciona ruído de fundo de arquivos WAV
-      # IMPORTANTE: Você precisa fornecer uma pasta com arquivos de ruído
-      # Exemplos de datasets de ruído:
-      #   - DEMAND: https://zenodo.org/record/1227121
-      #   - FSD50K: https://zenodo.org/record/4060432
-      #   - AudioSet: https://research.google.com/audioset/
-      #   - UrbanSound8K: https://urbansounddataset.weebly.com/urbansound8k.html
-      - name: AddBackgroundNoise
-        params:
-          background_paths: "/home/fred/Projetos/DATASETS/ESC-50-master/audio/"  # <<<< AJUSTE ESTE CAMINHO
-          min_snr_in_db: 0.0    # Muito ruidoso
-          max_snr_in_db: 20.0   # Pouco ruidoso
-          p: 0.8                # 80% de chance de aplicar
+    # 2. Adiciona ruído colorido sintético
+    # Útil quando você não tem arquivos de ruído real
+    - name: AddColoredNoise
+      params:
+        min_snr_in_db: 5.0
+        max_snr_in_db: 25.0
+        min_f_decay: -2.0  # -2 = pink noise, 0 = white, 2 = brown/red
+        max_f_decay: 2.0
+        p: 0.6
 
-      # 2. Adiciona ruído colorido sintético
-      # Útil quando você não tem arquivos de ruído real
-      - name: AddColoredNoise
-        params:
-          min_snr_in_db: 5.0
-          max_snr_in_db: 25.0
-          min_f_decay: -2.0  # -2 = pink noise, 0 = white, 2 = brown/red
-          max_f_decay: 2.0
-          p: 0.6
+    # 3. Aplica resposta ao impulso (simulação de ambiente)
+    # Opcional: descomente se você tiver arquivos de impulse response
+    # - name: ApplyImpulseResponse
+    #   params:
+    #     ir_paths: "/path/to/impulse/responses"
+    #     p: 0.3
 
-      # 3. Aplica resposta ao impulso (simulação de ambiente)
-      # Opcional: descomente se você tiver arquivos de impulse response
-      # - name: ApplyImpulseResponse
-      #   params:
-      #     ir_paths: "/path/to/impulse/responses"
-      #     p: 0.3
+    # 4. Varia o ganho (volume)
+    - name: Gain
+      params:
+        min_gain_in_db: -8.0
+        max_gain_in_db: 8.0
+        p: 0.4
 
-      # 4. Varia o ganho (volume)
-      - name: Gain
-        params:
-          min_gain_in_db: -8.0
-          max_gain_in_db: 8.0
-          p: 0.4
+    # 5. Filtros de frequência (opcional)
+    # Simula diferentes condições de gravação
 
-      # 5. Filtros de frequência (opcional)
-      # Simula diferentes condições de gravação
+    # Filtro passa-baixa (simula telefone, rádio)
+    - name: LowPassFilter
+      params:
+        min_cutoff_freq: 3000
+        max_cutoff_freq: 8000
+        p: 0.2
 
-      # Filtro passa-baixa (simula telefone, rádio)
-      - name: LowPassFilter
-        params:
-          min_cutoff_freq: 3000
-          max_cutoff_freq: 8000
-          p: 0.2
-
-      # Filtro passa-alta (remove baixas frequências)
-      - name: HighPassFilter
-        params:
-          min_cutoff_freq: 200
-          max_cutoff_freq: 800
-          p: 0.2
+    # Filtro passa-alta (remove baixas frequências)
+    - name: HighPassFilter
+      params:
+        min_cutoff_freq: 200
+        max_cutoff_freq: 800
+        p: 0.2
 
 # ----------------------
 # Callbacks
