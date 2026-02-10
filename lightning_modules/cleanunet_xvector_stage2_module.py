@@ -119,14 +119,14 @@ class CleanUNet2Stage2Module(pl.LightningModule):
         self.val_stoi = ShortTimeObjectiveIntelligibility(fs=sr, extended=False)
         self.val_sisdr = ScaleInvariantSignalNoiseRatio()
 
-        # Create resampler if needed for PESQ
-        if self.sample_rate != self.pesq_sample_rate:
-            self.pesq_resampler = torchaudio.transforms.Resample(
-                orig_freq=self.sample_rate,
-                new_freq=self.pesq_sample_rate
-            )
-        else:
-            self.pesq_resampler = None
+        # Store resampler config (but don't create the resampler itself yet)
+        # This avoids saving it in the checkpoint, preventing compatibility issues
+        self._pesq_resampler_config = {
+            'needed': self.sample_rate != self.pesq_sample_rate,
+            'orig_freq': self.sample_rate,
+            'new_freq': self.pesq_sample_rate
+        }
+        self._pesq_resampler_cache = None
 
         # ===== Load Stored Latents from Stage-1 =====
         self.latents_dir = Path(config.get('latents_dir', 'stored_latents_stage1'))
@@ -173,6 +173,21 @@ class CleanUNet2Stage2Module(pl.LightningModule):
 
         print(f"[Stage-2] Successfully loaded {len(stored_latents)} latent files")
         return stored_latents
+
+    def _get_pesq_resampler(self):
+        """
+        Lazily creates and returns the PESQ resampler.
+        This avoids saving it in checkpoints, preventing compatibility issues.
+        """
+        if not self._pesq_resampler_config['needed']:
+            return None
+
+        if self._pesq_resampler_cache is None:
+            self._pesq_resampler_cache = torchaudio.transforms.Resample(
+                orig_freq=self._pesq_resampler_config['orig_freq'],
+                new_freq=self._pesq_resampler_config['new_freq']
+            )
+        return self._pesq_resampler_cache
 
     def forward(self, noisy_wav, noisy_spec):
         return self.model(noisy_wav, noisy_spec, clean_audio=None)
@@ -274,9 +289,10 @@ class CleanUNet2Stage2Module(pl.LightningModule):
         else:
             try:
                 # Resample for PESQ if needed
-                if self.pesq_resampler is not None:
-                    preds_pesq = self.pesq_resampler(preds)
-                    target_pesq = self.pesq_resampler(target)
+                pesq_resampler = self._get_pesq_resampler()
+                if pesq_resampler is not None:
+                    preds_pesq = pesq_resampler(preds)
+                    target_pesq = pesq_resampler(target)
                 else:
                     preds_pesq = preds
                     target_pesq = target
@@ -391,21 +407,3 @@ class CleanUNet2Stage2Module(pl.LightningModule):
 
         return optimizer
 
-    def on_load_checkpoint(self, checkpoint):
-        """
-        Hook called before loading the state_dict from a checkpoint.
-        Removes incompatible keys like 'pesq_resampler.kernel' that may
-        cause issues when resuming from older checkpoints or different
-        torchaudio versions.
-        """
-        state_dict = checkpoint.get("state_dict", {})
-
-        # List of keys to remove (incompatible with checkpoint loading)
-        keys_to_remove = [k for k in state_dict.keys() if "pesq_resampler" in k]
-
-        for key in keys_to_remove:
-            print(f"[Stage-2] Removing incompatible key from checkpoint: {key}")
-            state_dict.pop(key)
-
-        # Update checkpoint with cleaned state_dict
-        checkpoint["state_dict"] = state_dict
