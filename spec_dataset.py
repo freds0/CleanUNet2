@@ -310,13 +310,7 @@ class MelDataset(torch.utils.data.Dataset):
             noisy_audio = self.cached_wav_input
             self._cache_ref_count -= 1
 
-        # Apply augmentation to clean audio (before cropping) if enabled
-        # This creates synthetic "noisy" audio from clean audio
-        if self.audio_augmenter is not None:
-            # Apply augmentation to create noisy version
-            noisy_audio = self.audio_augmenter.apply(clean_audio, self.sampling_rate)
-
-        # Crop or pad to fixed segment length if requested
+        # Crop or pad to fixed segment length if requested (BEFORE augmentation)
         if self.split:
             # Ensure we have shape (channels, samples)
             if clean_audio.size(1) >= self.segment_size:
@@ -327,12 +321,30 @@ class MelDataset(torch.utils.data.Dataset):
                     audio_start = audio_start - 1 if audio_start > 0 else 0
                 audio_end = audio_start + self.segment_size
                 clean_audio = clean_audio[:, audio_start:audio_end]
-                noisy_audio = noisy_audio[:, audio_start:audio_end]
             else:
-                pad_len_clean = self.segment_size - clean_audio.size(1)
-                pad_len_noisy = self.segment_size - noisy_audio.size(1)
-                clean_audio = torch.nn.functional.pad(clean_audio, (0, pad_len_clean), "constant")
-                noisy_audio = torch.nn.functional.pad(noisy_audio, (0, pad_len_noisy), "constant")
+                pad_len = self.segment_size - clean_audio.size(1)
+                clean_audio = torch.nn.functional.pad(clean_audio, (0, pad_len), "constant")
+
+        # Apply augmentation to clean audio (AFTER cropping) if enabled
+        # This creates synthetic "noisy" audio from clean audio
+        # Applying after cropping ensures fixed size, preventing shape mismatches
+        if self.audio_augmenter is not None:
+            # Apply augmentation to create noisy version
+            noisy_audio = self.audio_augmenter.apply(clean_audio, self.sampling_rate)
+        else:
+            # If no augmentation, use the noisy audio from the dataset
+            # Crop/pad it to match clean_audio size
+            if self.split:
+                if noisy_audio.size(1) >= self.segment_size:
+                    # Use same audio_start if available, otherwise center crop
+                    if 'audio_start' in locals():
+                        noisy_audio = noisy_audio[:, audio_start:audio_end]
+                    else:
+                        start = (noisy_audio.size(1) - self.segment_size) // 2
+                        noisy_audio = noisy_audio[:, start:start+self.segment_size]
+                else:
+                    pad_len = self.segment_size - noisy_audio.size(1)
+                    noisy_audio = torch.nn.functional.pad(noisy_audio, (0, pad_len), "constant")
 
         # Compute spectrograms (magnitude)
         # spectrogram_fn returns shape (channels, freq, time) when input shape is (channels, samples)
