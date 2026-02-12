@@ -41,6 +41,10 @@ class CleanUNet2Stage1Module(pl.LightningModule):
         # ===== Model Initialization =====
         model_config = config.get('model', {})
 
+        # X-Vector cache configuration
+        xvector_cache_enabled = model_config.get('xvector_cache_enabled', False)
+        xvector_cache_dir = model_config.get('xvector_cache_dir', 'xvector_cache')
+
         self.model = CleanUNet2WithXVector(
             stage='stage1',
             use_xvector=True,
@@ -48,7 +52,9 @@ class CleanUNet2Stage1Module(pl.LightningModule):
             conditioning_type=model_config.get('conditioning_type', 'addition'),
             cleanunet_params=model_config.get('cleanunet_params', {}),
             cleanspecnet_params=model_config.get('cleanspecnet_params', {}),
-            xvector_local_path=model_config.get('xvector_local_path', None)
+            xvector_local_path=model_config.get('xvector_local_path', None),
+            xvector_cache_enabled=xvector_cache_enabled,
+            xvector_cache_dir=xvector_cache_dir
         )
 
         # ===== Load Vanilla Checkpoint (Optional) =====
@@ -157,11 +163,17 @@ class CleanUNet2Stage1Module(pl.LightningModule):
         return self.model(noisy_wav, noisy_spec, clean_wav)
 
     def training_step(self, batch, batch_idx):
-        noisy_wav, noisy_spec, clean_wav, clean_spec = batch
+        # Unpack batch (may include file paths for caching)
+        if len(batch) == 5:
+            noisy_wav, noisy_spec, clean_wav, clean_spec, clean_paths = batch
+        else:
+            noisy_wav, noisy_spec, clean_wav, clean_spec = batch
+            clean_paths = None
 
-        # Forward with X-Vectors
+        # Forward with X-Vectors (with optional caching)
         enhanced, enhanced_spec, latents = self.model(
             noisy_wav, noisy_spec, clean_wav,
+            clean_audio_paths=clean_paths,
             return_latents=True
         )
 
@@ -188,11 +200,17 @@ class CleanUNet2Stage1Module(pl.LightningModule):
         return total_loss
 
     def validation_step(self, batch, batch_idx):
-        noisy_wav, noisy_spec, clean_wav, clean_spec = batch
+        # Unpack batch (may include file paths for caching)
+        if len(batch) == 5:
+            noisy_wav, noisy_spec, clean_wav, clean_spec, clean_paths = batch
+        else:
+            noisy_wav, noisy_spec, clean_wav, clean_spec = batch
+            clean_paths = None
 
-        # Forward with X-Vectors
+        # Forward with X-Vectors (with optional caching)
         enhanced, enhanced_spec, latents = self.model(
             noisy_wav, noisy_spec, clean_wav,
+            clean_audio_paths=clean_paths,
             return_latents=True
         )
 
@@ -244,7 +262,8 @@ class CleanUNet2Stage1Module(pl.LightningModule):
                     preds_pesq = preds
                     target_pesq = target
 
-                val_pesq = self.val_pesq(preds_pesq, target_pesq)
+                # CORRECTED: PESQ expects (reference, degraded) order, i.e., (clean, enhanced)
+                val_pesq = self.val_pesq(target_pesq, preds_pesq)
             except Exception:
                 val_pesq = torch.tensor(1.0, device=self.device)
 
@@ -291,25 +310,31 @@ class CleanUNet2Stage1Module(pl.LightningModule):
             # Use the sample rate saved during initialization
             sr = self.sample_rate
 
+            # Handle both single logger and multiple loggers (list)
+            loggers = self.logger if isinstance(self.logger, list) else [self.logger] if self.logger else []
+
             for idx, sample in enumerate(self.val_audio_samples):
-                # Log to TensorBoard
-                if self.logger and hasattr(self.logger, 'experiment'):
+                # Iterate over all loggers
+                for logger in loggers:
+                    if logger is None:
+                        continue
+
                     try:
                         # TensorBoard logger
-                        if hasattr(self.logger.experiment, 'add_audio'):
-                            self.logger.experiment.add_audio(
+                        if hasattr(logger.experiment, 'add_audio'):
+                            logger.experiment.add_audio(
                                 f'audio/sample_{idx}_noisy',
                                 sample['noisy'],
                                 self.current_epoch,
                                 sample_rate=sr
                             )
-                            self.logger.experiment.add_audio(
+                            logger.experiment.add_audio(
                                 f'audio/sample_{idx}_clean',
                                 sample['clean'],
                                 self.current_epoch,
                                 sample_rate=sr
                             )
-                            self.logger.experiment.add_audio(
+                            logger.experiment.add_audio(
                                 f'audio/sample_{idx}_denoised',
                                 sample['denoised'],
                                 self.current_epoch,
@@ -319,8 +344,8 @@ class CleanUNet2Stage1Module(pl.LightningModule):
                         # WandB logger
                         try:
                             import wandb
-                            if isinstance(self.logger.experiment, wandb.sdk.wandb_run.Run):
-                                self.logger.experiment.log({
+                            if isinstance(logger.experiment, wandb.sdk.wandb_run.Run):
+                                logger.experiment.log({
                                     f'audio/sample_{idx}_noisy': wandb.Audio(
                                         sample['noisy'].numpy(), sample_rate=sr, caption=f'Noisy {idx}'
                                     ),

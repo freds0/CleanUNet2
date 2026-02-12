@@ -38,7 +38,9 @@ class CleanUNet2WithXVector(nn.Module):
         conditioning_type='addition',
         cleanunet_params=None,
         cleanspecnet_params=None,
-        xvector_local_path=None
+        xvector_local_path=None,
+        xvector_cache_dir=None,
+        xvector_cache_enabled=False
     ):
         """
         Initialize CleanUNet2 with X-Vector integration.
@@ -50,12 +52,16 @@ class CleanUNet2WithXVector(nn.Module):
             conditioning_type (str): Conditioning method (addition, concatenation, film)
             cleanunet_params (dict): Parameters for CleanUNet
             cleanspecnet_params (dict): Parameters for CleanSpecNet
+            xvector_local_path (str): Local path to x-vector model weights
+            xvector_cache_dir (str): Directory to store cached x-vectors
+            xvector_cache_enabled (bool): Whether to use x-vector caching
         """
         super().__init__()
 
         self.stage = stage
         self.use_xvector = use_xvector
         self.xvector_dim = xvector_dim
+        self.xvector_cache_enabled = xvector_cache_enabled
 
         if cleanunet_params is None:
             cleanunet_params = {}
@@ -118,6 +124,16 @@ class CleanUNet2WithXVector(nn.Module):
         else:
             self.xvector_extractor = None
             print("[CleanUNet2WithXVector] X-Vector extractor not loaded")
+
+        # X-Vector Cache (Stage 1 only, if enabled)
+        if stage == 'stage1' and use_xvector and xvector_cache_enabled and xvector_cache_dir:
+            from .xvector_cache import XVectorCache
+            self.xvector_cache = XVectorCache(
+                cache_dir=xvector_cache_dir,
+                enabled=True
+            )
+        else:
+            self.xvector_cache = None
 
         # Integration Block (for fusing X-Vectors with latent features)
         if use_xvector:
@@ -201,7 +217,7 @@ class CleanUNet2WithXVector(nn.Module):
 
         print("[CleanUNet2WithXVector] Vanilla checkpoint loaded successfully!\n")
 
-    def forward(self, noisy_waveform, noisy_spectrogram, clean_audio=None, return_latents=False):
+    def forward(self, noisy_waveform, noisy_spectrogram, clean_audio=None, clean_audio_paths=None, return_latents=False):
         """
         Forward pass through the model.
 
@@ -212,6 +228,7 @@ class CleanUNet2WithXVector(nn.Module):
                                               Shape: (batch, freq, time)
             clean_audio (torch.Tensor): Clean reference audio (Stage 1 only)
                                         Shape: (batch, 1, samples)
+            clean_audio_paths (list): List of file paths for clean audio (for caching)
             return_latents (bool): Whether to return latent vectors
 
         Returns:
@@ -244,17 +261,45 @@ class CleanUNet2WithXVector(nn.Module):
         if self.stage == 'stage1' and self.xvector_extractor is not None:
             assert clean_audio is not None, "Clean audio is required for Stage 1 training"
 
-            # Extract X-Vectors from clean audio (frozen)
+            # Extract X-Vectors from clean audio (with optional caching)
             # NOTE: X-Vector extraction is done in float32 for stability
             with torch.no_grad():
-                xvector_emb = self.xvector_extractor.extract_embeddings(
-                    clean_audio.squeeze(1)
-                )
-                # xvector_emb shape: (batch, 512) or (batch, 1, 512)
+                batch_size = clean_audio.shape[0]
+                xvector_emb_list = []
 
-                # Ensure shape is (batch, 512)
-                if xvector_emb.dim() == 3:
-                    xvector_emb = xvector_emb.squeeze(1)
+                # Try to use cache if enabled and paths are provided
+                if self.xvector_cache is not None and clean_audio_paths is not None:
+                    for i in range(batch_size):
+                        audio_path = clean_audio_paths[i]
+                        # Try to get from cache
+                        cached_xvector = self.xvector_cache.get(audio_path, device=clean_audio.device)
+
+                        if cached_xvector is not None:
+                            # Use cached x-vector
+                            xvector_emb_list.append(cached_xvector)
+                        else:
+                            # Extract and cache
+                            xvector_single = self.xvector_extractor.extract_embeddings(
+                                clean_audio[i:i+1].squeeze(1)
+                            )
+                            if xvector_single.dim() == 3:
+                                xvector_single = xvector_single.squeeze(1)
+                            xvector_emb_list.append(xvector_single.squeeze(0))
+                            # Save to cache
+                            self.xvector_cache.set(audio_path, xvector_single.squeeze(0))
+
+                    # Stack all x-vectors
+                    xvector_emb = torch.stack(xvector_emb_list, dim=0)
+                else:
+                    # No cache, extract normally
+                    xvector_emb = self.xvector_extractor.extract_embeddings(
+                        clean_audio.squeeze(1)
+                    )
+                    # xvector_emb shape: (batch, 512) or (batch, 1, 512)
+
+                    # Ensure shape is (batch, 512)
+                    if xvector_emb.dim() == 3:
+                        xvector_emb = xvector_emb.squeeze(1)
 
             # Expand X-Vectors to match temporal dimension
             time_steps = latent.shape[-1]

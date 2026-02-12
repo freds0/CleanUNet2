@@ -250,7 +250,8 @@ class CleanUNetLightningModule(pl.LightningModule):
         else:
             # PESQ calculation
             try:
-                val_pesq = self.val_pesq(preds, target)
+                # CORRECTED: PESQ expects (reference, degraded) order, i.e., (clean, enhanced)
+                val_pesq = self.val_pesq(target, preds)
             except Exception as e:
                 # print(f"[WARNING] PESQ computation failed: {e}")
                 val_pesq = torch.tensor(1.0, device=self.device)

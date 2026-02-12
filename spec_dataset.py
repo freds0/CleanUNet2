@@ -144,11 +144,89 @@ def mel_spectrogram(
 # ---------------------------
 # File list helper
 # ---------------------------
+def get_dataset_filelist_from_two_folders(clean_dir: str, noisy_dir: str) -> List[Tuple[str, str]]:
+    """
+    Load pairs of clean/noisy files from two separate directories.
+    Files are matched by filename (alphabetically sorted).
+
+    Args:
+        clean_dir: Path to directory containing clean audio files
+        noisy_dir: Path to directory containing noisy audio files
+
+    Returns:
+        List of tuples [(clean_rel_path, noisy_rel_path), ...]
+    """
+    import glob
+    from pathlib import Path
+
+    # Get all audio files from both directories (common audio formats)
+    audio_extensions = ["*.wav", "*.flac", "*.mp3", "*.ogg", "*.m4a"]
+
+    clean_files = []
+    for ext in audio_extensions:
+        clean_files.extend(glob.glob(os.path.join(clean_dir, ext)))
+    clean_files = sorted(clean_files)
+
+    noisy_files = []
+    for ext in audio_extensions:
+        noisy_files.extend(glob.glob(os.path.join(noisy_dir, ext)))
+    noisy_files = sorted(noisy_files)
+
+    if len(clean_files) == 0:
+        raise ValueError(f"No audio files found in clean directory: {clean_dir}")
+    if len(noisy_files) == 0:
+        raise ValueError(f"No audio files found in noisy directory: {noisy_dir}")
+    if len(clean_files) != len(noisy_files):
+        raise ValueError(
+            f"Mismatch in file counts: clean={len(clean_files)}, noisy={len(noisy_files)}. "
+            f"Both directories must contain the same number of files with matching names."
+        )
+
+    # Match files by basename
+    pairs = []
+    clean_dict = {os.path.basename(f): f for f in clean_files}
+    noisy_dict = {os.path.basename(f): f for f in noisy_files}
+
+    # Find matching pairs
+    for basename in sorted(clean_dict.keys()):
+        if basename in noisy_dict:
+            pairs.append((clean_dict[basename], noisy_dict[basename]))
+        else:
+            print(f"[WARNING] No matching noisy file for: {basename}")
+
+    if len(pairs) == 0:
+        raise ValueError("No matching file pairs found between clean and noisy directories")
+
+    print(f"[INFO] Loaded {len(pairs)} file pairs from two_folders:")
+    print(f"       Clean: {clean_dir}")
+    print(f"       Noisy: {noisy_dir}")
+
+    return pairs
+
+
 def get_dataset_filelist(filelist_path: str) -> List[Tuple[str, str]]:
     """
     Read a filelist where each line is 'clean_path|noisy_path' or 'clean_path,noisy_path' and return list of tuples.
     Supports both pipe (|) and comma (,) separators.
+
+    Special format:
+    - If filelist_path starts with "two_folders:" followed by "clean_dir,noisy_dir",
+      it will load file pairs from two separate directories instead.
+      Example: "two_folders:path/to/clean,path/to/noisy"
     """
+    # Check for two_folders format
+    if filelist_path.startswith("two_folders:"):
+        folders_spec = filelist_path[len("two_folders:"):]
+        if "," not in folders_spec:
+            raise ValueError(
+                f"Invalid two_folders format. Expected 'two_folders:clean_dir,noisy_dir', got: {filelist_path}"
+            )
+        clean_dir, noisy_dir = folders_spec.split(",", 1)
+        clean_dir = clean_dir.strip()
+        noisy_dir = noisy_dir.strip()
+        return get_dataset_filelist_from_two_folders(clean_dir, noisy_dir)
+
+    # Standard CSV/filelist format
     with open(filelist_path, "r", encoding="utf-8") as ifile:
         lines = [l.strip() for l in ifile.readlines() if l.strip()]
     pairs = []

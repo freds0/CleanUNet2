@@ -41,7 +41,8 @@ class CleanUNetDataModule(pl.LightningDataModule):
         persistent_workers: bool = False,
         segment_size: int = None,
         sampling_rate: int = 16000,
-        augmentations: list = None
+        augmentations: list = None,
+        use_xvector_cache: bool = False
     ):
         super().__init__()
 
@@ -55,6 +56,7 @@ class CleanUNetDataModule(pl.LightningDataModule):
         self.segment_size = segment_size
         self.sampling_rate = sampling_rate
         self.augmentations = augmentations
+        self.use_xvector_cache = use_xvector_cache
 
         # Validar configuração
         if self.val_list_path is None and self.val_split is None:
@@ -92,19 +94,29 @@ class CleanUNetDataModule(pl.LightningDataModule):
         if self.val_list_path is not None:
             print(f"Usando arquivo separado para validação: {self.val_list_path}")
 
+            # Select dataset class based on cache configuration
+            if self.use_xvector_cache:
+                print("[INFO] Using XVectorMelDataset with file path tracking for caching")
+                from xvector_dataset import XVectorMelDataset
+                dataset_class = XVectorMelDataset
+                # Add return_paths parameter
+                dataset_kwargs["return_paths"] = True
+            else:
+                dataset_class = MelDataset
+
             # Training dataset with augmentation
             train_kwargs = dataset_kwargs.copy()
             if self.augmentations is not None:
                 train_kwargs["augmentations"] = self.augmentations
 
-            self.train_dataset = MelDataset(
+            self.train_dataset = dataset_class(
                 data_dir=self.data_dir,
                 data_files=self.train_list_path,
                 **train_kwargs
             )
 
             # Validation dataset WITHOUT augmentation
-            self.val_dataset = MelDataset(
+            self.val_dataset = dataset_class(
                 data_dir=self.data_dir,
                 data_files=self.val_list_path,
                 **dataset_kwargs
@@ -172,12 +184,19 @@ class CleanUNetDataModule(pl.LightningDataModule):
         - custom_collate_fn for handling variable-length spectrograms
         - shuffling enabled
         """
+        # Select collate function based on cache configuration
+        if self.use_xvector_cache:
+            from xvector_dataset import xvector_collate_fn
+            collate_fn = xvector_collate_fn
+        else:
+            collate_fn = custom_collate_fn
+
         return DataLoader(
             dataset=self.train_dataset,
             batch_size=self.batch_size,
             shuffle=True,
             num_workers=self.num_workers,
-            collate_fn=custom_collate_fn,
+            collate_fn=collate_fn,
             persistent_workers=self.persistent_workers
         )
 
@@ -190,12 +209,19 @@ class CleanUNetDataModule(pl.LightningDataModule):
 
         No shuffling to ensure deterministic metrics.
         """
+        # Select collate function based on cache configuration
+        if self.use_xvector_cache:
+            from xvector_dataset import xvector_collate_fn
+            collate_fn = xvector_collate_fn
+        else:
+            collate_fn = custom_collate_fn
+
         return DataLoader(
             dataset=self.val_dataset,
             batch_size=self.batch_size,
             shuffle=False,
             num_workers=self.num_workers,
-            collate_fn=custom_collate_fn,
+            collate_fn=collate_fn,
             persistent_workers=self.persistent_workers
         )
 

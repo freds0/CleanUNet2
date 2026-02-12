@@ -297,7 +297,8 @@ class CleanUNet2Stage2Module(pl.LightningModule):
                     preds_pesq = preds
                     target_pesq = target
 
-                val_pesq = self.val_pesq(preds_pesq, target_pesq)
+                # CORRECTED: PESQ expects (reference, degraded) order, i.e., (clean, enhanced)
+                val_pesq = self.val_pesq(target_pesq, preds_pesq)
             except Exception:
                 val_pesq = torch.tensor(1.0, device=self.device)
 
@@ -341,25 +342,31 @@ class CleanUNet2Stage2Module(pl.LightningModule):
             # Use the sample rate saved during initialization
             sr = self.sample_rate
 
+            # Handle both single logger and multiple loggers (list)
+            loggers = self.logger if isinstance(self.logger, list) else [self.logger] if self.logger else []
+
             for idx, sample in enumerate(self.val_audio_samples):
-                # Log to TensorBoard
-                if self.logger and hasattr(self.logger, 'experiment'):
+                # Iterate over all loggers
+                for logger in loggers:
+                    if logger is None:
+                        continue
+
                     try:
                         # TensorBoard logger
-                        if hasattr(self.logger.experiment, 'add_audio'):
-                            self.logger.experiment.add_audio(
+                        if hasattr(logger.experiment, 'add_audio'):
+                            logger.experiment.add_audio(
                                 f'audio/sample_{idx}_noisy',
                                 sample['noisy'],
                                 self.current_epoch,
                                 sample_rate=sr
                             )
-                            self.logger.experiment.add_audio(
+                            logger.experiment.add_audio(
                                 f'audio/sample_{idx}_clean',
                                 sample['clean'],
                                 self.current_epoch,
                                 sample_rate=sr
                             )
-                            self.logger.experiment.add_audio(
+                            logger.experiment.add_audio(
                                 f'audio/sample_{idx}_denoised',
                                 sample['denoised'],
                                 self.current_epoch,
@@ -369,8 +376,8 @@ class CleanUNet2Stage2Module(pl.LightningModule):
                         # WandB logger
                         try:
                             import wandb
-                            if isinstance(self.logger.experiment, wandb.sdk.wandb_run.Run):
-                                self.logger.experiment.log({
+                            if isinstance(logger.experiment, wandb.sdk.wandb_run.Run):
+                                logger.experiment.log({
                                     f'audio/sample_{idx}_noisy': wandb.Audio(
                                         sample['noisy'].numpy(), sample_rate=sr, caption=f'Noisy {idx}'
                                     ),
