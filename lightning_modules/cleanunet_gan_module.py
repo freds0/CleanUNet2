@@ -423,7 +423,8 @@ class CleanUNetGANModule(pl.LightningModule):
                     preds_pesq = preds
                     target_pesq = target
 
-                val_pesq = self.val_pesq(preds_pesq, target_pesq)
+                # CORRECTED: PESQ expects (reference, degraded) order, i.e., (clean, enhanced)
+                val_pesq = self.val_pesq(target_pesq, preds_pesq)
             except Exception as e:
                 val_pesq = torch.tensor(1.0, device=self.device)
 
