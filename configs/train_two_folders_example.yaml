@@ -1,0 +1,141 @@
+# configs/train_two_folders_example.yaml
+# Exemplo de configuração usando o formato "two_folders" para validação
+# Este formato permite especificar duas pastas separadas para áudios limpos e ruidosos
+
+# ----------------------
+# Trainer configuration
+# ----------------------
+trainer:
+  accelerator: "auto"
+  devices: 1
+  max_epochs: 10000
+  precision: "16-mixed"
+  log_every_n_steps: 100
+  check_val_every_n_epoch: 1
+  gradient_clip_val: 1.0
+  deterministic: false
+  benchmark: true
+
+# ----------------------
+# Global / runtime
+# ----------------------
+seed: 1234
+checkpoint_dir: "logs/checkpoints"
+logging_dir: "logs"
+
+# ----------------------
+# Model & optimizer hyperparameters
+# ----------------------
+model:
+  lr: 1e-4
+  sample_rate: 24000
+  conditioning_type: "film"
+
+  cleanunet_checkpoint: "../checkpoints/cleanunet/last.ckpt"
+  cleanspecnet_checkpoint: "../checkpoints/cleanspecnet/last.ckpt"
+
+  train_cleanunet: true
+  train_cleanspecnet: true
+
+  loss_config:
+    ell_p: 1
+    ell_p_lambda: 1.0
+    stft_lambda: 1.0
+    sc_lambda: 0.5
+    mag_lambda: 0.5
+    stft_config:
+      fft_sizes: [512, 1024, 2048]
+      hop_sizes: [50, 120, 240]
+      win_lengths: [240, 600, 1200]
+
+# ----------------------
+# Data configuration
+# ----------------------
+data:
+  data_dir: "./"
+  train_list_path: "filelists/train.csv"
+
+  # ============================================================
+  # NOVIDADE: Formato "two_folders" para validação
+  # ============================================================
+  # Ao invés de usar um CSV, você pode especificar duas pastas separadas:
+  # Formato: "two_folders:caminho/para/clean,caminho/para/noisy"
+  #
+  # Exemplo 1: Caminhos absolutos
+  val_list_path: "two_folders:/path/to/clean_val,/path/to/noisy_val"
+  #
+  # Exemplo 2: Caminhos relativos
+  # val_list_path: "two_folders:data/clean,data/noisy"
+  #
+  # Exemplo 3: Ainda funciona com CSV tradicional
+  # val_list_path: "filelists/test.csv"
+
+  batch_size: 64
+  num_workers: 8
+  persistent_workers: true
+  segment_size: 32768
+  sampling_rate: 24000
+
+  # Augmentações (aplicadas apenas no treino)
+  augmentations:
+    - name: "AddColoredNoise"
+      params:
+        min_snr_in_db: 5.0
+        max_snr_in_db: 20.0
+        min_f_decay: -2.0
+        max_f_decay: 2.0
+        p: 0.7
+
+    - name: "AddBackgroundNoise"
+      params:
+        background_paths: "/raid/user_fredoliveira/DATASETS/NOISES/"
+        min_snr_in_db: 3.0
+        max_snr_in_db: 15.0
+        p: 0.5
+
+# ----------------------
+# Callbacks
+# ----------------------
+callbacks:
+  best_checkpoint:
+    _target_: "pytorch_lightning.callbacks.ModelCheckpoint"
+    monitor: "val/weighted_score"
+    dirpath: "logs/checkpoints"
+    filename: "best-{epoch:02d}-{val/weighted_score:.4f}"
+    save_top_k: 1
+    mode: "max"
+
+  periodic_checkpoint:
+    _target_: "pytorch_lightning.callbacks.ModelCheckpoint"
+    dirpath: "logs/checkpoints"
+    filename: "epoch-{epoch:04d}"
+    every_n_epochs: 1
+    save_top_k: 3
+    save_last: true
+    monitor: "val_loss"
+    mode: "min"
+
+# ----------------------
+# Logger
+# ----------------------
+logger:
+  choice: "both"
+
+  tensorboard:
+    _target_: pytorch_lightning.loggers.TensorBoardLogger
+    save_dir: "logs"
+    name: "training_run"
+    default_hp_metric: false
+
+  wandb:
+    _target_: pytorch_lightning.loggers.WandbLogger
+    project: "CleanUNet2_Vanilla"
+    name: "two_folders_example"
+    save_dir: "logs"
+    offline: false
+    log_model: true
+
+# ----------------------
+# Resume / checkpoints
+# ----------------------
+# resume_from_checkpoint: "logs/checkpoints/last.ckpt"
