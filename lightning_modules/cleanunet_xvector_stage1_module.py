@@ -306,13 +306,17 @@ class CleanUNet2Stage1Module(pl.LightningModule):
                 val_pesq = torch.tensor(1.0, device=self.device)
 
             try:
-                val_stoi = self.val_stoi(preds, target)
-            except Exception:
+                # CORRECTED: STOI expects (reference, degraded) order
+                val_stoi = self.val_stoi(target, preds)
+            except Exception as e:
+                print(f"[WARNING] STOI computation failed: {e}")
                 val_stoi = torch.tensor(1e-5, device=self.device)
 
             try:
-                val_sisdr = self.val_sisdr(preds, target)
-            except Exception:
+                # CORRECTED: SI-SDR expects (reference, degraded) order
+                val_sisdr = self.val_sisdr(target, preds)
+            except Exception as e:
+                print(f"[WARNING] SI-SDR computation failed: {e}")
                 val_sisdr = torch.tensor(-50.0, device=self.device)
 
         # Weighted score
