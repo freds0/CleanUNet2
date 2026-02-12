@@ -189,6 +189,44 @@ class CleanUNet2Stage2Module(pl.LightningModule):
             )
         return self._pesq_resampler_cache
 
+    def load_state_dict(self, state_dict, strict=True):
+        """
+        Custom state_dict loading that filters out incompatible keys from old checkpoints.
+
+        This handles cases where old checkpoints have keys that don't exist in the current model,
+        such as _pesq_resampler_cache which was changed from a saved object to None.
+        """
+        # List of keys to ignore (known incompatibilities from old checkpoints)
+        keys_to_ignore = [
+            '_pesq_resampler_cache.kernel',
+            '_pesq_resampler_cache.width',
+            '_pesq_resampler_cache',
+        ]
+
+        # Filter out incompatible keys
+        filtered_state_dict = {}
+        ignored_keys = []
+
+        for key, value in state_dict.items():
+            # Check if this key should be ignored
+            should_ignore = any(key.startswith(ignore_key) for ignore_key in keys_to_ignore)
+
+            if should_ignore:
+                ignored_keys.append(key)
+            else:
+                filtered_state_dict[key] = value
+
+        # Print info about ignored keys
+        if ignored_keys:
+            print(f"[INFO] Ignoring {len(ignored_keys)} incompatible keys from checkpoint:")
+            for key in ignored_keys[:5]:  # Show first 5
+                print(f"  - {key}")
+            if len(ignored_keys) > 5:
+                print(f"  ... and {len(ignored_keys) - 5} more")
+
+        # Call parent's load_state_dict with filtered dict
+        return super().load_state_dict(filtered_state_dict, strict=strict)
+
     def forward(self, noisy_wav, noisy_spec):
         return self.model(noisy_wav, noisy_spec, clean_audio=None)
 
