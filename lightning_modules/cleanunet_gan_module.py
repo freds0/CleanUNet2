@@ -468,25 +468,31 @@ class CleanUNetGANModule(pl.LightningModule):
             # Use the sample rate saved during initialization
             sample_rate = self.sample_rate
 
+            # Handle both single logger and multiple loggers (list)
+            loggers = self.logger if isinstance(self.logger, list) else [self.logger] if self.logger else []
+
             for idx, sample in enumerate(self.val_audio_samples):
-                # Log to TensorBoard
-                if self.logger and hasattr(self.logger, 'experiment'):
+                # Iterate over all loggers
+                for logger in loggers:
+                    if logger is None:
+                        continue
+
                     try:
                         # TensorBoard logger
-                        if hasattr(self.logger.experiment, 'add_audio'):
-                            self.logger.experiment.add_audio(
+                        if hasattr(logger.experiment, 'add_audio'):
+                            logger.experiment.add_audio(
                                 f'audio/sample_{idx}_noisy',
                                 sample['noisy'],
                                 self.current_epoch,
                                 sample_rate=sample_rate
                             )
-                            self.logger.experiment.add_audio(
+                            logger.experiment.add_audio(
                                 f'audio/sample_{idx}_clean',
                                 sample['clean'],
                                 self.current_epoch,
                                 sample_rate=sample_rate
                             )
-                            self.logger.experiment.add_audio(
+                            logger.experiment.add_audio(
                                 f'audio/sample_{idx}_denoised',
                                 sample['denoised'],
                                 self.current_epoch,
@@ -496,8 +502,8 @@ class CleanUNetGANModule(pl.LightningModule):
                         # WandB logger
                         try:
                             import wandb
-                            if isinstance(self.logger.experiment, wandb.sdk.wandb_run.Run):
-                                self.logger.experiment.log({
+                            if isinstance(logger.experiment, wandb.sdk.wandb_run.Run):
+                                logger.experiment.log({
                                     f'audio/sample_{idx}_noisy': wandb.Audio(
                                         sample['noisy'].numpy(), sample_rate=sample_rate, caption=f'Noisy {idx}'
                                     ),
