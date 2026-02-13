@@ -8,10 +8,10 @@
 trainer:
   accelerator: "auto"
   devices: 1
-  max_epochs: 10000
+  max_epochs: 15000
   precision: "16-mixed"
   log_every_n_steps: 100
-  check_val_every_n_epoch: 10
+  check_val_every_n_epoch: 1
   gradient_clip_val: 1.0
   deterministic: false
   benchmark: true
@@ -28,7 +28,7 @@ latents_dir: "stored_latents_stage1"  # Where to save fused latent vectors
 # Audio configuration
 # ----------------------
 audio:
-  sample_rate: 16000
+  sample_rate: 24000
 
 # ----------------------
 # Model Configuration
@@ -36,13 +36,17 @@ audio:
 model:
   # X-Vector settings
   xvector_dim: 512  # SpeechBrain X-Vector dimension
-  conditioning_type: "addition"  # Conditioning method for spec+waveform fusion
+  conditioning_type: "film"  # Conditioning method for spec+waveform fusion
+
+  # X-Vector Cache (to avoid re-extracting x-vectors on every step)
+  xvector_cache_enabled: true  # Enable x-vector caching (recommended!)
+  xvector_cache_dir: "xvector_cache_stage1"  # Directory to store cached x-vectors
 
   # Optional: Load vanilla CleanUNet2 checkpoint for warm start
   # This will initialize CleanUNet, CleanSpecNet, etc. with pre-trained weights
   # Only X-Vector related components will be trained from scratch
   #vanilla_checkpoint: null  # e.g., "../CleanUNet2-Vanilla/logs/checkpoints/best-model.ckpt"
-  vanilla_checkpoint: "/home/fred/Projetos/AKCIT/INTERSPEECH2026/CleanUNet2-Vanilla/checkpoints_cleanunet2_paper/last.ckpt"
+  vanilla_checkpoint: "../CleanUNet2-Vanilla_old_old/logs/checkpoints/last.ckpt"
 
   # CleanUNet parameters
   cleanunet_params:
@@ -95,13 +99,67 @@ optimizer:
 # Data configuration
 # ----------------------
 data:
-  data_dir: "/home/fred/Projetos/DATASETS/VoiceBank-DEMAND-16k/"
-  train_list_path: "filelists/train.csv"
-  val_list_path: "filelists/test.csv"
-  batch_size: 30
+  data_dir: "./"
+  train_list_path: "filelists/alcateia_train.csv"
+  val_list_path: "filelists/alcateia_test.csv"
+  batch_size: 64
   num_workers: 8
   persistent_workers: true
-  segment_size: 24576
+  segment_size: 32768 # 24576
+  sampling_rate: 24000
+  use_xvector_cache: true  # Use caching for x-vectors (IMPORTANT: Set to true to avoid re-extraction)
+  # ============================================================
+  # Data Augmentation (On-the-Fly) com Busca Recursiva
+  # ============================================================
+  # Estas augmentações serão aplicadas ao áudio limpo para criar versões com ruído
+  # IMPORTANTE: Arquivos de ruído são automaticamente reamostrados para 24000 Hz
+  augmentations:
+    # 1. Ruído colorido (pink, brown, white)
+    - name: "AddColoredNoise"
+      params:
+        min_snr_in_db: -5.0
+        max_snr_in_db: 20.0
+        min_f_decay: -2.0  # Pink noise
+        max_f_decay: 2.0   # Brown noise
+        p: 0.7  # 70% probability
+
+    # 2. Ruído de fundo (sons ambientais)
+    # SUPORTA BUSCA RECURSIVA! Especifique apenas o diretório:
+    - name: "AddBackgroundNoise"
+      params:
+        # Opção 1: Um único diretório (busca .wav/.flac/.mp3/.ogg recursivamente)
+        background_paths: "/raid/user_fredoliveira/DATASETS/NOISES/"  # Busca recursiva automática!
+
+        # Opção 2: Lista de diretórios/arquivos
+        # background_paths:
+        #   - "/path/to/noise/ESC-50"
+        #   - "/path/to/noise/UrbanSound"
+        #   - "/path/to/specific_file.wav"
+
+        min_snr_in_db: -10.0
+        max_snr_in_db: 15.0
+        p: 0.5  # 50% probability
+
+    # 3. Variação de volume
+    - name: "Gain"
+      params:
+        min_gain_in_db: -12.0
+        max_gain_in_db: 6.0
+        p: 0.5
+
+    # 4. Filtro passa-baixa (simula limitação de banda)
+    - name: "LowPassFilter"
+      params:
+        min_cutoff_freq: 2000.0
+        max_cutoff_freq: 8000.0
+        p: 0.3
+
+    # 5. Filtro passa-alta (simula redução de graves)
+    - name: "HighPassFilter"
+      params:
+        min_cutoff_freq: 100.0
+        max_cutoff_freq: 400.0
+        p: 0.3
 
 # ----------------------
 # Callbacks
@@ -121,7 +179,7 @@ callbacks:
     _target_: "pytorch_lightning.callbacks.ModelCheckpoint"
     dirpath: "logs/stage1_checkpoints"
     filename: "stage1-epoch-{epoch:04d}"
-    every_n_epochs: 10
+    every_n_epochs: 1
     save_top_k: 3
     save_last: true
     monitor: "val_loss"
@@ -131,7 +189,7 @@ callbacks:
 # Logger
 # ----------------------
 logger:
-  choice: "tensorboard"
+  choice: "both"
 
   tensorboard:
     _target_: pytorch_lightning.loggers.TensorBoardLogger
