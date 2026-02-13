@@ -219,7 +219,7 @@ class CleanUNetLightningModule(pl.LightningModule):
             self._pesq_resampler_cache = torchaudio.transforms.Resample(
                 orig_freq=self._pesq_resampler_config['orig_freq'],
                 new_freq=self._pesq_resampler_config['new_freq']
-            )
+            ).to(self.device)  # Move to same device as model
         return self._pesq_resampler_cache
 
     def load_state_dict(self, state_dict, strict=True):
@@ -324,8 +324,10 @@ class CleanUNetLightningModule(pl.LightningModule):
         
         # --- 2. Calculate Metrics (Safe Mode) ---
         # Note: Input shape to metrics should be (Batch, Time). Squeeze channels.
-        preds = enhanced.squeeze(1)
-        target = clean.squeeze(1)
+        # Disable autocast for metrics computation to ensure float32 precision
+        with torch.amp.autocast(device_type="cuda", enabled=False):
+        preds = enhanced.squeeze(1).float()
+        target = clean.squeeze(1).float()
 
         # Check for Silence or NaNs to prevent PESQ crashes (NoUtterancesError)
         # If the max amplitude is too low, PESQ considers it empty.
@@ -349,7 +351,11 @@ class CleanUNetLightningModule(pl.LightningModule):
                     target_pesq = target
 
                 # CORRECTED: PESQ expects (reference, degraded) order, i.e., (clean, enhanced)
-                val_pesq = self.val_pesq(target_pesq, preds_pesq)
+                # Move to CPU for PESQ calculation (PESQ internal weights are on CPU)
+                    preds_pesq_cpu = preds_pesq.cpu()
+                    target_pesq_cpu = target_pesq.cpu()
+
+                    val_pesq = self.val_pesq(target_pesq_cpu, preds_pesq_cpu)
             except Exception as e:
                 # print(f"[WARNING] PESQ computation failed: {e}")
                 val_pesq = torch.tensor(1.0, device=self.device)
