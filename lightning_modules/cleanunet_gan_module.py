@@ -253,7 +253,7 @@ class CleanUNetGANModule(pl.LightningModule):
             self._pesq_resampler_cache = torchaudio.transforms.Resample(
                 orig_freq=self._pesq_resampler_config['orig_freq'],
                 new_freq=self._pesq_resampler_config['new_freq']
-            )
+            ).to(self.device)  # Move to same device as model
         return self._pesq_resampler_cache
 
     def load_state_dict(self, state_dict, strict=True):
@@ -436,50 +436,57 @@ class CleanUNetGANModule(pl.LightningModule):
 
         # 2. Calculate Metrics (Safe Mode) - Now on every validation step
         # Note: Input shape to metrics should be (Batch, Time). Squeeze channels.
-        preds = enhanced.squeeze(1)
-        target = clean.squeeze(1)
+        # Disable autocast for metrics computation to ensure float32 precision
+        with torch.amp.autocast(device_type="cuda", enabled=False):
+            # Convert to float32 for metrics (AMP uses float16, but metrics need float32)
+            preds = enhanced.squeeze(1).float()
+            target = clean.squeeze(1).float()
 
-        # Check for Silence or NaNs to prevent PESQ crashes (NoUtterancesError)
-        # If the max amplitude is too low, PESQ considers it empty.
-        is_silent_or_nan = (preds.abs().max() < 1e-5) or torch.isnan(preds).any()
+            # Check for Silence or NaNs to prevent PESQ crashes (NoUtterancesError)
+            # If the max amplitude is too low, PESQ considers it empty.
+            is_silent_or_nan = (preds.abs().max() < 1e-5) or torch.isnan(preds).any()
 
-        if is_silent_or_nan:
-            # Assign worst-case values if model collapsed
-            val_pesq = torch.tensor(1.0, device=self.device)   # Min PESQ is ~1.0
-            val_stoi = torch.tensor(1e-5, device=self.device)  # Min STOI is 0.0
-            val_sisdr = torch.tensor(-50.0, device=self.device) # Very low SI-SDR
-        else:
-            # PESQ calculation
-            try:
-                # Resample for PESQ if needed
-                pesq_resampler = self._get_pesq_resampler()
-                if pesq_resampler is not None:
-                    preds_pesq = pesq_resampler(preds)
-                    target_pesq = pesq_resampler(target)
-                else:
-                    preds_pesq = preds
-                    target_pesq = target
+            if is_silent_or_nan:
+                # Assign worst-case values if model collapsed
+                val_pesq = torch.tensor(1.0, device=self.device)   # Min PESQ is ~1.0
+                val_stoi = torch.tensor(1e-5, device=self.device)  # Min STOI is 0.0
+                val_sisdr = torch.tensor(-50.0, device=self.device) # Very low SI-SDR
+            else:
+                # PESQ calculation
+                try:
+                    # Resample for PESQ if needed
+                    pesq_resampler = self._get_pesq_resampler()
+                    if pesq_resampler is not None:
+                        preds_pesq = pesq_resampler(preds)
+                        target_pesq = pesq_resampler(target)
+                    else:
+                        preds_pesq = preds
+                        target_pesq = target
 
-                # CORRECTED: PESQ expects (reference, degraded) order, i.e., (clean, enhanced)
-                val_pesq = self.val_pesq(target_pesq, preds_pesq)
-            except Exception as e:
-                val_pesq = torch.tensor(1.0, device=self.device)
+                    # CORRECTED: PESQ expects (reference, degraded) order, i.e., (clean, enhanced)
+                    # Move to CPU for PESQ calculation (PESQ internal weights are on CPU)
+                    preds_pesq_cpu = preds_pesq.cpu()
+                    target_pesq_cpu = target_pesq.cpu()
 
-            # STOI calculation
-            try:
-                # CORRECTED: STOI expects (reference, degraded) order
-                val_stoi = self.val_stoi(target, preds)
-            except Exception as e:
-                print(f"[WARNING] STOI computation failed: {e}")
-                val_stoi = torch.tensor(1e-5, device=self.device)
+                    val_pesq = self.val_pesq(target_pesq_cpu, preds_pesq_cpu)
+                except Exception as e:
+                    val_pesq = torch.tensor(1.0, device=self.device)
 
-            # SI-SDR calculation
-            try:
-                # CORRECTED: SI-SDR expects (reference, degraded) order
-                val_sisdr = self.val_sisdr(target, preds)
-            except Exception as e:
-                print(f"[WARNING] SI-SDR computation failed: {e}")
-                val_sisdr = torch.tensor(-50.0, device=self.device)
+                # STOI calculation
+                try:
+                    # CORRECTED: STOI expects (reference, degraded) order
+                    val_stoi = self.val_stoi(target, preds)
+                except Exception as e:
+                    print(f"[WARNING] STOI computation failed: {e}")
+                    val_stoi = torch.tensor(1e-5, device=self.device)
+
+                # SI-SDR calculation
+                try:
+                    # CORRECTED: SI-SDR expects (reference, degraded) order
+                    val_sisdr = self.val_sisdr(target, preds)
+                except Exception as e:
+                    print(f"[WARNING] SI-SDR computation failed: {e}")
+                    val_sisdr = torch.tensor(-50.0, device=self.device)
 
         # 3. Calculate Custom Weighted Score
         # Formula: (STOI + PESQ/4.5 + SI_SDR/30.0) / 3.0
