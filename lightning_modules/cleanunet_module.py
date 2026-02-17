@@ -259,7 +259,7 @@ class CleanUNetLightningModule(pl.LightningModule):
 
                 val_pesq = self.val_pesq(target_cpu, preds_cpu)
             except Exception as e:
-                # print(f"[WARNING] PESQ computation failed: {e}")
+                print(f"[WARNING] PESQ computation failed: {e}")
                 val_pesq = torch.tensor(1.0, device=self.device)
 
             # STOI calculation

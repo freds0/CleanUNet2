@@ -1,10 +1,14 @@
 """
-CleanUNet2 with X-Vector Integration for Two-Stage Training
+CleanUNet2 with Self-Supervised Speech Embeddings for Two-Stage Training
 Based on CNUNet-TB paper: Two-stage training using self-supervised speech embeddings
 
+Supports two types of embeddings:
+    1. X-Vectors (SpeechBrain) - 512 dimensions
+    2. Wav2Vec2 (facebook/wav2vec2-xls-r-300m) - 1024 dimensions
+
 Architecture:
-    - Stage 1: Train with X-Vectors injected into latent space
-    - Stage 2: Train to replicate latent vectors without X-Vector extractor
+    - Stage 1: Train with embeddings injected into latent space
+    - Stage 2: Train to replicate latent vectors without embedding extractor
 
 Implementation inspired by CNUNet-TB but adapted for CleanUNet2 architecture.
 """
@@ -12,11 +16,13 @@ Implementation inspired by CNUNet-TB but adapted for CleanUNet2 architecture.
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from pathlib import Path
 from .cleanunet2 import CleanUNet2, SpecUpsampler, Conditioner
 from .cleanunet import CleanUNet
 from .cleanspecnet import CleanSpecNet
 from .integration_block import IntegrationBlock
 from .xvector_extractor import XVectorExtractor
+from .wav2vec2_extractor import Wav2Vec2Extractor
 
 
 class CleanUNet2WithXVector(nn.Module):
@@ -40,10 +46,17 @@ class CleanUNet2WithXVector(nn.Module):
         cleanspecnet_params=None,
         xvector_local_path=None,
         xvector_cache_dir=None,
-        xvector_cache_enabled=False
+        xvector_cache_enabled=False,
+        # Wav2Vec2 parameters
+        use_wav2vec2=False,
+        wav2vec2_model='facebook/wav2vec2-xls-r-300m',
+        wav2vec2_cache_dir=None,
+        use_preextracted_embeddings=False,
+        wav2vec2_pooling_method='self_attention',
+        wav2vec2_attention_heads=8
     ):
         """
-        Initialize CleanUNet2 with X-Vector integration.
+        Initialize CleanUNet2 with self-supervised speech embedding integration.
 
         Args:
             stage (str): Training stage ('stage1' or 'stage2')
@@ -55,13 +68,38 @@ class CleanUNet2WithXVector(nn.Module):
             xvector_local_path (str): Local path to x-vector model weights
             xvector_cache_dir (str): Directory to store cached x-vectors
             xvector_cache_enabled (bool): Whether to use x-vector caching
+            use_wav2vec2 (bool): Whether to use Wav2Vec2 embeddings instead of x-vectors
+            wav2vec2_model (str): Wav2Vec2 model name (e.g., facebook/wav2vec2-xls-r-300m)
+            wav2vec2_cache_dir (str): Directory with pre-extracted wav2vec2 embeddings
+            use_preextracted_embeddings (bool): Whether to use pre-extracted embeddings
+            wav2vec2_pooling_method (str): Pooling method - 'mean' or 'self_attention' (default: 'self_attention')
+            wav2vec2_attention_heads (int): Number of attention heads for self-attention pooling (default: 8)
         """
         super().__init__()
 
         self.stage = stage
         self.use_xvector = use_xvector
-        self.xvector_dim = xvector_dim
+        self.use_wav2vec2 = use_wav2vec2
+        self.use_preextracted_embeddings = use_preextracted_embeddings
         self.xvector_cache_enabled = xvector_cache_enabled
+
+        # Determine embedding type and dimension
+        if use_wav2vec2 and use_xvector:
+            raise ValueError("Cannot use both X-Vectors and Wav2Vec2 simultaneously. Choose one.")
+
+        if use_wav2vec2:
+            # Wav2Vec2 embeddings (1024 dim for wav2vec2-xls-r-300m)
+            self.embedding_type = 'wav2vec2'
+            # We'll get actual dim from extractor or use default
+            self.embedding_dim = 1024  # Default for wav2vec2-xls-r-300m
+        elif use_xvector:
+            # X-Vector embeddings (512 dim)
+            self.embedding_type = 'xvector'
+            self.embedding_dim = xvector_dim
+        else:
+            # No embeddings
+            self.embedding_type = None
+            self.embedding_dim = 0
 
         if cleanunet_params is None:
             cleanunet_params = {}
@@ -70,8 +108,16 @@ class CleanUNet2WithXVector(nn.Module):
 
         print(f"[CleanUNet2WithXVector] Initializing model...")
         print(f"  - Stage: {stage}")
-        print(f"  - Use X-Vectors: {use_xvector}")
-        print(f"  - X-Vector Dim: {xvector_dim}")
+        print(f"  - Embedding Type: {self.embedding_type}")
+        if self.embedding_type:
+            print(f"  - Embedding Dim: {self.embedding_dim}")
+            if use_wav2vec2:
+                print(f"  - Wav2Vec2 Model: {wav2vec2_model}")
+                print(f"  - Use Pre-extracted: {use_preextracted_embeddings}")
+                if not use_preextracted_embeddings:
+                    print(f"  - Pooling Method: {wav2vec2_pooling_method}")
+                    if wav2vec2_pooling_method == 'self_attention':
+                        print(f"  - Attention Heads: {wav2vec2_attention_heads}")
         print(f"  - Conditioning: {conditioning_type}")
 
         # Calculate latent dimension from CleanUNet params
@@ -108,39 +154,87 @@ class CleanUNet2WithXVector(nn.Module):
             cond_channels=1
         )
 
-        # ============ X-Vector Components ============
+        # ============ Embedding Components ============
 
-        # X-Vector Extractor (Stage 1 only)
-        if stage == 'stage1' and use_xvector:
-            print("[CleanUNet2WithXVector] Loading X-Vector extractor...")
-            self.xvector_extractor = XVectorExtractor(
-                device='cpu',  # Will be moved to correct device by Lightning
-                local_path=xvector_local_path
-            )
-            # Freeze X-Vector extractor
-            for param in self.xvector_extractor.parameters():
-                param.requires_grad = False
-            self.xvector_extractor.eval()
+        # Initialize embedding extractor/cache based on type
+        self.embedding_extractor = None
+        self.embedding_cache = None
+
+        if stage == 'stage1' and self.embedding_type:
+            if use_wav2vec2:
+                # Wav2Vec2 Embeddings
+                if use_preextracted_embeddings:
+                    # Use pre-extracted embeddings from disk
+                    print("[CleanUNet2WithXVector] Using pre-extracted Wav2Vec2 embeddings...")
+                    if wav2vec2_cache_dir:
+                        from .wav2vec2_cache import Wav2Vec2Cache
+                        self.embedding_cache = Wav2Vec2Cache(
+                            cache_dir=wav2vec2_cache_dir,
+                            enabled=True
+                        )
+                        # Update embedding_dim from cache metadata
+                        metadata_file = Path(wav2vec2_cache_dir) / 'metadata.yaml'
+                        if metadata_file.exists():
+                            import yaml
+                            with open(metadata_file, 'r') as f:
+                                metadata = yaml.safe_load(f)
+                            self.embedding_dim = metadata.get('embedding_dim', 1024)
+                    else:
+                        raise ValueError("wav2vec2_cache_dir must be specified when use_preextracted_embeddings=True")
+                else:
+                    # Extract wav2vec2 on-the-fly (slower)
+                    print("[CleanUNet2WithXVector] Loading Wav2Vec2 extractor...")
+                    self.embedding_extractor = Wav2Vec2Extractor(
+                        model_name=wav2vec2_model,
+                        device='cpu',  # Will be moved to correct device by Lightning
+                        layer=-1,
+                        pooling_method=wav2vec2_pooling_method,
+                        num_attention_heads=wav2vec2_attention_heads
+                    )
+                    self.embedding_dim = self.embedding_extractor.get_embedding_dim()
+
+                    # Freeze Wav2Vec2 model (but NOT attention pooling if trainable)
+                    for param in self.embedding_extractor.model.parameters():
+                        param.requires_grad = False
+                    self.embedding_extractor.model.eval()
+
+                    # Keep attention pooling trainable if using self-attention
+                    if wav2vec2_pooling_method == 'self_attention':
+                        print("[CleanUNet2WithXVector] Self-Attention Pooling will be trained!")
+                        for param in self.embedding_extractor.attention_pooling.parameters():
+                            param.requires_grad = True
+                        self.embedding_extractor.attention_pooling.train()
+                    else:
+                        self.embedding_extractor.eval()
+
+            elif use_xvector:
+                # X-Vector Embeddings
+                print("[CleanUNet2WithXVector] Loading X-Vector extractor...")
+                self.embedding_extractor = XVectorExtractor(
+                    device='cpu',  # Will be moved to correct device by Lightning
+                    local_path=xvector_local_path
+                )
+                # Freeze X-Vector extractor
+                for param in self.embedding_extractor.parameters():
+                    param.requires_grad = False
+                self.embedding_extractor.eval()
+
+                # X-Vector Cache (on-the-fly extraction + caching)
+                if xvector_cache_enabled and xvector_cache_dir:
+                    from .xvector_cache import XVectorCache
+                    self.embedding_cache = XVectorCache(
+                        cache_dir=xvector_cache_dir,
+                        enabled=True
+                    )
         else:
-            self.xvector_extractor = None
-            print("[CleanUNet2WithXVector] X-Vector extractor not loaded")
+            print("[CleanUNet2WithXVector] No embedding extractor loaded")
 
-        # X-Vector Cache (Stage 1 only, if enabled)
-        if stage == 'stage1' and use_xvector and xvector_cache_enabled and xvector_cache_dir:
-            from .xvector_cache import XVectorCache
-            self.xvector_cache = XVectorCache(
-                cache_dir=xvector_cache_dir,
-                enabled=True
-            )
-        else:
-            self.xvector_cache = None
-
-        # Integration Block (for fusing X-Vectors with latent features)
-        if use_xvector:
-            print("[CleanUNet2WithXVector] Creating integration block...")
+        # Integration Block (for fusing embeddings with latent features)
+        if self.embedding_type:
+            print(f"[CleanUNet2WithXVector] Creating integration block (embedding_dim={self.embedding_dim})...")
             self.integration_block = IntegrationBlock(
                 latent_channels=self.latent_dim,
-                xvector_dim=xvector_dim
+                xvector_dim=self.embedding_dim  # This now works for any embedding dim
             )
         else:
             self.integration_block = None
@@ -257,60 +351,88 @@ class CleanUNet2WithXVector(nn.Module):
         latent, encoder_states = self.clean_unet.encode(conditioned_input)
         # latent shape: (batch, latent_dim, time)
 
-        # ============ STAGE 1: With X-Vectors ============
-        if self.stage == 'stage1' and self.xvector_extractor is not None:
+        # ============ STAGE 1: With Embeddings ============
+        if self.stage == 'stage1' and self.embedding_type is not None:
             assert clean_audio is not None, "Clean audio is required for Stage 1 training"
 
-            # Extract X-Vectors from clean audio (with optional caching)
-            # NOTE: X-Vector extraction is done in float32 for stability
+            # Extract embeddings from clean audio
             with torch.no_grad():
                 batch_size = clean_audio.shape[0]
-                xvector_emb_list = []
 
-                # Try to use cache if enabled and paths are provided
-                if self.xvector_cache is not None and clean_audio_paths is not None:
+                if self.use_wav2vec2 and self.use_preextracted_embeddings:
+                    # Load pre-extracted Wav2Vec2 embeddings from cache
+                    assert clean_audio_paths is not None, "Audio paths required for pre-extracted embeddings"
+                    embedding_list = []
+
                     for i in range(batch_size):
                         audio_path = clean_audio_paths[i]
-                        # Try to get from cache
-                        cached_xvector = self.xvector_cache.get(audio_path, device=clean_audio.device)
+                        cached_embedding = self.embedding_cache.get(audio_path, device=clean_audio.device)
 
-                        if cached_xvector is not None:
-                            # Use cached x-vector
-                            xvector_emb_list.append(cached_xvector)
-                        else:
-                            # Extract and cache
-                            xvector_single = self.xvector_extractor.extract_embeddings(
-                                clean_audio[i:i+1].squeeze(1)
+                        if cached_embedding is None:
+                            raise RuntimeError(
+                                f"Pre-extracted embedding not found for: {audio_path}\n"
+                                f"Please run extract_wav2vec2_embeddings.py first!"
                             )
-                            if xvector_single.dim() == 3:
-                                xvector_single = xvector_single.squeeze(1)
-                            xvector_emb_list.append(xvector_single.squeeze(0))
-                            # Save to cache
-                            self.xvector_cache.set(audio_path, xvector_single.squeeze(0))
 
-                    # Stack all x-vectors
-                    xvector_emb = torch.stack(xvector_emb_list, dim=0)
-                else:
-                    # No cache, extract normally
-                    xvector_emb = self.xvector_extractor.extract_embeddings(
-                        clean_audio.squeeze(1)
+                        embedding_list.append(cached_embedding)
+
+                    # Stack all embeddings
+                    embedding = torch.stack(embedding_list, dim=0)
+                    # embedding shape: (batch, embedding_dim)
+
+                elif self.use_wav2vec2 and not self.use_preextracted_embeddings:
+                    # Extract Wav2Vec2 on-the-fly (slower)
+                    embedding = self.embedding_extractor.extract_embeddings(
+                        clean_audio.squeeze(1),
+                        sample_rate=16000,  # Wav2Vec2 expects 16kHz
+                        return_mean=True
                     )
-                    # xvector_emb shape: (batch, 512) or (batch, 1, 512)
+                    # embedding shape: (batch, embedding_dim)
 
-                    # Ensure shape is (batch, 512)
-                    if xvector_emb.dim() == 3:
-                        xvector_emb = xvector_emb.squeeze(1)
+                elif self.use_xvector:
+                    # X-Vector extraction (original logic)
+                    embedding_list = []
 
-            # Expand X-Vectors to match temporal dimension
+                    # Try to use cache if enabled and paths are provided
+                    if self.embedding_cache is not None and clean_audio_paths is not None:
+                        for i in range(batch_size):
+                            audio_path = clean_audio_paths[i]
+                            cached_emb = self.embedding_cache.get(audio_path, device=clean_audio.device)
+
+                            if cached_emb is not None:
+                                embedding_list.append(cached_emb)
+                            else:
+                                # Extract and cache
+                                emb_single = self.embedding_extractor.extract_embeddings(
+                                    clean_audio[i:i+1].squeeze(1)
+                                )
+                                if emb_single.dim() == 3:
+                                    emb_single = emb_single.squeeze(1)
+                                embedding_list.append(emb_single.squeeze(0))
+                                # Save to cache
+                                self.embedding_cache.set(audio_path, emb_single.squeeze(0))
+
+                        embedding = torch.stack(embedding_list, dim=0)
+                    else:
+                        # No cache, extract normally
+                        embedding = self.embedding_extractor.extract_embeddings(
+                            clean_audio.squeeze(1)
+                        )
+                        if embedding.dim() == 3:
+                            embedding = embedding.squeeze(1)
+
+                    # embedding shape: (batch, embedding_dim)
+
+            # Expand embeddings to match temporal dimension
             time_steps = latent.shape[-1]
-            xvector_expanded = xvector_emb.unsqueeze(-1).expand(-1, -1, time_steps)
-            # xvector_expanded shape: (batch, 512, time)
+            embedding_expanded = embedding.unsqueeze(-1).expand(-1, -1, time_steps)
+            # embedding_expanded shape: (batch, embedding_dim, time)
 
             # Match dtype with latent (important for AMP compatibility)
-            xvector_expanded = xvector_expanded.to(dtype=latent.dtype)
+            embedding_expanded = embedding_expanded.to(dtype=latent.dtype)
 
-            # Integrate X-Vectors with latent features
-            fused_latent = self.integration_block(latent, xvector_expanded)
+            # Integrate embeddings with latent features
+            fused_latent = self.integration_block(latent, embedding_expanded)
             # fused_latent shape: (batch, latent_dim, time)
 
             # Decode to enhanced audio
@@ -318,7 +440,7 @@ class CleanUNet2WithXVector(nn.Module):
 
             # Store latents for Stage 2
             latents['fused_latent'] = fused_latent.detach()
-            latents['xvector_emb'] = xvector_emb.detach()
+            latents['embedding'] = embedding.detach()
             latents['latent'] = latent.detach()
 
         # ============ STAGE 2: Replicating Latents ============

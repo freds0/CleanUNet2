@@ -41,20 +41,34 @@ class CleanUNet2Stage1Module(pl.LightningModule):
         # ===== Model Initialization =====
         model_config = config.get('model', {})
 
+        # Determine embedding type (X-Vector or Wav2Vec2)
+        use_wav2vec2 = model_config.get('use_wav2vec2', False)
+        use_xvector = model_config.get('use_xvector', not use_wav2vec2)  # Default to xvector if wav2vec2 not specified
+
         # X-Vector cache configuration
         xvector_cache_enabled = model_config.get('xvector_cache_enabled', False)
         xvector_cache_dir = model_config.get('xvector_cache_dir', 'xvector_cache')
 
+        # Wav2Vec2 configuration
+        wav2vec2_model = model_config.get('wav2vec2_model', 'facebook/wav2vec2-xls-r-300m')
+        wav2vec2_cache_dir = model_config.get('wav2vec2_cache_dir', 'wav2vec2_embeddings')
+        use_preextracted_embeddings = model_config.get('use_preextracted_embeddings', False)
+
         self.model = CleanUNet2WithXVector(
             stage='stage1',
-            use_xvector=True,
+            use_xvector=use_xvector,
             xvector_dim=model_config.get('xvector_dim', 512),
             conditioning_type=model_config.get('conditioning_type', 'addition'),
             cleanunet_params=model_config.get('cleanunet_params', {}),
             cleanspecnet_params=model_config.get('cleanspecnet_params', {}),
             xvector_local_path=model_config.get('xvector_local_path', None),
             xvector_cache_enabled=xvector_cache_enabled,
-            xvector_cache_dir=xvector_cache_dir
+            xvector_cache_dir=xvector_cache_dir,
+            # Wav2Vec2 parameters
+            use_wav2vec2=use_wav2vec2,
+            wav2vec2_model=wav2vec2_model,
+            wav2vec2_cache_dir=wav2vec2_cache_dir,
+            use_preextracted_embeddings=use_preextracted_embeddings
         )
 
         # ===== Load Vanilla Checkpoint (Optional) =====
@@ -256,7 +270,7 @@ class CleanUNet2Stage1Module(pl.LightningModule):
         latent_path = self.latents_dir / f"val_batch_{self.global_val_batch_idx:06d}.pt"
         torch.save({
             'fused_latent': latents['fused_latent'].cpu(),
-            'xvector_emb': latents['xvector_emb'].cpu(),
+            'embedding': latents['embedding'].cpu(),  # Works for both xvector and wav2vec2
             'latent': latents['latent'].cpu(),
             'noisy_wav': noisy_wav.cpu(),
             'clean_wav': clean_wav.cpu(),
@@ -303,13 +317,14 @@ class CleanUNet2Stage1Module(pl.LightningModule):
                         preds_pesq = preds
                         target_pesq = target
 
-                    # CORRECTED: PESQ expects (reference, degraded) order, i.e., (clean, enhanced)
                     # Move to CPU for PESQ calculation (PESQ internal weights are on CPU)
                     preds_pesq_cpu = preds_pesq.cpu()
                     target_pesq_cpu = target_pesq.cpu()
 
+                    # CORRECTED: PESQ expects (reference, degraded) order, i.e., (clean, enhanced)
                     val_pesq = self.val_pesq(target_pesq_cpu, preds_pesq_cpu)
-                except Exception:
+                except Exception as e:
+                    print(f"[WARNING] PESQ computation failed: {e}")
                     val_pesq = torch.tensor(1.0, device=self.device)
 
                 try:

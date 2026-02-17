@@ -10,10 +10,10 @@ inference:
   input_dir: "/home/fred/Projetos/DATASETS/VoiceBank-DEMAND-16k/test/noisy/"
 
   # Output directory for denoised audio
-  output_dir: "denoised_xvector_results"
+  output_dir: "denoised_xvector_alcateia_results"
 
   # Path to Stage-2 checkpoint (trained without X-Vectors)
-  checkpoint_path: "logs/stage2_checkpoints/stage2-best.ckpt"
+  checkpoint_path: "checkpoints_alcateia/last.ckpt"
 
   # Force CPU usage (default: false, will use GPU if available)
   force_cpu: false

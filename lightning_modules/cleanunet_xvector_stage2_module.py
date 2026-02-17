@@ -344,7 +344,8 @@ class CleanUNet2Stage2Module(pl.LightningModule):
                     target_pesq_cpu = target_pesq.cpu()
 
                     val_pesq = self.val_pesq(target_pesq_cpu, preds_pesq_cpu)
-                except Exception:
+                except Exception as e:
+                    print(f"[WARNING] PESQ computation failed: {e}")
                     val_pesq = torch.tensor(1.0, device=self.device)
 
                 try:

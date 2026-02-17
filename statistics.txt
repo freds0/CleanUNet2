@@ -1,0 +1,36 @@
+CLEANUNET1 Statistics:
+             stoi        pesq      si_sdr       score
+count  824.000000  824.000000  824.000000  824.000000
+mean     0.942524    2.777385   17.399620    0.713236
+std      0.057593    0.686181    3.778424    0.098576
+min      0.615111    1.102390    3.967701    0.390696
+25%      0.920178    2.329862   14.934504    0.647734
+50%      0.960247    2.860769   17.697121    0.724205
+75%      0.983669    3.330497   20.247911    0.791828
+max      0.999520    4.229918   27.496101    0.924548
+Confidence intervals:
+ {'stoi': (np.float64(0.9385855989275955), np.float64(0.9464619252522151)), 'pesq': (np.float64(2.7304640684611714), np.float64(2.824305068780137)), 'si_sdr': (np.float64(17.141254534342032), np.float64(17.657985309452414)), 'score': (np.float64(0.7064953743565501), np.float64(0.7199764013930516))}
+CLEANUNET2 Statistics:
+       stoi  pesq  si_sdr  score
+count   0.0   0.0     0.0    0.0
+mean    NaN   NaN     NaN    NaN
+std     NaN   NaN     NaN    NaN
+min     NaN   NaN     NaN    NaN
+25%     NaN   NaN     NaN    NaN
+50%     NaN   NaN     NaN    NaN
+75%     NaN   NaN     NaN    NaN
+max     NaN   NaN     NaN    NaN
+Confidence intervals:
+ {'stoi': (np.float64(nan), np.float64(nan)), 'pesq': (np.float64(nan), np.float64(nan)), 'si_sdr': (np.float64(nan), np.float64(nan)), 'score': (np.float64(nan), np.float64(nan))}
+CLEANUNET2-GAN Statistics:
+       stoi  pesq  si_sdr  score
+count   0.0   0.0     0.0    0.0
+mean    NaN   NaN     NaN    NaN
+std     NaN   NaN     NaN    NaN
+min     NaN   NaN     NaN    NaN
+25%     NaN   NaN     NaN    NaN
+50%     NaN   NaN     NaN    NaN
+75%     NaN   NaN     NaN    NaN
+max     NaN   NaN     NaN    NaN
+Confidence intervals:
+ {'stoi': (np.float64(nan), np.float64(nan)), 'pesq': (np.float64(nan), np.float64(nan)), 'si_sdr': (np.float64(nan), np.float64(nan)), 'score': (np.float64(nan), np.float64(nan))}
