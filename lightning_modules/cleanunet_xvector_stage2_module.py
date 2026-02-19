@@ -260,7 +260,11 @@ class CleanUNet2Stage2Module(pl.LightningModule):
         return self.model(noisy_wav, noisy_spec, clean_audio=None)
 
     def training_step(self, batch, batch_idx):
-        noisy_wav, noisy_spec, clean_wav, clean_spec = batch
+        # Handle both dataset formats: with and without file paths
+        if len(batch) == 5:
+            noisy_wav, noisy_spec, clean_wav, clean_spec, clean_audio_paths = batch
+        else:
+            noisy_wav, noisy_spec, clean_wav, clean_spec = batch
 
         # Forward without X-Vectors
         enhanced, enhanced_spec, latents = self.model(
@@ -304,7 +308,11 @@ class CleanUNet2Stage2Module(pl.LightningModule):
         return total_loss
 
     def validation_step(self, batch, batch_idx):
-        noisy_wav, noisy_spec, clean_wav, clean_spec = batch
+        # Handle both dataset formats: with and without file paths
+        if len(batch) == 5:
+            noisy_wav, noisy_spec, clean_wav, clean_spec, clean_audio_paths = batch
+        else:
+            noisy_wav, noisy_spec, clean_wav, clean_spec = batch
 
         # Forward without X-Vectors
         enhanced, enhanced_spec, latents = self.model(
