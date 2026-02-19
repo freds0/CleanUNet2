@@ -41,15 +41,44 @@ class CleanUNet2Stage2Module(pl.LightningModule):
         # ===== Model Initialization =====
         model_config = config.get('model', {})
 
-        self.model = CleanUNet2WithXVector(
-            stage='stage2',
-            use_xvector=True,  # Architecture uses it, but no extractor
-            xvector_dim=model_config.get('xvector_dim', 512),
-            conditioning_type=model_config.get('conditioning_type', 'addition'),
-            cleanunet_params=model_config.get('cleanunet_params', {}),
-            cleanspecnet_params=model_config.get('cleanspecnet_params', {}),
-            xvector_local_path=model_config.get('xvector_local_path', None)
-        )
+        # Determine embedding type from config
+        use_wav2vec2 = model_config.get('use_wav2vec2', False)
+        use_xvector = model_config.get('use_xvector', True)
+
+        # Prepare model initialization arguments
+        model_args = {
+            'stage': 'stage2',
+            'conditioning_type': model_config.get('conditioning_type', 'addition'),
+            'cleanunet_params': model_config.get('cleanunet_params', {}),
+            'cleanspecnet_params': model_config.get('cleanspecnet_params', {}),
+        }
+
+        # Add embedding-specific parameters
+        if use_wav2vec2:
+            model_args.update({
+                'use_wav2vec2': True,
+                'use_xvector': False,
+                'wav2vec2_model': model_config.get('wav2vec2_model', 'facebook/wav2vec2-xls-r-300m'),
+                'wav2vec2_cache_dir': model_config.get('wav2vec2_cache_dir', None),
+                'use_preextracted_embeddings': model_config.get('use_preextracted_embeddings', False),
+                'wav2vec2_pooling_method': model_config.get('wav2vec2_pooling_method', 'self_attention'),
+                'wav2vec2_attention_heads': model_config.get('wav2vec2_attention_heads', 8),
+            })
+        elif use_xvector:
+            model_args.update({
+                'use_xvector': True,
+                'use_wav2vec2': False,
+                'xvector_dim': model_config.get('xvector_dim', 512),
+                'xvector_local_path': model_config.get('xvector_local_path', None),
+            })
+        else:
+            # No embeddings
+            model_args.update({
+                'use_xvector': False,
+                'use_wav2vec2': False,
+            })
+
+        self.model = CleanUNet2WithXVector(**model_args)
 
         # ===== Load Stage-1 Checkpoint =====
         stage1_ckpt = config.get('stage1_checkpoint')

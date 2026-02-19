@@ -240,7 +240,7 @@ class CleanUNet2WithXVector(nn.Module):
             self.integration_block = None
 
         # Latent Predictor (Stage 2 only)
-        if stage == 'stage2' and use_xvector:
+        if stage == 'stage2' and self.embedding_type is not None:
             print("[CleanUNet2WithXVector] Creating latent predictor for Stage 2...")
             self.latent_predictor = nn.Sequential(
                 nn.Conv1d(self.latent_dim, self.latent_dim, kernel_size=1),
@@ -482,7 +482,7 @@ class CleanUNet2WithXVector(nn.Module):
     def load_stage1_weights(self, checkpoint_path):
         """
         Load Stage 1 weights to initialize Stage 2 model.
-        Filters out X-Vector extractor weights (not needed in Stage 2).
+        Filters out embedding extractor weights (not needed in Stage 2).
         """
         state_dict = self._load_and_extract_state_dict(checkpoint_path)
 
@@ -495,8 +495,9 @@ class CleanUNet2WithXVector(nn.Module):
             else:
                 new_key = k
 
-            # Skip X-Vector extractor weights
-            if not new_key.startswith('xvector_extractor'):
+            # Skip embedding extractor/cache weights (not needed in Stage 2)
+            # This includes: xvector_extractor, embedding_extractor, embedding_cache
+            if not new_key.startswith(('xvector_extractor', 'embedding_extractor', 'embedding_cache')):
                 filtered_state_dict[new_key] = v
 
         # Load with strict=False to allow missing keys (e.g., latent_predictor)
