@@ -1,8 +1,8 @@
 # configs/train_wav2vec2_stage1_self_attention.yaml
-# Stage-1 Training Configuration: Training with Wav2Vec2 Embeddings + Self-Attention Pooling
+# Stage-1 Training Configuration: Training with WavLM Embeddings + Self-Attention Pooling
 #
 # NEW: Uses Self-Attention Pooling instead of mean pooling for better temporal aggregation
-# Wav2Vec2 embeddings can be PRE-EXTRACTED or computed on-the-fly
+# WavLM embeddings can be PRE-EXTRACTED or computed on-the-fly
 
 # ⚠️  OPTION 1 (RECOMMENDED): Pre-extract embeddings for faster training
 # python extract_wav2vec2_embeddings.py --config configs/train_wav2vec2_stage1_self_attention.yaml
@@ -43,13 +43,13 @@ audio:
 # ----------------------
 model:
   # ============================================================
-  # Wav2Vec2 Settings
+  # WavLM Settings (microsoft/wavlm-base)
   # ============================================================
-  use_wav2vec2: true  # Use Wav2Vec2 instead of X-Vectors
+  use_wav2vec2: true  # Use WavLM instead of X-Vectors
   use_xvector: false  # Disable X-Vectors
 
-  # Wav2Vec2 model configuration
-  wav2vec2_model: "facebook/wav2vec2-xls-r-300m"  # Pre-trained model
+  # WavLM model configuration
+  wav2vec2_model: "microsoft/wavlm-base"  # Pre-trained WavLM model
 
   # ============================================================
   # Self-Attention Pooling (NEW!)

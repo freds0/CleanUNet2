@@ -1,5 +1,5 @@
 """
-Pre-extract Wav2Vec2 embeddings for all audio files before training.
+Pre-extract WavLM embeddings for all audio files before training.
 
 This script extracts embeddings from all clean audio files in the training/validation
 datasets and saves them to disk. During training, the model will load pre-extracted
@@ -133,7 +133,7 @@ def load_audio_files_from_config(config):
 
 def extract_and_save_embeddings(config, device='cuda', force_reextract=False):
     """
-    Extract wav2vec2 embeddings for all audio files and save to disk.
+    Extract WavLM embeddings for all audio files and save to disk.
 
     Args:
         config (dict): Configuration dictionary
@@ -146,7 +146,7 @@ def extract_and_save_embeddings(config, device='cuda', force_reextract=False):
     cache_dir.mkdir(parents=True, exist_ok=True)
 
     print("\n" + "=" * 80)
-    print("Wav2Vec2 Embedding Pre-Extraction")
+    print("WavLM Embedding Pre-Extraction")
     print("=" * 80)
     print(f"Cache directory: {cache_dir}")
     print(f"Device: {device}")
@@ -160,9 +160,9 @@ def extract_and_save_embeddings(config, device='cuda', force_reextract=False):
         print("[Extract] Error: No audio files found!")
         return
 
-    # Initialize Wav2Vec2 extractor
-    print("[Extract] Initializing Wav2Vec2 extractor...")
-    model_name = config['model'].get('wav2vec2_model', 'facebook/wav2vec2-xls-r-300m')
+    # Initialize WavLM extractor
+    print("[Extract] Initializing WavLM extractor...")
+    model_name = config['model'].get('wav2vec2_model', 'microsoft/wavlm-base')
     extractor = Wav2Vec2Extractor(
         model_name=model_name,
         device=device,

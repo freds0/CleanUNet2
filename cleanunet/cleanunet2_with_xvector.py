@@ -4,7 +4,7 @@ Based on CNUNet-TB paper: Two-stage training using self-supervised speech embedd
 
 Supports two types of embeddings:
     1. X-Vectors (SpeechBrain) - 512 dimensions
-    2. Wav2Vec2 (facebook/wav2vec2-xls-r-300m) - 1024 dimensions
+    2. WavLM (microsoft/wavlm-base) - 768 dimensions
 
 Architecture:
     - Stage 1: Train with embeddings injected into latent space
@@ -47,9 +47,9 @@ class CleanUNet2WithXVector(nn.Module):
         xvector_local_path=None,
         xvector_cache_dir=None,
         xvector_cache_enabled=False,
-        # Wav2Vec2 parameters
+        # WavLM parameters
         use_wav2vec2=False,
-        wav2vec2_model='facebook/wav2vec2-xls-r-300m',
+        wav2vec2_model='microsoft/wavlm-base',
         wav2vec2_cache_dir=None,
         use_preextracted_embeddings=False,
         wav2vec2_pooling_method='self_attention',
@@ -68,9 +68,9 @@ class CleanUNet2WithXVector(nn.Module):
             xvector_local_path (str): Local path to x-vector model weights
             xvector_cache_dir (str): Directory to store cached x-vectors
             xvector_cache_enabled (bool): Whether to use x-vector caching
-            use_wav2vec2 (bool): Whether to use Wav2Vec2 embeddings instead of x-vectors
-            wav2vec2_model (str): Wav2Vec2 model name (e.g., facebook/wav2vec2-xls-r-300m)
-            wav2vec2_cache_dir (str): Directory with pre-extracted wav2vec2 embeddings
+            use_wav2vec2 (bool): Whether to use WavLM embeddings instead of x-vectors
+            wav2vec2_model (str): WavLM model name (e.g., microsoft/wavlm-base)
+            wav2vec2_cache_dir (str): Directory with pre-extracted WavLM embeddings
             use_preextracted_embeddings (bool): Whether to use pre-extracted embeddings
             wav2vec2_pooling_method (str): Pooling method - 'mean' or 'self_attention' (default: 'self_attention')
             wav2vec2_attention_heads (int): Number of attention heads for self-attention pooling (default: 8)
@@ -88,10 +88,10 @@ class CleanUNet2WithXVector(nn.Module):
             raise ValueError("Cannot use both X-Vectors and Wav2Vec2 simultaneously. Choose one.")
 
         if use_wav2vec2:
-            # Wav2Vec2 embeddings (1024 dim for wav2vec2-xls-r-300m)
+            # WavLM embeddings (768 dim for microsoft/wavlm-base)
             self.embedding_type = 'wav2vec2'
             # We'll get actual dim from extractor or use default
-            self.embedding_dim = 1024  # Default for wav2vec2-xls-r-300m
+            self.embedding_dim = 768  # Default for microsoft/wavlm-base
         elif use_xvector:
             # X-Vector embeddings (512 dim)
             self.embedding_type = 'xvector'

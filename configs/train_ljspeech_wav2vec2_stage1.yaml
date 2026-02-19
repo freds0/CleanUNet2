@@ -1,9 +1,9 @@
-# configs/train_wav2vec2_stage1.yaml
-# Stage-1 Training Configuration: Training with Wav2Vec2 Embeddings
-# Wav2Vec2 embeddings are PRE-EXTRACTED from clean audio and loaded from disk
+# configs/train_ljspeech_wav2vec2_stage1.yaml
+# Stage-1 Training Configuration: Training with WavLM Embeddings
+# WavLM embeddings are PRE-EXTRACTED from clean audio and loaded from disk
 
 # ⚠️  IMPORTANT: Run extract_wav2vec2_embeddings.py BEFORE training!
-# python extract_wav2vec2_embeddings.py --config configs/train_wav2vec2_stage1.yaml
+# python extract_wav2vec2_embeddings.py --config configs/train_ljspeech_wav2vec2_stage1.yaml
 
 # ----------------------
 # Trainer configuration
@@ -38,17 +38,17 @@ audio:
 # ----------------------
 model:
   # ============================================================
-  # Wav2Vec2 Settings (NEW!)
+  # WavLM Settings (microsoft/wavlm-base)
   # ============================================================
-  use_wav2vec2: true  # Use Wav2Vec2 instead of X-Vectors
+  use_wav2vec2: true  # Use WavLM instead of X-Vectors
   use_xvector: false  # Disable X-Vectors
 
-  # Wav2Vec2 model configuration
-  wav2vec2_model: "facebook/wav2vec2-xls-r-300m"  # Pre-trained model
+  # WavLM model configuration
+  wav2vec2_model: "microsoft/wavlm-base"  # Pre-trained WavLM model
   wav2vec2_cache_dir: "wav2vec2_embeddings"  # Directory with pre-extracted embeddings
   use_preextracted_embeddings: true  # Load pre-extracted embeddings (RECOMMENDED!)
 
-  # Note: Embedding dimension is automatically determined (1024 for wav2vec2-xls-r-300m)
+  # Note: Embedding dimension is automatically determined (768 for microsoft/wavlm-base)
   conditioning_type: "film"  # Conditioning method for spec+waveform fusion
 
   # Optional: Load vanilla CleanUNet2 checkpoint for warm start

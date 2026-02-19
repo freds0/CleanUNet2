@@ -1,11 +1,12 @@
 """
-Wav2Vec2 Embedding Extractor Module
-Uses facebook/wav2vec2-xls-r-300m for self-supervised speech embeddings
+WavLM Embedding Extractor Module
+Uses microsoft/wavlm-base for self-supervised speech embeddings
+WavLM is an improved version of Wav2Vec2 with better speech representation
 """
 
 import torch
 import torch.nn as nn
-from transformers import Wav2Vec2Model
+from transformers import WavLMModel
 import warnings
 
 # Suppress transformers warnings
@@ -81,17 +82,18 @@ class SelfAttentionPooling(nn.Module):
 
 class Wav2Vec2Extractor(nn.Module):
     """
-    Wav2Vec2 embedding extractor using facebook/wav2vec2-xls-r-300m.
+    WavLM embedding extractor using microsoft/wavlm-base.
     Extracts self-supervised speech representations for speech enhancement.
+    WavLM provides improved representations compared to Wav2Vec2.
     """
 
-    def __init__(self, model_name="facebook/wav2vec2-xls-r-300m", device='cpu', layer=-1,
+    def __init__(self, model_name="microsoft/wavlm-base", device='cpu', layer=-1,
                  pooling_method='self_attention', num_attention_heads=8):
         """
-        Initialize the Wav2Vec2 extractor.
+        Initialize the WavLM extractor.
 
         Args:
-            model_name (str): HuggingFace model name (default: facebook/wav2vec2-xls-r-300m)
+            model_name (str): HuggingFace model name (default: microsoft/wavlm-base)
             device (str): Device to run the model on
             layer (int): Which layer to extract features from (-1 = last layer)
             pooling_method (str): Pooling method - 'mean' or 'self_attention' (default: 'self_attention')
@@ -104,32 +106,32 @@ class Wav2Vec2Extractor(nn.Module):
         self.model_name = model_name
         self.pooling_method = pooling_method
 
-        print(f"[Wav2Vec2Extractor] Loading model: {model_name}")
-        print(f"[Wav2Vec2Extractor] Device: {device}")
-        print(f"[Wav2Vec2Extractor] Layer: {layer}")
-        print(f"[Wav2Vec2Extractor] Pooling method: {pooling_method}")
+        print(f"[WavLMExtractor] Loading model: {model_name}")
+        print(f"[WavLMExtractor] Device: {device}")
+        print(f"[WavLMExtractor] Layer: {layer}")
+        print(f"[WavLMExtractor] Pooling method: {pooling_method}")
 
         try:
             # Load pre-trained model
-            # Note: We don't need Wav2Vec2Processor because:
-            # 1. Wav2Vec2 models don't use tokenizers (they process audio directly)
+            # Note: We don't need WavLMProcessor because:
+            # 1. WavLM models don't use tokenizers (they process audio directly)
             # 2. We normalize audio manually in extract_embeddings()
 
             # Use safetensors format for security (required by newer transformers)
             # This avoids the torch.load vulnerability issue (CVE-2025-32434)
-            print("[Wav2Vec2Extractor] Using safetensors format for secure loading...")
-            self.model = Wav2Vec2Model.from_pretrained(
+            print("[WavLMExtractor] Using safetensors format for secure loading...")
+            self.model = WavLMModel.from_pretrained(
                 model_name,
-                cache_dir="pretrained_models/wav2vec2",
+                cache_dir="pretrained_models/wavlm",
                 use_safetensors=True  # Force safetensors format (secure)
             )
 
-            print(f"[Wav2Vec2Extractor] Model loaded successfully!")
-            print(f"[Wav2Vec2Extractor] Model cached at: pretrained_models/wav2vec2")
+            print(f"[WavLMExtractor] Model loaded successfully!")
+            print(f"[WavLMExtractor] Model cached at: pretrained_models/wavlm")
 
         except Exception as e:
             print("\n" + "=" * 80)
-            print("[ERROR] Failed to load Wav2Vec2 model from HuggingFace!")
+            print("[ERROR] Failed to load WavLM model from HuggingFace!")
             print("=" * 80)
             print(f"Error: {type(e).__name__}: {str(e)[:200]}\n")
 
@@ -149,24 +151,24 @@ class Wav2Vec2Extractor(nn.Module):
                 print("On a machine with internet:")
                 print("")
                 print("  pip install safetensors")
-                print("  from transformers import Wav2Vec2Model")
-                print(f"  model = Wav2Vec2Model.from_pretrained('{model_name}', ")
-                print(f"      cache_dir='pretrained_models/wav2vec2', use_safetensors=True)")
+                print("  from transformers import WavLMModel")
+                print(f"  model = WavLMModel.from_pretrained('{model_name}', ")
+                print(f"      cache_dir='pretrained_models/wavlm', use_safetensors=True)")
                 print("")
-                print("Then copy 'pretrained_models/wav2vec2' to this machine.")
+                print("Then copy 'pretrained_models/wavlm' to this machine.")
             else:
                 print("SOLUTION: Download the model manually")
                 print("-" * 80)
                 print("Run this Python code on a machine with internet:")
                 print("")
                 print("  pip install safetensors")
-                print("  from transformers import Wav2Vec2Model")
-                print(f"  model = Wav2Vec2Model.from_pretrained('{model_name}', ")
-                print(f"      cache_dir='pretrained_models/wav2vec2', use_safetensors=True)")
+                print("  from transformers import WavLMModel")
+                print(f"  model = WavLMModel.from_pretrained('{model_name}', ")
+                print(f"      cache_dir='pretrained_models/wavlm', use_safetensors=True)")
                 print("")
-                print("Then copy 'pretrained_models/wav2vec2' to this machine.")
+                print("Then copy 'pretrained_models/wavlm' to this machine.")
             print("=" * 80 + "\n")
-            raise RuntimeError("Wav2Vec2 model loading failed. See instructions above.") from e
+            raise RuntimeError("WavLM model loading failed. See instructions above.") from e
 
         # Move model to device
         self.model = self.model.to(device)
@@ -180,39 +182,39 @@ class Wav2Vec2Extractor(nn.Module):
 
         # Get embedding dimension
         self.embedding_dim = self.model.config.hidden_size
-        print(f"[Wav2Vec2Extractor] Embedding dimension: {self.embedding_dim}")
+        print(f"[WavLMExtractor] Embedding dimension: {self.embedding_dim}")
 
         # Initialize pooling layer
         if self.pooling_method == 'self_attention':
-            print(f"[Wav2Vec2Extractor] Initializing Self-Attention Pooling (heads={num_attention_heads})...")
+            print(f"[WavLMExtractor] Initializing Self-Attention Pooling (heads={num_attention_heads})...")
             self.attention_pooling = SelfAttentionPooling(
                 embedding_dim=self.embedding_dim,
                 num_heads=num_attention_heads,
                 dropout=0.1
             )
             self.attention_pooling = self.attention_pooling.to(device)
-            print(f"[Wav2Vec2Extractor] Self-Attention Pooling initialized!")
+            print(f"[WavLMExtractor] Self-Attention Pooling initialized!")
         elif self.pooling_method == 'mean':
             self.attention_pooling = None
-            print(f"[Wav2Vec2Extractor] Using mean pooling (no learnable parameters)")
+            print(f"[WavLMExtractor] Using mean pooling (no learnable parameters)")
         else:
             raise ValueError(f"Unknown pooling method: {self.pooling_method}. Use 'mean' or 'self_attention'")
 
-        print(f"[Wav2Vec2Extractor] Model ready!")
+        print(f"[WavLMExtractor] Model ready!")
 
     def extract_embeddings(self, waveform, sample_rate=16000, return_mean=True):
         """
-        Extract Wav2Vec2 embeddings from audio waveform.
+        Extract WavLM embeddings from audio waveform.
 
         Args:
             waveform (torch.Tensor): Audio tensor of shape (batch, samples) or (batch, 1, samples)
-            sample_rate (int): Sample rate of the audio (wav2vec2 expects 16kHz)
+            sample_rate (int): Sample rate of the audio (WavLM expects 16kHz)
             return_mean (bool): If True, return mean pooled embeddings (batch, dim)
                               If False, return full sequence (batch, time_steps, dim)
 
         Returns:
-            embeddings (torch.Tensor): Wav2Vec2 embeddings
-                - If return_mean=True: shape (batch, embedding_dim) [e.g., (batch, 1024)]
+            embeddings (torch.Tensor): WavLM embeddings
+                - If return_mean=True: shape (batch, embedding_dim) [e.g., (batch, 768)]
                 - If return_mean=False: shape (batch, time_steps, embedding_dim)
         """
         with torch.no_grad():
@@ -226,15 +228,15 @@ class Wav2Vec2Extractor(nn.Module):
             # Move to model device
             waveform = waveform.to(self.device)
 
-            # Normalize audio to [-1, 1] range (wav2vec2 expects this)
+            # Normalize audio to [-1, 1] range (WavLM expects this)
             max_val = waveform.abs().max(dim=-1, keepdim=True)[0]
             max_val = torch.clamp(max_val, min=1e-8)  # Avoid division by zero
             waveform = waveform / max_val
 
-            # Resample if needed (wav2vec2 expects 16kHz)
+            # Resample if needed (WavLM expects 16kHz)
             if sample_rate != 16000:
-                print(f"[Wav2Vec2Extractor] Warning: Input sample rate is {sample_rate}Hz, "
-                      f"but wav2vec2 expects 16kHz. Resampling...")
+                print(f"[WavLMExtractor] Warning: Input sample rate is {sample_rate}Hz, "
+                      f"but WavLM expects 16kHz. Resampling...")
                 import torchaudio
                 resampler = torchaudio.transforms.Resample(
                     orig_freq=sample_rate,
@@ -242,7 +244,7 @@ class Wav2Vec2Extractor(nn.Module):
                 ).to(self.device)
                 waveform = resampler(waveform)
 
-            # Extract features using wav2vec2
+            # Extract features using WavLM
             outputs = self.model(
                 waveform,
                 output_hidden_states=True,
@@ -284,7 +286,7 @@ class Wav2Vec2Extractor(nn.Module):
     @torch.no_grad()
     def extract_and_interpolate(self, waveform, target_length, sample_rate=16000):
         """
-        Extract Wav2Vec2 embeddings and interpolate to match target temporal length.
+        Extract WavLM embeddings and interpolate to match target temporal length.
         This is useful for integrating embeddings with encoder features.
 
         Args:
