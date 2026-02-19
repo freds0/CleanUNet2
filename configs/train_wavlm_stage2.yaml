@@ -1,0 +1,208 @@
+# configs/train_wavlm_stage2.yaml
+# Stage-2 Training Configuration: Training WITHOUT WavLM Embeddings
+# Replicates Stage-1 fused latents using only noisy audio (no embedding extractor)
+
+# ⚠️  IMPORTANT: Run Stage-1 first to generate latent files!
+# The Stage-1 latents should be saved in: stored_latents_wavlm_stage1/
+
+# ----------------------
+# Trainer configuration
+# ----------------------
+trainer:
+  accelerator: "auto"
+  devices: 1
+  max_epochs: 10000
+  precision: "16-mixed"
+  log_every_n_steps: 100
+  check_val_every_n_epoch: 1
+  gradient_clip_val: 1.0
+  deterministic: false
+  benchmark: true
+
+# ----------------------
+# Global / runtime
+# ----------------------
+seed: 1234
+checkpoint_dir: "logs/wavlm_stage2_checkpoints"
+logging_dir: "logs/wavlm_stage2"
+latents_dir: "stored_latents_wavlm_stage1"  # Where to load Stage-1 latents from
+
+# ----------------------
+# Audio configuration
+# ----------------------
+audio:
+  sample_rate: 24000
+
+# ----------------------
+# Stage-1 Checkpoint
+# ----------------------
+# REQUIRED: Path to Stage-1 checkpoint for weight initialization
+stage1_checkpoint: "logs/wavlm_stage1_checkpoints/wavlm_stage1-best-epoch=37-val/weighted_score=0.7664.ckpt"
+
+# ----------------------
+# Model Configuration
+# ----------------------
+model:
+  # ============================================================
+  # WavLM Settings (architecture uses it, but no extractor in Stage-2)
+  # ============================================================
+  use_wav2vec2: true  # Architecture includes WavLM integration
+  use_xvector: false
+  wav2vec2_model: "microsoft/wavlm-base"  # Model name (for reference)
+  use_preextracted_embeddings: false  # Stage-2 doesn't use embeddings
+
+  # Note: Embedding dimension is automatically determined (768 for microsoft/wavlm-base)
+  conditioning_type: "film"  # Conditioning method for spec+waveform fusion
+
+  # CleanUNet parameters (same as Stage-1)
+  cleanunet_params:
+    channels_input: 1
+    channels_output: 1
+    channels_H: 64
+    max_H: 768
+    encoder_n_layers: 8
+    kernel_size: 4
+    stride: 2
+    tsfm_n_layers: 5
+    tsfm_n_head: 8
+    tsfm_d_model: 512
+    tsfm_d_inner: 2048
+
+  # CleanSpecNet parameters (same as Stage-1)
+  cleanspecnet_params:
+    input_channels: 513
+    num_conv_layers: 5
+    kernel_size: 4
+    stride: 1
+    conv_hidden_dim: 64
+    hidden_dim: 512
+    num_attention_layers: 5
+    num_heads: 8
+    dropout: 0.1
+
+# ----------------------
+# Loss Configuration
+# ----------------------
+losses:
+  weight_waveform: 10.0  # Weight for waveform reconstruction loss
+  weight_spec: 1.0       # Weight for spectrogram loss
+  weight_phase: 1.0      # Weight for phase loss
+  gamma_latent: 0.05     # Weight for latent replication loss (γ from paper)
+
+  # STFT loss configuration
+  stft_config:
+    fft_sizes: [512, 1024, 2048]
+    hop_sizes: [128, 256, 512]
+    win_lengths: [512, 1024, 2048]
+
+# ----------------------
+# Optimizer Configuration
+# ----------------------
+optimizer:
+  lr: 1e-4
+  betas: [0.9, 0.999]
+
+# ----------------------
+# Data configuration
+# ----------------------
+data:
+  data_dir: "./"
+  train_list_path: "filelists/alcateia_train.csv"
+  val_list_path: "filelists/alcateia_test.csv"
+  batch_size: 64
+  num_workers: 8
+  persistent_workers: true
+  segment_size: 32768
+  sampling_rate: 24000
+  use_xvector_cache: true  # Use dataset with file path tracking
+
+  # ============================================================
+  # Data Augmentation (On-the-Fly) - Same as Stage-1
+  # ============================================================
+  augmentations:
+    # 1. Ruído colorido (pink, brown, white)
+    - name: "AddColoredNoise"
+      params:
+        min_snr_in_db: -5.0
+        max_snr_in_db: 20.0
+        min_f_decay: -2.0
+        max_f_decay: 2.0
+        p: 0.7
+
+    # 2. Ruído de fundo
+    - name: "AddBackgroundNoise"
+      params:
+        background_paths: "/raid/user_fredoliveira/DATASETS/NOISES/"
+        min_snr_in_db: -10.0
+        max_snr_in_db: 15.0
+        p: 0.5
+
+    # 3. Variação de volume
+    - name: "Gain"
+      params:
+        min_gain_in_db: -12.0
+        max_gain_in_db: 6.0
+        p: 0.5
+
+    # 4. Filtro passa-baixa
+    - name: "LowPassFilter"
+      params:
+        min_cutoff_freq: 2000.0
+        max_cutoff_freq: 8000.0
+        p: 0.3
+
+    # 5. Filtro passa-alta
+    - name: "HighPassFilter"
+      params:
+        min_cutoff_freq: 100.0
+        max_cutoff_freq: 400.0
+        p: 0.3
+
+# ----------------------
+# Callbacks
+# ----------------------
+callbacks:
+  # Save best checkpoint based on weighted score
+  best_checkpoint:
+    _target_: "pytorch_lightning.callbacks.ModelCheckpoint"
+    monitor: "val/weighted_score"
+    dirpath: "logs/wavlm_stage2_checkpoints"
+    filename: "wavlm_stage2-best-{epoch:02d}-{val/weighted_score:.4f}"
+    save_top_k: 1
+    mode: "max"
+
+  # Periodic checkpointing
+  periodic_checkpoint:
+    _target_: "pytorch_lightning.callbacks.ModelCheckpoint"
+    dirpath: "logs/wavlm_stage2_checkpoints"
+    filename: "wavlm_stage2-epoch-{epoch:04d}"
+    every_n_epochs: 1
+    save_top_k: 3
+    save_last: true
+    monitor: "val_loss"
+    mode: "min"
+
+# ----------------------
+# Logger
+# ----------------------
+logger:
+  choice: "both"
+
+  tensorboard:
+    _target_: pytorch_lightning.loggers.TensorBoardLogger
+    save_dir: "logs/wavlm_stage2"
+    name: "wavlm_stage2"
+    default_hp_metric: false
+
+  wandb:
+    _target_: pytorch_lightning.loggers.WandbLogger
+    project: "CleanUNet2_WavLM"
+    name: "stage2_without_wavlm"
+    save_dir: "logs/wavlm_stage2"
+    offline: false
+    log_model: true
+
+# ----------------------
+# Resume / checkpoints
+# ----------------------
+# resume_from_checkpoint: "logs/wavlm_stage2_checkpoints/last.ckpt"

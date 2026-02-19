@@ -341,6 +341,11 @@ class CleanUNet2Stage2Module(pl.LightningModule):
             stored_data = self.stored_latents[self.global_val_batch_idx]
             stored_latent = stored_data['fused_latent'].to(self.device)
 
+            # Handle batch size mismatch (last validation batch may be smaller)
+            actual_batch_size = predicted_latent.shape[0]
+            if stored_latent.shape[0] != actual_batch_size:
+                stored_latent = stored_latent[:actual_batch_size]
+
             # L2 loss between predicted and stored latents
             loss_latent = F.mse_loss(predicted_latent, stored_latent)
         else:

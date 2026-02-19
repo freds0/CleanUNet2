@@ -1,9 +1,9 @@
-# configs/train_ljspeech_wav2vec2_stage1.yaml
+# configs/train_ljspeech_wavlm_stage1.yaml
 # Stage-1 Training Configuration: Training with WavLM Embeddings
 # WavLM embeddings are PRE-EXTRACTED from clean audio and loaded from disk
 
-# ⚠️  IMPORTANT: Run extract_wav2vec2_embeddings.py BEFORE training!
-# python extract_wav2vec2_embeddings.py --config configs/train_ljspeech_wav2vec2_stage1.yaml
+# ⚠️  IMPORTANT: Run extract_wavlm_embeddings.py BEFORE training!
+# python extract_wavlm_embeddings.py --config configs/train_ljspeech_wavlm_stage1.yaml
 
 # ----------------------
 # Trainer configuration
@@ -23,9 +23,9 @@ trainer:
 # Global / runtime
 # ----------------------
 seed: 1234
-checkpoint_dir: "logs/wav2vec2_stage1_checkpoints"
-logging_dir: "logs/wav2vec2_stage1"
-latents_dir: "stored_latents_wav2vec2_stage1"  # Where to save fused latent vectors
+checkpoint_dir: "logs/wavlm_stage1_checkpoints"
+logging_dir: "logs/wavlm_stage1"
+latents_dir: "stored_latents_wavlm_stage1"  # Where to save fused latent vectors
 
 # ----------------------
 # Audio configuration
@@ -165,16 +165,16 @@ callbacks:
   best_checkpoint:
     _target_: "pytorch_lightning.callbacks.ModelCheckpoint"
     monitor: "val/weighted_score"
-    dirpath: "logs/wav2vec2_stage1_checkpoints"
-    filename: "wav2vec2_stage1-best-{epoch:02d}-{val/weighted_score:.4f}"
+    dirpath: "logs/wavlm_stage1_checkpoints"
+    filename: "wavlm_stage1-best-{epoch:02d}-{val/weighted_score:.4f}"
     save_top_k: 1
     mode: "max"
 
   # Periodic checkpointing
   periodic_checkpoint:
     _target_: "pytorch_lightning.callbacks.ModelCheckpoint"
-    dirpath: "logs/wav2vec2_stage1_checkpoints"
-    filename: "wav2vec2_stage1-epoch-{epoch:04d}"
+    dirpath: "logs/wavlm_stage1_checkpoints"
+    filename: "wavlm_stage1-epoch-{epoch:04d}"
     every_n_epochs: 1
     save_top_k: 3
     save_last: true
@@ -189,19 +189,19 @@ logger:
 
   tensorboard:
     _target_: pytorch_lightning.loggers.TensorBoardLogger
-    save_dir: "logs/wav2vec2_stage1"
-    name: "wav2vec2_stage1"
+    save_dir: "logs/wavlm_stage1"
+    name: "wavlm_stage1"
     default_hp_metric: false
 
   wandb:
     _target_: pytorch_lightning.loggers.WandbLogger
-    project: "CleanUNet2_Wav2Vec2"
+    project: "CleanUNet2_WavLM"
     name: "stage1_with_wav2vec2"
-    save_dir: "logs/wav2vec2_stage1"
+    save_dir: "logs/wavlm_stage1"
     offline: false
     log_model: true
 
 # ----------------------
 # Resume / checkpoints
 # ----------------------
-# resume_from_checkpoint: "logs/wav2vec2_stage1_checkpoints/last.ckpt"
+# resume_from_checkpoint: "logs/wavlm_stage1_checkpoints/last.ckpt"

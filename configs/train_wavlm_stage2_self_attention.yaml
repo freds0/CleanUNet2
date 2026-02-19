@@ -1,9 +1,9 @@
-# configs/train_wav2vec2_stage1.yaml
-# Stage-1 Training Configuration: Training with WavLM Embeddings
-# WavLM embeddings are PRE-EXTRACTED from clean audio and loaded from disk
+# configs/train_wavlm_stage2_self_attention.yaml
+# Stage-2 Training Configuration: Training WITHOUT WavLM Embeddings (Self-Attention Pooling Version)
+# Replicates Stage-1 fused latents using only noisy audio (no embedding extractor)
 
-# ⚠️  IMPORTANT: Run extract_wav2vec2_embeddings.py BEFORE training!
-# python extract_wav2vec2_embeddings.py --config configs/train_wav2vec2_stage1.yaml
+# ⚠️  IMPORTANT: Run Stage-1 with self-attention pooling first!
+# The Stage-1 latents should be saved in: stored_latents_wavlm_stage1_self_attn/
 
 # ----------------------
 # Trainer configuration
@@ -11,7 +11,7 @@
 trainer:
   accelerator: "auto"
   devices: 1
-  max_epochs: 15000
+  max_epochs: 10000
   precision: "16-mixed"
   log_every_n_steps: 100
   check_val_every_n_epoch: 1
@@ -23,9 +23,9 @@ trainer:
 # Global / runtime
 # ----------------------
 seed: 1234
-checkpoint_dir: "logs/wav2vec2_stage1_checkpoints"
-logging_dir: "logs/wav2vec2_stage1"
-latents_dir: "stored_latents_wav2vec2_stage1"  # Where to save fused latent vectors
+checkpoint_dir: "logs/wavlm_stage2_self_attn_checkpoints"
+logging_dir: "logs/wavlm_stage2_self_attn"
+latents_dir: "stored_latents_wavlm_stage1_self_attn"  # Where to load Stage-1 latents from
 
 # ----------------------
 # Audio configuration
@@ -34,27 +34,29 @@ audio:
   sample_rate: 24000
 
 # ----------------------
+# Stage-1 Checkpoint
+# ----------------------
+# REQUIRED: Path to Stage-1 checkpoint for weight initialization
+stage1_checkpoint: "logs/wavlm_stage1_self_attn_checkpoints/wavlm_stage1_self_attn-best-epoch=37-val/weighted_score=0.7664.ckpt"
+
+# ----------------------
 # Model Configuration
 # ----------------------
 model:
   # ============================================================
-  # WavLM Settings (microsoft/wavlm-base)
+  # WavLM Settings with Self-Attention Pooling
   # ============================================================
-  use_wav2vec2: true  # Use WavLM instead of X-Vectors
-  use_xvector: false  # Disable X-Vectors
-
-  # WavLM model configuration
-  wav2vec2_model: "microsoft/wavlm-base"  # Pre-trained WavLM model
-  wav2vec2_cache_dir: "wav2vec2_embeddings"  # Directory with pre-extracted embeddings
-  use_preextracted_embeddings: true  # Load pre-extracted embeddings (RECOMMENDED!)
+  use_wav2vec2: true  # Architecture includes WavLM integration
+  use_xvector: false
+  wav2vec2_model: "microsoft/wavlm-base"  # Model name (for reference)
+  use_preextracted_embeddings: false  # Stage-2 doesn't use embeddings
+  wav2vec2_pooling_method: "self_attention"  # Used self-attention in Stage-1
+  wav2vec2_attention_heads: 8  # Same as Stage-1
 
   # Note: Embedding dimension is automatically determined (768 for microsoft/wavlm-base)
   conditioning_type: "film"  # Conditioning method for spec+waveform fusion
 
-  # Optional: Load vanilla CleanUNet2 checkpoint for warm start
-  vanilla_checkpoint: "../CleanUNet2-Vanilla_old_old/logs/checkpoints/last.ckpt"
-
-  # CleanUNet parameters
+  # CleanUNet parameters (same as Stage-1)
   cleanunet_params:
     channels_input: 1
     channels_output: 1
@@ -68,7 +70,7 @@ model:
     tsfm_d_model: 512
     tsfm_d_inner: 2048
 
-  # CleanSpecNet parameters
+  # CleanSpecNet parameters (same as Stage-1)
   cleanspecnet_params:
     input_channels: 513
     num_conv_layers: 5
@@ -87,6 +89,7 @@ losses:
   weight_waveform: 10.0  # Weight for waveform reconstruction loss
   weight_spec: 1.0       # Weight for spectrogram loss
   weight_phase: 1.0      # Weight for phase loss
+  gamma_latent: 0.05     # Weight for latent replication loss (γ from paper)
 
   # STFT loss configuration
   stft_config:
@@ -113,10 +116,10 @@ data:
   persistent_workers: true
   segment_size: 32768
   sampling_rate: 24000
-  use_xvector_cache: true  # Use dataset with file path tracking (REQUIRED for pre-extracted embeddings!)
+  use_xvector_cache: true  # Use dataset with file path tracking
 
   # ============================================================
-  # Data Augmentation (On-the-Fly)
+  # Data Augmentation (On-the-Fly) - Same as Stage-1
   # ============================================================
   augmentations:
     # 1. Ruído colorido (pink, brown, white)
@@ -165,16 +168,16 @@ callbacks:
   best_checkpoint:
     _target_: "pytorch_lightning.callbacks.ModelCheckpoint"
     monitor: "val/weighted_score"
-    dirpath: "logs/wav2vec2_stage1_checkpoints"
-    filename: "wav2vec2_stage1-best-{epoch:02d}-{val/weighted_score:.4f}"
+    dirpath: "logs/wavlm_stage2_self_attn_checkpoints"
+    filename: "wavlm_stage2_self_attn-best-{epoch:02d}-{val/weighted_score:.4f}"
     save_top_k: 1
     mode: "max"
 
   # Periodic checkpointing
   periodic_checkpoint:
     _target_: "pytorch_lightning.callbacks.ModelCheckpoint"
-    dirpath: "logs/wav2vec2_stage1_checkpoints"
-    filename: "wav2vec2_stage1-epoch-{epoch:04d}"
+    dirpath: "logs/wavlm_stage2_self_attn_checkpoints"
+    filename: "wavlm_stage2_self_attn-epoch-{epoch:04d}"
     every_n_epochs: 1
     save_top_k: 3
     save_last: true
@@ -189,19 +192,19 @@ logger:
 
   tensorboard:
     _target_: pytorch_lightning.loggers.TensorBoardLogger
-    save_dir: "logs/wav2vec2_stage1"
-    name: "wav2vec2_stage1"
+    save_dir: "logs/wavlm_stage2_self_attn"
+    name: "wavlm_stage2_self_attention"
     default_hp_metric: false
 
   wandb:
     _target_: pytorch_lightning.loggers.WandbLogger
-    project: "CleanUNet2_Wav2Vec2"
-    name: "stage1_with_wav2vec2"
-    save_dir: "logs/wav2vec2_stage1"
+    project: "CleanUNet2_WavLM_SelfAttention"
+    name: "stage2_self_attention_pooling"
+    save_dir: "logs/wavlm_stage2_self_attn"
     offline: false
     log_model: true
 
 # ----------------------
 # Resume / checkpoints
 # ----------------------
-# resume_from_checkpoint: "logs/wav2vec2_stage1_checkpoints/last.ckpt"
+# resume_from_checkpoint: "logs/wavlm_stage2_self_attn_checkpoints/last.ckpt"
