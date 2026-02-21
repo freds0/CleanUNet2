@@ -341,13 +341,19 @@ class CleanUNet2Stage2Module(pl.LightningModule):
             stored_data = self.stored_latents[self.global_val_batch_idx]
             stored_latent = stored_data['fused_latent'].to(self.device)
 
-            # Handle batch size mismatch (last validation batch may be smaller)
-            actual_batch_size = predicted_latent.shape[0]
-            if stored_latent.shape[0] != actual_batch_size:
-                stored_latent = stored_latent[:actual_batch_size]
+            # Handle batch size mismatch (e.g., last batch may be smaller)
+            batch_size_pred = predicted_latent.size(0)
+            batch_size_stored = stored_latent.size(0)
 
-            # L2 loss between predicted and stored latents
-            loss_latent = F.mse_loss(predicted_latent, stored_latent)
+            if batch_size_pred != batch_size_stored:
+                # Use the minimum batch size to compare only matching samples
+                min_batch_size = min(batch_size_pred, batch_size_stored)
+                predicted_latent_slice = predicted_latent[:min_batch_size]
+                stored_latent_slice = stored_latent[:min_batch_size]
+                loss_latent = F.mse_loss(predicted_latent_slice, stored_latent_slice)
+            else:
+                # L2 loss between predicted and stored latents
+                loss_latent = F.mse_loss(predicted_latent, stored_latent)
         else:
             loss_latent = torch.tensor(0.0, device=self.device)
 
