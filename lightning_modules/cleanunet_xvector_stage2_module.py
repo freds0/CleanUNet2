@@ -96,14 +96,16 @@ class CleanUNet2Stage2Module(pl.LightningModule):
         mrstft_loss = MultiResolutionSTFTLoss(
             fft_sizes=stft_cfg.get('fft_sizes', [512, 1024, 2048]),
             hop_sizes=stft_cfg.get('hop_sizes', [128, 256, 512]),
-            win_lengths=stft_cfg.get('win_lengths', [512, 1024, 2048])
+            win_lengths=stft_cfg.get('win_lengths', [512, 1024, 2048]),
+            sc_lambda=loss_cfg.get('sc_lambda', 0.1),
+            mag_lambda=loss_cfg.get('mag_lambda', 0.1)
         )
 
         # Primary waveform loss
         self.criterion = CleanUNet2Loss(
-            ell_p=1,
-            ell_p_lambda=1.0,
-            stft_lambda=1.0,
+            ell_p=loss_cfg.get('ell_p', 1),
+            ell_p_lambda=loss_cfg.get('ell_p_lambda', 1.0),
+            stft_lambda=loss_cfg.get('stft_lambda', 1.0),
             mrstftloss=mrstft_loss
         )
 

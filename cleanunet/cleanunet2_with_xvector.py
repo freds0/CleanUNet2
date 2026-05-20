@@ -20,7 +20,7 @@ from pathlib import Path
 from .cleanunet2 import CleanUNet2, SpecUpsampler, Conditioner
 from .cleanunet import CleanUNet
 from .cleanspecnet import CleanSpecNet
-from .integration_block import IntegrationBlock
+from .integration_block import IntegrationBlock, SequenceIntegrationBlock
 from .xvector_extractor import XVectorExtractor
 from .wav2vec2_extractor import Wav2Vec2Extractor
 
@@ -88,10 +88,10 @@ class CleanUNet2WithXVector(nn.Module):
             raise ValueError("Cannot use both X-Vectors and Wav2Vec2 simultaneously. Choose one.")
 
         if use_wav2vec2:
-            # Wav2Vec2 embeddings (1024 dim for wav2vec2-xls-r-300m)
+            # Wav2Vec2 embeddings (1920 dim for wav2vec2-xls-r-2b)
             self.embedding_type = 'wav2vec2'
             # We'll get actual dim from extractor or use default
-            self.embedding_dim = 1024  # Default for wav2vec2-xls-r-300m
+            self.embedding_dim = 1920  # Default for wav2vec2-xls-r-2b
         elif use_xvector:
             # X-Vector embeddings (512 dim)
             self.embedding_type = 'xvector'
@@ -172,13 +172,21 @@ class CleanUNet2WithXVector(nn.Module):
                             cache_dir=wav2vec2_cache_dir,
                             enabled=True
                         )
-                        # Update embedding_dim from cache metadata
+                        # Update embedding_dim from cache metadata or first cached file
                         metadata_file = Path(wav2vec2_cache_dir) / 'metadata.yaml'
                         if metadata_file.exists():
                             import yaml
                             with open(metadata_file, 'r') as f:
                                 metadata = yaml.safe_load(f)
-                            self.embedding_dim = metadata.get('embedding_dim', 1024)
+                            self.embedding_dim = metadata.get('embedding_dim', 1920)
+                        else:
+                            # Load first cached file to get embedding dimension
+                            cache_files = list(Path(wav2vec2_cache_dir).glob("*.pt"))
+                            if cache_files:
+                                first_file = torch.load(cache_files[0], map_location='cpu')
+                                if isinstance(first_file, dict) and 'embedding' in first_file:
+                                    self.embedding_dim = first_file['embedding'].shape[-1]
+                                    print(f"[CleanUNet2WithXVector] Detected embedding_dim={self.embedding_dim} from cache")
                     else:
                         raise ValueError("wav2vec2_cache_dir must be specified when use_preextracted_embeddings=True")
                 else:
@@ -187,7 +195,7 @@ class CleanUNet2WithXVector(nn.Module):
                     self.embedding_extractor = Wav2Vec2Extractor(
                         model_name=wav2vec2_model,
                         device='cpu',  # Will be moved to correct device by Lightning
-                        layer=-1,
+                        layer=24,  # Middle layer (24 out of 48 for XLS-R 2B)
                         pooling_method=wav2vec2_pooling_method,
                         num_attention_heads=wav2vec2_attention_heads
                     )
@@ -232,10 +240,24 @@ class CleanUNet2WithXVector(nn.Module):
         # Integration Block (for fusing embeddings with latent features)
         if self.embedding_type:
             print(f"[CleanUNet2WithXVector] Creating integration block (embedding_dim={self.embedding_dim})...")
-            self.integration_block = IntegrationBlock(
-                latent_channels=self.latent_dim,
-                xvector_dim=self.embedding_dim  # This now works for any embedding dim
-            )
+
+            # Use SequenceIntegrationBlock for raw (unpooled) Wav2Vec2 embeddings
+            if use_wav2vec2 and use_preextracted_embeddings:
+                print(f"[CleanUNet2WithXVector] Using SequenceIntegrationBlock for raw embeddings...")
+                self.integration_block = SequenceIntegrationBlock(
+                    latent_channels=self.latent_dim,
+                    embedding_dim=self.embedding_dim,
+                    num_heads=wav2vec2_attention_heads,
+                    dropout=0.1
+                )
+                self.use_sequence_embeddings = True
+            else:
+                # Use regular IntegrationBlock for pooled embeddings (X-Vectors or on-the-fly Wav2Vec2)
+                self.integration_block = IntegrationBlock(
+                    latent_channels=self.latent_dim,
+                    xvector_dim=self.embedding_dim
+                )
+                self.use_sequence_embeddings = False
         else:
             self.integration_block = None
 
@@ -366,19 +388,41 @@ class CleanUNet2WithXVector(nn.Module):
 
                     for i in range(batch_size):
                         audio_path = clean_audio_paths[i]
-                        cached_embedding = self.embedding_cache.get(audio_path, device=clean_audio.device)
+                        cached_data = self.embedding_cache.get(audio_path, device=clean_audio.device)
 
-                        if cached_embedding is None:
+                        if cached_data is None:
                             raise RuntimeError(
                                 f"Pre-extracted embedding not found for: {audio_path}\n"
                                 f"Please run extract_wav2vec2_embeddings.py first!"
                             )
 
+                        # Extract embedding tensor from cached data
+                        if isinstance(cached_data, dict) and 'embedding' in cached_data:
+                            cached_embedding = cached_data['embedding']
+                        else:
+                            cached_embedding = cached_data
+
                         embedding_list.append(cached_embedding)
 
-                    # Stack all embeddings
-                    embedding = torch.stack(embedding_list, dim=0)
-                    # embedding shape: (batch, embedding_dim)
+                    # For sequence embeddings, pad to same length before stacking
+                    if embedding_list and embedding_list[0].dim() == 2:
+                        # Variable-length sequences - pad them
+                        max_len = max(emb.shape[0] for emb in embedding_list)
+                        padded_embeddings = []
+                        for emb in embedding_list:
+                            if emb.shape[0] < max_len:
+                                # Pad along sequence dimension
+                                padding = (0, 0, 0, max_len - emb.shape[0])  # (left, right, top, bottom)
+                                emb_padded = F.pad(emb, padding, mode='constant', value=0)
+                                padded_embeddings.append(emb_padded)
+                            else:
+                                padded_embeddings.append(emb)
+                        embedding = torch.stack(padded_embeddings, dim=0)
+                        # embedding shape: (batch, seq_len, embedding_dim)
+                    else:
+                        # Pooled embeddings - stack directly
+                        embedding = torch.stack(embedding_list, dim=0)
+                        # embedding shape: (batch, embedding_dim)
 
                 elif self.use_wav2vec2 and not self.use_preextracted_embeddings:
                     # Extract Wav2Vec2 on-the-fly (slower)
@@ -423,16 +467,21 @@ class CleanUNet2WithXVector(nn.Module):
 
                     # embedding shape: (batch, embedding_dim)
 
-            # Expand embeddings to match temporal dimension
-            time_steps = latent.shape[-1]
-            embedding_expanded = embedding.unsqueeze(-1).expand(-1, -1, time_steps)
-            # embedding_expanded shape: (batch, embedding_dim, time)
-
             # Match dtype with latent (important for AMP compatibility)
-            embedding_expanded = embedding_expanded.to(dtype=latent.dtype)
+            embedding = embedding.to(dtype=latent.dtype)
 
             # Integrate embeddings with latent features
-            fused_latent = self.integration_block(latent, embedding_expanded)
+            if self.use_sequence_embeddings:
+                # For sequence embeddings: pass directly to SequenceIntegrationBlock
+                # embedding shape: (batch, seq_len, embedding_dim)
+                fused_latent = self.integration_block(latent, embedding)
+            else:
+                # For pooled embeddings: expand to match temporal dimension
+                time_steps = latent.shape[-1]
+                embedding_expanded = embedding.unsqueeze(-1).expand(-1, -1, time_steps)
+                # embedding_expanded shape: (batch, embedding_dim, time)
+                fused_latent = self.integration_block(latent, embedding_expanded)
+
             # fused_latent shape: (batch, latent_dim, time)
 
             # Decode to enhanced audio

@@ -7,13 +7,15 @@ import math
 
 class CleanUNetDataModule(pl.LightningDataModule):
     """
-    PyTorch Lightning DataModule for loading noisy/clean speech pairs.
+    PyTorch Lightning DataModule for loading noisy/clean speech pairs with Wav2Vec2 embeddings.
 
     This module wraps:
-    - Training dataset
+    - Training dataset (with optional augmentation)
     - Validation dataset
     - DataLoaders with multi-worker support
     - Custom collate function for variable-length spectrograms
+
+    Supports Wav2Vec2 embeddings extraction from pre-cached files.
 
     Args:
         data_dir (str): Root directory containing all audio files.
@@ -29,6 +31,7 @@ class CleanUNetDataModule(pl.LightningDataModule):
         sampling_rate (int): Target sampling rate for audio (default: 16000 Hz).
             Audio files will be automatically resampled to this rate.
         augmentations (list): List of augmentation configurations for training.
+        use_preextracted_embeddings (bool): Return audio paths for Wav2Vec2 embedding cache lookup.
     """
     def __init__(
         self,
@@ -42,7 +45,9 @@ class CleanUNetDataModule(pl.LightningDataModule):
         segment_size: int = None,
         sampling_rate: int = 16000,
         augmentations: list = None,
-        use_xvector_cache: bool = False
+        use_preextracted_embeddings: bool = True,
+        quick_test: bool = False,
+        quick_test_samples: int = 30
     ):
         super().__init__()
 
@@ -56,7 +61,10 @@ class CleanUNetDataModule(pl.LightningDataModule):
         self.segment_size = segment_size
         self.sampling_rate = sampling_rate
         self.augmentations = augmentations
-        self.use_xvector_cache = use_xvector_cache
+        self.use_preextracted_embeddings = use_preextracted_embeddings
+        self.return_audio_paths = use_preextracted_embeddings
+        self.quick_test = quick_test
+        self.quick_test_samples = quick_test_samples if quick_test else None
 
         # Validar configuração
         if self.val_list_path is None and self.val_split is None:
@@ -94,15 +102,12 @@ class CleanUNetDataModule(pl.LightningDataModule):
         if self.val_list_path is not None:
             print(f"Usando arquivo separado para validação: {self.val_list_path}")
 
-            # Select dataset class based on cache configuration
-            if self.use_xvector_cache:
-                print("[INFO] Using XVectorMelDataset with file path tracking for caching")
-                from xvector_dataset import XVectorMelDataset
-                dataset_class = XVectorMelDataset
-                # Add return_paths parameter
-                dataset_kwargs["return_paths"] = True
-            else:
-                dataset_class = MelDataset
+            # Always use MelDataset for Wav2Vec2 embeddings pipeline
+            dataset_class = MelDataset
+            # Add return_audio_paths if requested (for wav2vec2 pre-extracted embeddings)
+            if self.use_preextracted_embeddings:
+                dataset_kwargs["return_audio_paths"] = True
+                print("[INFO] Using MelDataset with Wav2Vec2 embedding cache support")
 
             # Training dataset with augmentation
             train_kwargs = dataset_kwargs.copy()
@@ -121,6 +126,12 @@ class CleanUNetDataModule(pl.LightningDataModule):
                 data_files=self.val_list_path,
                 **dataset_kwargs
             )
+
+            # Quick test mode: subset data
+            if self.quick_test and self.quick_test_samples:
+                print(f"⚡ QUICK TEST MODE: Using {self.quick_test_samples} samples for training and validation")
+                self.train_dataset = Subset(self.train_dataset, range(min(self.quick_test_samples, len(self.train_dataset))))
+                self.val_dataset = Subset(self.val_dataset, range(min(self.quick_test_samples, len(self.val_dataset))))
 
             print(f"✅ Dataset de treino: {len(self.train_dataset)} amostras")
             print(f"✅ Dataset de validação: {len(self.val_dataset)} amostras")
@@ -181,22 +192,15 @@ class CleanUNetDataModule(pl.LightningDataModule):
         Returns DataLoader used in training.
 
         Uses:
-        - custom_collate_fn for handling variable-length spectrograms
+        - custom_collate_fn for handling variable-length spectrograms and audio paths
         - shuffling enabled
         """
-        # Select collate function based on cache configuration
-        if self.use_xvector_cache:
-            from xvector_dataset import xvector_collate_fn
-            collate_fn = xvector_collate_fn
-        else:
-            collate_fn = custom_collate_fn
-
         return DataLoader(
             dataset=self.train_dataset,
             batch_size=self.batch_size,
             shuffle=True,
             num_workers=self.num_workers,
-            collate_fn=collate_fn,
+            collate_fn=custom_collate_fn,
             persistent_workers=self.persistent_workers
         )
 
@@ -209,19 +213,12 @@ class CleanUNetDataModule(pl.LightningDataModule):
 
         No shuffling to ensure deterministic metrics.
         """
-        # Select collate function based on cache configuration
-        if self.use_xvector_cache:
-            from xvector_dataset import xvector_collate_fn
-            collate_fn = xvector_collate_fn
-        else:
-            collate_fn = custom_collate_fn
-
         return DataLoader(
             dataset=self.val_dataset,
             batch_size=self.batch_size,
             shuffle=False,
             num_workers=self.num_workers,
-            collate_fn=collate_fn,
+            collate_fn=custom_collate_fn,
             persistent_workers=self.persistent_workers
         )
 

@@ -1,144 +1,269 @@
-# configs/train.yaml
-# Refactored configuration for training CleanUNet2 with PyTorch Lightning.
-# Comments are in English and keys are grouped for clarity.
+# ============================================================================
+# CleanUNet2 Training Configuration (Wav2Vec2 ONLY - Unified)
+# ============================================================================
+# Unified configuration supporting both Stage 1 and Stage 2 training.
+# Use 'pipeline.stage: 1' or 'pipeline.stage: 2' to switch between stages.
+#
+# Usage:
+#   # Stage 1 without augmentation
+#   python scripts/train.py --config configs/train.yaml --stage 1
+#
+#   # Stage 1 with augmentation (enable augmentation below)
+#   python scripts/train.py --config configs/train.yaml --stage 1
+#
+#   # Stage 2 (requires Stage 1 checkpoint)
+#   python scripts/train.py --config configs/train.yaml --stage 2
+#
+#   # Quick test (1 epoch, 30 samples)
+#   python scripts/train.py --config configs/train.yaml --stage 1 --quick-test
+# ============================================================================
 
-# ----------------------
-# Trainer configuration
-# ----------------------
+# ────────────────────────────────────────────────────────────────────────────
+# Pipeline Configuration
+# ────────────────────────────────────────────────────────────────────────────
+pipeline:
+  stage: 1
+  name: "wav2vec2_stage1_baseline"
+  description: "Stage 1 training with Wav2Vec2 embeddings (baseline, no augmentation)"
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Trainer Configuration (PyTorch Lightning)
+# ────────────────────────────────────────────────────────────────────────────
 trainer:
-  # 'auto' will use GPU if available, otherwise CPU
-  accelerator: "auto"
-  # Use an integer (number of devices) or "auto" depending on your environment
+  accelerator: auto
   devices: 1
-  max_epochs: 10000
-  # Optionally use max_steps instead of max_epochs
-  # max_steps: 1000000
-  # Numerical precision: choose "32-true" (full float32) or "16-mixed" for AMP
-  precision: "16-mixed"
-  # How often (in steps) Lightning logs metrics
-  log_every_n_steps: 100
-  # Validate every N epochs (float allowed for fraction of epoch)
-  check_val_every_n_epoch: 10
-  # Gradient clipping to stabilize training (None or numeric)
-  gradient_clip_val: 1.0
-  # Deterministic flags (helpful for reproducibility; may slow down training)
+  max_epochs: 300
+  precision: 16-mixed          # Automatic Mixed Precision for faster training
+  log_every_n_steps: 50
+  check_val_every_n_epoch: 1
+  gradient_clip_val: 5.0
   deterministic: false
-  benchmark: true
+  benchmark: true              # Enable cuDNN benchmarking
 
-# ----------------------
-# Global / runtime
-# ----------------------
-seed: 1234            # global seed for reproducibility
-checkpoint_dir: "logs/checkpoints"  # default directory for checkpoints
-logging_dir: "logs"   # base dir for loggers (TensorBoard, etc.)
 
-# ----------------------
-# Model & optimizer hyperparameters
-# ----------------------
+# ────────────────────────────────────────────────────────────────────────────
+# Model Configuration (Wav2Vec2 ONLY - No XVector support)
+# ────────────────────────────────────────────────────────────────────────────
 model:
-  # Learning rate used by the optimizer (AdamW in the training script)
-  lr: 1e-4
-  # Sample rate of audio data
-  sample_rate: 16000
+  name: "cleanunet2_wav2vec2"
+  conditioning_type: "film"    # FiLM conditioning for spec↔waveform fusion
 
-  # Select the conditioning method here:
-  # Options: "addition", "concatenation", "film"
-  conditioning_type: "film"
+  # Freeze flags (all submodules trainable by default)
+  freeze_cleanunet: false
+  freeze_cleanspecnet: false
 
-    
-  cleanunet_checkpoint: "checkpoints/cleanunet/last.ckpt"
-  cleanspecnet_checkpoint: "checkpoints/cleanspecnet/last.ckpt"
+  # Wav2Vec2 Embeddings (1024-D from facebook/wav2vec2-xls-r-2b, layer 24)
+  embeddings:
+    model_name: "facebook/wav2vec2-xls-r-2b"
+    layer: 24                   # Extract from middle layer
+    input_dim: 1024             # Fixed: XLS-R 2B output dimension
+    cache_dir: "cached_embeddings/wav2vec2"
+    use_preextracted: true      # Load pre-extracted embeddings from cache
 
-  # Controle de Congelamento (True = Treinar, False = Congelar)
-  train_cleanunet: true        # Mantém CleanUNet congelado
-  train_cleanspecnet: true     # Mantém CleanSpecNet congelado
+  # CleanUNet Architecture (Waveform Domain)
+  cleanunet:
+    channels_input: 1
+    channels_output: 1
+    channels_H: 64
+    max_H: 768
+    encoder_n_layers: 8
+    kernel_size: 4
+    stride: 2
+    tsfm_n_layers: 5
+    tsfm_n_head: 8
+    tsfm_d_model: 512
+    tsfm_d_inner: 2048
 
-  # Loss configuration grouped for clarity
-  loss_config:
-    ell_p: 1                 # 1 -> L1, 2 -> L2
-    ell_p_lambda: 1.0        # weight of the waveform reconstruction loss
-    stft_lambda: 1.0         # weight for STFT-based losses inside CleanUNet2Loss
-    sc_lambda: 0.5           # weight for spectral convergence inside MR-STFT
-    mag_lambda: 0.5          # weight for magnitude (log-magnitude) inside MR-STFT
-    # Multi-resolution STFT parameters (must be same length lists)
-    stft_config:
-      fft_sizes: [512, 1024, 2048]
-      hop_sizes: [50, 120, 240]
-      win_lengths: [240, 600, 1200]
+  # CleanSpecNet Architecture (Spectrogram Domain)
+  cleanspecnet:
+    input_channels: 513         # 1 + FFT_SIZE/2
+    num_conv_layers: 5
+    kernel_size: 4
+    stride: 1
+    conv_hidden_dim: 64
+    hidden_dim: 512
+    num_attention_layers: 5
+    num_heads: 8
+    dropout: 0.1
 
-# ----------------------
-# Data configuration
-# ----------------------
+  # Optional: Load vanilla checkpoint for warm start
+  vanilla_checkpoint: null
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Loss Configuration
+# ────────────────────────────────────────────────────────────────────────────
+losses:
+  # Loss weights (balanced for Stage 1)
+  weight_waveform: 10.0         # Reconstruction loss weight
+  weight_spec: 5.0              # Spectrogram loss weight
+  weight_phase: 5.0             # Phase consistency weight
+
+  # Waveform loss parameters
+  ell_p: 1                       # 1 for L1 (default), 2 for L2
+  ell_p_lambda: 1.0
+
+  # STFT loss parameters
+  stft_lambda: 0.5              # STFT reconstruction weight
+  sc_lambda: 0.8                # Spectral convergence weight
+  mag_lambda: 0.2               # Magnitude weight
+
+  # Multi-resolution STFT loss
+  stft_config:
+    fft_sizes: [512, 1024, 2048]
+    hop_sizes: [50, 120, 240]
+    win_lengths: [240, 600, 1200]
+
+  # Stage 2 only: Latent replication weight (gamma parameter)
+  gamma_latent: 0.05
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Optimizer Configuration
+# ────────────────────────────────────────────────────────────────────────────
+optimizer:
+  name: "adam"
+  lr: 5.0e-05                   # Learning rate
+  betas: [0.9, 0.999]          # Adam beta1, beta2
+  weight_decay: 0.0             # L2 regularization
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Data Configuration
+# ────────────────────────────────────────────────────────────────────────────
 data:
-  data_dir: "/home/fred/Projetos/DATASETS/VoiceBank-DEMAND-16k/"
+  # Dataset paths (relative to data_dir or absolute)
+  data_dir: "/home/ubuntu/fred-experiments/DATASETS/VoiceBank-DEMAND-16k/"
   train_list_path: "filelists/train.csv"
   val_list_path: "filelists/test.csv"
-  batch_size: 30
-  num_workers: 8
+
+  # Batch and worker settings
+  batch_size: 16
+  num_workers: 4
   persistent_workers: true
-  # Optional: segment length (samples) used by dataset sampling (if supported). Default: 8192
-  segment_size: 24576
 
-# ----------------------
-# Callbacks
-# ----------------------
-callbacks:
-  # Save best checkpoint based on validation loss
-  best_checkpoint:
-    _target_: "pytorch_lightning.callbacks.ModelCheckpoint"
-    monitor: "val/weighted_score"
-    dirpath: "logs/checkpoints"
-    filename: "best-model-{epoch:02d}-{val\/weighted_score:.4f}"
-    save_top_k: 1
-    mode: "max"
-  # Periodic checkpointing (every N epochs)
-  periodic_checkpoint:
-    _target_: "pytorch_lightning.callbacks.ModelCheckpoint"
-    dirpath: "logs/checkpoints"
-    filename: "epoch-{epoch:04d}"
-    every_n_epochs: 10
-    save_top_k: 3
-    save_last: true
-    monitor: "val_loss"
-    mode: "min"
-    # monitor/mode not needed for simple periodic saving
+  # Audio processing
+  sample_rate: 16000
+  segment_size: 32000           # ~2 seconds at 16kHz (adjust as needed)
 
-  # Example early stopping (commented by default)
-  # early_stopping:
-  #   _target_: "pytorch_lightning.callbacks.EarlyStopping"
-  #   monitor: "val_loss"
-  #   patience: 20
-  #   mode: "min"
+  # Wav2Vec2 embedding caching
+  use_preextracted_embeddings: true
 
-# ----------------------
-# Logger
-# ----------------------
-logger:
-  _target_: "pytorch_lightning.loggers.TensorBoardLogger"
-  save_dir: "logs"
-  name: "cleanunet2"
+  # Data augmentation (STAGE 1 SPECIFIC)
+  # ────────────────────────────────────────────────────────────────────────
+  # To enable augmentation, set 'enabled: true' and uncomment techniques below
+  # ────────────────────────────────────────────────────────────────────────
+  augmentation:
+    enabled: false              # Set to true to enable augmentation
+    techniques: []              # Techniques will be applied if enabled
+    probability: 0.5
 
-logger:
-  # Choose: 'tensorboard', 'wandb' or 'both' (for both)
-  choice: "tensorboard"
-  
+  # When augmentation.enabled = true, uncomment this section:
+  # augmentation:
+  #   enabled: true
+  #   techniques:
+  #     - name: "AddColoredNoise"
+  #       params:
+  #         min_snr_in_db: 5.0
+  #         max_snr_in_db: 20.0
+  #         min_f_decay: -2.0
+  #         max_f_decay: 2.0
+  #         p: 0.6
+  #     - name: "Gain"
+  #       params:
+  #         min_gain_in_db: -12.0
+  #         max_gain_in_db: 6.0
+  #         p: 0.5
+  #     - name: "LowPassFilter"
+  #       params:
+  #         min_cutoff_freq: 3000.0
+  #         max_cutoff_freq: 8000.0
+  #         p: 0.3
+  #     - name: "HighPassFilter"
+  #       params:
+  #         min_cutoff_freq: 100.0
+  #         max_cutoff_freq: 300.0
+  #         p: 0.3
+  #   probability: 0.5
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Checkpoint Configuration
+# ────────────────────────────────────────────────────────────────────────────
+checkpoint:
+  save_dir: "experiments/stage1_wav2vec2_baseline/checkpoints"
+  save_top_k: 3
+  monitor_metric: "val_loss"
+  mode: "min"
+  every_n_epochs: 10
+  resume_from_checkpoint: null  # Set to checkpoint path to resume
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Logging Configuration
+# ────────────────────────────────────────────────────────────────────────────
+logging:
+  loggers: ["tensorboard"]      # Options: ["tensorboard"], ["wandb"], or ["tensorboard", "wandb"]
+
   tensorboard:
-    _target_: pytorch_lightning.loggers.TensorBoardLogger
-    save_dir: "logs"
-    name: "cleanunet2"
+    save_dir: "experiments/stage1_wav2vec2_baseline"
+    name: "tb_logs"
     default_hp_metric: false
 
   wandb:
-    _target_: pytorch_lightning.loggers.WandbLogger
-    project: "CleanUNet2_Project"
-    name: "cleanunet2_run"
-    save_dir: "logs"
-    offline: false  # Change for true if no internet
-    log_model: true
+    project: "CleanUNet2_Wav2Vec2"
+    name: "stage1_baseline"
+    offline: false
+    log_model: false
 
-# ----------------------
-# Resume / checkpoints
-# ----------------------
-# Set this to a checkpoint path to resume training
-# resume_from_checkpoint: "logs/checkpoints/last.ckpt"
 
+# ────────────────────────────────────────────────────────────────────────────
+# Callbacks Configuration
+# ────────────────────────────────────────────────────────────────────────────
+callbacks:
+  early_stopping:
+    enabled: true
+    monitor: "val_loss"
+    patience: 20
+    min_delta: 0.001
+    mode: "min"
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Debug Configuration
+# ────────────────────────────────────────────────────────────────────────────
+debug:
+  quick_test: false             # Set to true for quick sanity check
+  quick_test_samples: 30        # Number of samples for quick test
+  quick_test_epochs: 1          # Number of epochs for quick test
+  seed: 1234
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Stage 2 Configuration (if pipeline.stage = 2)
+# ────────────────────────────────────────────────────────────────────────────
+# Uncomment and set the Stage 1 checkpoint path when training Stage 2
+# stage1_checkpoint: "experiments/stage1_wav2vec2_baseline/checkpoints/best-epoch-XX-val_loss-Y.YYY.ckpt"
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Configuration Presets (for quick reference)
+# ────────────────────────────────────────────────────────────────────────────
+#
+# PRESET 1: Quick Test (1 epoch, 30 samples)
+#   python scripts/train.py --config configs/train.yaml --quick-test
+#
+# PRESET 2: Stage 1 Baseline (no augmentation)
+#   - Already configured above
+#   - python scripts/train.py --config configs/train.yaml --stage 1
+#
+# PRESET 3: Stage 1 with Augmentation
+#   - Uncomment the 'augmentation' section with techniques above
+#   - Set 'enabled: true'
+#   - python scripts/train.py --config configs/train.yaml --stage 1
+#
+# PRESET 4: Stage 2 (requires Stage 1 checkpoint)
+#   - Set 'pipeline.stage: 2'
+#   - Uncomment 'stage1_checkpoint' and set path
+#   - python scripts/train.py --config configs/train.yaml --stage 2

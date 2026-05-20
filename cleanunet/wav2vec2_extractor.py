@@ -85,7 +85,7 @@ class Wav2Vec2Extractor(nn.Module):
     Extracts self-supervised speech representations for speech enhancement.
     """
 
-    def __init__(self, model_name="facebook/wav2vec2-xls-r-300m", device='cpu', layer=-1,
+    def __init__(self, model_name="facebook/wav2vec2-xls-r-300m", device='cpu', layer=24,
                  pooling_method='self_attention', num_attention_heads=8):
         """
         Initialize the Wav2Vec2 extractor.
@@ -93,7 +93,7 @@ class Wav2Vec2Extractor(nn.Module):
         Args:
             model_name (str): HuggingFace model name (default: facebook/wav2vec2-xls-r-300m)
             device (str): Device to run the model on
-            layer (int): Which layer to extract features from (-1 = last layer)
+            layer (int): Which layer to extract features from (default: 24 = middle layer for 48-layer model, -1 = last layer)
             pooling_method (str): Pooling method - 'mean' or 'self_attention' (default: 'self_attention')
             num_attention_heads (int): Number of attention heads for self-attention pooling (default: 8)
         """

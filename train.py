@@ -1,10 +1,14 @@
 # train.py
 """
-Training entrypoint for CleanUNet2 with safer callback/logger instantiation.
-Supports TensorBoard and WandB.
+Training entrypoint for CleanUNet2 with Wav2Vec2 embeddings (Wav2Vec2 ONLY).
+Supports TensorBoard and WandB logging, and quick test mode for sanity checks.
 
 Usage:
-    python train.py --config configs/train.yaml
+    # Standard training
+    python train.py --config configs/train.yaml --stage 1
+
+    # Quick test (1 epoch, 30 samples)
+    python train.py --config configs/train.yaml --stage 1 --quick-test
 """
 
 import yaml
@@ -17,11 +21,9 @@ from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
 from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger
 
-# Make sure these imports point to the correct modules in your repo
 from lightning_modules.cleanunet_module import CleanUNetLightningModule
 from lightning_modules.data_module import CleanUNetDataModule
 
-# Configure a simple logger for console output (INFO level)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 logger = logging.getLogger("train")
 
@@ -124,12 +126,15 @@ def _safe_instantiate_logger(logger_config: dict):
 
     return None
 
-def train(config: dict):
+def train(config: dict, quick_test: bool = False, quick_test_samples: int = 30, quick_test_epochs: int = 1):
     """
-    Main training function.
+    Main training function with Wav2Vec2 embeddings support.
 
     Args:
         config: configuration dictionary (loaded from YAML).
+        quick_test: If True, run quick sanity check (1 epoch, small subset).
+        quick_test_samples: Number of samples for quick test.
+        quick_test_epochs: Number of epochs for quick test.
     """
     # Validate minimal config structure
     if "data" not in config:
@@ -137,17 +142,26 @@ def train(config: dict):
     if "trainer" not in config:
         raise KeyError("Missing 'trainer' section in config.")
 
-    # Merge model+data config into hyperparameters for the LightningModule (non-destructive)
+    # Handle quick test mode
+    if quick_test:
+        logger.info(f"🚀 QUICK TEST MODE: {quick_test_samples} samples, {quick_test_epochs} epoch(s)")
+        config = copy.deepcopy(config)
+        config["trainer"]["max_epochs"] = quick_test_epochs
+        config["trainer"]["log_every_n_steps"] = 1  # Log every batch for quick test
+        config["data"]["quick_test"] = True
+        config["data"]["quick_test_samples"] = quick_test_samples
+
+    # Merge model+data config into hyperparameters for the LightningModule
     model_cfg = config.get("model", {})
     data_cfg = config.get("data", {})
     hparams_dict = {**model_cfg, **data_cfg}
     hparams = Namespace(**hparams_dict)
 
     # Instantiate DataModule and LightningModule
-    logger.info("Instantiating data module.")
+    logger.info("Instantiating data module (Wav2Vec2 embeddings pipeline).")
     data_module = CleanUNetDataModule(**data_cfg)
 
-    logger.info("Instantiating model (CleanUNetLightningModule).")
+    logger.info("Instantiating model (CleanUNetLightningModule with Wav2Vec2).")
     model = CleanUNetLightningModule(hparams)
 
     # Instantiate callbacks safely
@@ -159,10 +173,10 @@ def train(config: dict):
     # Create the Trainer
     logger.info("Creating PyTorch Lightning Trainer.")
     trainer_kwargs = copy.deepcopy(config.get("trainer", {}))
-    
+
     trainer = Trainer(
-        logger=lightning_logger, 
-        callbacks=callbacks, 
+        logger=lightning_logger,
+        callbacks=callbacks,
         **trainer_kwargs
     )
 
@@ -172,21 +186,40 @@ def train(config: dict):
         logger.info("Resuming training from checkpoint: %s", ckpt_path)
 
     # Start training
-    logger.info("Starting training run.")
+    logger.info("Starting training run (Wav2Vec2 ONLY - XVector removed).")
     trainer.fit(model, datamodule=data_module, ckpt_path=ckpt_path)
-    logger.info("Training finished.")
+
+    if quick_test:
+        logger.info("✅ Quick test completed successfully!")
+    else:
+        logger.info("Training finished.")
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Train CleanUNet2 using a YAML configuration.")
+    parser = argparse.ArgumentParser(description="Train CleanUNet2 with Wav2Vec2 embeddings (Wav2Vec2 ONLY).")
     parser.add_argument("--config", type=str, required=True, help="Path to YAML config file.")
+    parser.add_argument("--stage", type=int, choices=[1, 2], default=1, help="Training stage (1 or 2).")
+    parser.add_argument("--quick-test", action="store_true", help="Run quick sanity check (1 epoch, 30 samples).")
+    parser.add_argument("--quick-test-samples", type=int, default=30, help="Number of samples for quick test.")
+    parser.add_argument("--quick-test-epochs", type=int, default=1, help="Number of epochs for quick test.")
     return parser.parse_args()
 
 if __name__ == "__main__":
     args = parse_args()
 
-    # Load config file (YAML)
-    with open(args.config, "r") as fh:
-        config = yaml.safe_load(fh)
+    # Load and validate config using new unified config system
+    try:
+        with open(args.config, "r") as fh:
+            config_dict = yaml.safe_load(fh)
+
+        # For now, we'll keep the dict-based approach for backward compatibility
+        # In the future, could use: from configs import load_train_config
+        config = config_dict
+    except FileNotFoundError:
+        logger.error(f"Config file not found: {args.config}")
+        exit(1)
+    except yaml.YAMLError as e:
+        logger.error(f"Failed to parse config YAML: {e}")
+        exit(1)
 
     # Set precision hint for tensor cores if available (optional)
     if hasattr(torch, "set_float32_matmul_precision"):
@@ -196,5 +229,13 @@ if __name__ == "__main__":
         except Exception as e:
             logger.warning("Could not set float32 matmul precision: %s", str(e))
 
+    # Log pipeline info
+    logger.info("=" * 70)
+    logger.info("CleanUNet2 Training Pipeline (Wav2Vec2 ONLY - XVector removed)")
+    logger.info(f"Stage: {config.get('pipeline', {}).get('stage', args.stage)}")
+    logger.info(f"Quick Test Mode: {args.quick_test}")
+    logger.info("=" * 70)
+
     # Run training
-    train(config)
+    train(config, quick_test=args.quick_test, quick_test_samples=args.quick_test_samples,
+          quick_test_epochs=args.quick_test_epochs)

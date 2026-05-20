@@ -252,10 +252,18 @@ def get_dataset_filelist(filelist_path: str) -> List[Tuple[str, str]]:
 def custom_collate_fn(batch):
     """
     Collate function for DataLoader.
-    Expects batch items like (audio, spec, clean_audio, clean_spec) where audio/spec tensors could already be
-    padded to fixed length. If variable-length sequences are expected, replace this with padding logic.
+    Expects batch items like (audio, spec, clean_audio, clean_spec) or (audio, spec, clean_audio, clean_spec, path)
+    where audio/spec tensors could already be padded to fixed length. If variable-length sequences are expected,
+    replace this with padding logic.
     """
-    audios, specs, clean_audios, clean_specs = zip(*batch)
+    # Check if batch includes paths (5-element tuples)
+    if len(batch[0]) == 5:
+        audios, specs, clean_audios, clean_specs, clean_paths = zip(*batch)
+        has_paths = True
+    else:
+        audios, specs, clean_audios, clean_specs = zip(*batch)
+        has_paths = False
+
     # Try stacking directly (fast path). If shapes mismatch, fall back to padding.
     try:
         audios_stacked = torch.stack(audios)           # [B, T]
@@ -275,7 +283,10 @@ def custom_collate_fn(batch):
         clean_audios_stacked = pad_list([c.squeeze() for c in clean_audios])
         clean_specs_stacked = pad_list([cs for cs in clean_specs])
 
-    return audios_stacked, specs_stacked, clean_audios_stacked, clean_specs_stacked
+    if has_paths:
+        return audios_stacked, specs_stacked, clean_audios_stacked, clean_specs_stacked, list(clean_paths)
+    else:
+        return audios_stacked, specs_stacked, clean_audios_stacked, clean_specs_stacked
 
 
 # ---------------------------
@@ -307,11 +318,13 @@ class MelDataset(torch.utils.data.Dataset):
         device: Optional[torch.device] = None,
         fmax_loss: Optional[int] = None,
         noise_addition: bool = False,
-        augmentations = None
+        augmentations = None,
+        return_audio_paths: bool = False
     ):
         super().__init__()
         self.data_dir = data_dir
         self.audio_files = get_dataset_filelist(data_files)  # list[(clean_rel, noisy_rel)]
+        self.return_audio_paths = return_audio_paths
 
         # Deterministic shuffling seed for reproducibility
         random.seed(1234)
@@ -380,7 +393,8 @@ class MelDataset(torch.utils.data.Dataset):
             # Provide a helpful error message for debugging
             filename = os.path.basename(clean_path)
             print(f"Error processing file {filename}: {e}")
-            return self.__getitem__(random.randint(0, len(self.audio_files)-1))
+            # Avoid infinite recursion: raise error instead of retrying
+            raise RuntimeError(f"Failed to load audio file {filename}. Error: {e}") from e
 
         # If cache is active, reuse previously loaded audio (cheap)
         if self._cache_ref_count > 0 and self.cached_wav is not None:
@@ -433,7 +447,10 @@ class MelDataset(torch.utils.data.Dataset):
         noisy_audio = noisy_audio.squeeze().unsqueeze(0)
         clean_audio = clean_audio.squeeze().unsqueeze(0)
 
-        return noisy_audio, noisy_spec, clean_audio, clean_spec
+        if self.return_audio_paths:
+            return noisy_audio, noisy_spec, clean_audio, clean_spec, clean_rel
+        else:
+            return noisy_audio, noisy_spec, clean_audio, clean_spec
 
     def __len__(self) -> int:
         return len(self.audio_files)
