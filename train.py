@@ -224,6 +224,47 @@ if __name__ == "__main__":
         except Exception as e:
             logger.warning("Could not set float32 matmul precision: %s", str(e))
 
+    # Get stage and checkpoint info
+    pipeline_cfg = config.get('pipeline', {})
+    stage = pipeline_cfg.get('stage', args.stage) if args.stage is None else args.stage
+    resume_ckpt = pipeline_cfg.get('resume_from_checkpoint')
+    stage1_ckpt = pipeline_cfg.get('stage1_checkpoint')
+
+    logger.info("=" * 70)
+    logger.info("CleanUNet2 Training Pipeline (WavLM)")
+    logger.info("=" * 70)
+    logger.info(f"🎯 Training Stage: {stage}")
+    logger.info(f"🧪 Quick Test Mode: {args.quick_test}")
+
+    # Checkpoint loading information
+    if stage == 1:
+        logger.info("=" * 70)
+        logger.info("STAGE 1: Training WITH pre-extracted SSL embeddings")
+        logger.info("=" * 70)
+        if resume_ckpt:
+            logger.info(f"📂 Will RESUME from existing checkpoint: {resume_ckpt}")
+        else:
+            logger.info("🆕 Starting fresh (no resume checkpoint)")
+        logger.info(f"📊 Will save checkpoints to: experiments/checkpoints/stage1/")
+        logger.info(f"💾 Latest checkpoint will be: cleanunet-stage1-last.ckpt")
+    elif stage == 2:
+        logger.info("=" * 70)
+        logger.info("STAGE 2: Training WITHOUT pre-extracted embeddings")
+        logger.info("=" * 70)
+        if stage1_ckpt:
+            logger.info(f"✅ Will LOAD Stage 1 checkpoint: {stage1_ckpt}")
+            logger.info(f"   Stage 1 weights will initialize the model")
+            logger.info(f"   Model will then learn to replicate embeddings internally")
+        else:
+            logger.warning("⚠️  No Stage 1 checkpoint specified!")
+            logger.warning("⚠️  Starting with random initialization")
+        if resume_ckpt:
+            logger.info(f"📂 Will RESUME from existing Stage 2 checkpoint: {resume_ckpt}")
+        logger.info(f"📊 Will save checkpoints to: experiments/checkpoints/stage2/")
+        logger.info(f"💾 Latest checkpoint will be: cleanunet-stage2-last.ckpt")
+
+    logger.info("=" * 70)
+
     # Run training
     train(
         config,
