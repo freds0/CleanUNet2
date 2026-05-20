@@ -1,112 +1,35 @@
-# -----------------------------------------------------------
-# Inference configuration for CleanUNet2 Lightning model
-# -----------------------------------------------------------
+# ============================================================================
+# CleanUNet2 Inference Configuration (WavLM-Only)
+# ============================================================================
+#
+# Usage:
+#   python inference.py --config configs/inference.yaml
+#
+# ============================================================================
 
-# Inference runtime options
-inference:
-  # Directory containing noisy input audio files (one or many .wav)
-  input_dir: "/home/fred/Projetos/DATASETS/VoiceBank-DEMAND-16k/test/noisy/"
+# Path to trained checkpoint
+checkpoint_path: "experiments/stage1_baseline/checkpoints/best-epoch-XX-val_loss-Y.YYY.ckpt"
 
-  # Output directory where denoised audio will be written.
-  # If it does not exist the script should create it.
-  output_dir: "denoised_results"
+# Input/output directories
+input_output:
+  input_dir: "test_samples/noisy/"
+  output_dir: "denoised_output/"
 
-  # Path to the checkpoint to load for inference.
-  # Use an absolute path or path relative to your project root.
-  checkpoint_path: "checkpoints_cleanunet2_paper/last.ckpt"
+# Audio processing settings
+audio_processing:
+  sampling_rate: 16000
+  n_fft: 1024
+  hop_length: 256
+  n_mels: 64
 
-  # Force CPU usage even if CUDA is available. Set to true or false.
-  force_cpu: false
+# WavLM configuration (must match training config)
+wavlm_config:
+  model_name: "microsoft/wavlm-large"
+  embedding_dim: 768
+  hidden_states_layer: 24
+  normalize_embeddings: true
 
-  # File glob / pattern to search for audio files in input_dir.
-  # Example: "*.wav" or "**/*.wav" (if your loader supports recursive globbing).
-  input_pattern: "*.wav"
-
-  # Overwrite existing files in output_dir if True.
-  overwrite: false
-
-  batch_size: 16   
-
-  use_amp: true # Mixed Precision
-
-  # Number of worker processes used to load/process audio during inference.
-  # 0 = single-threaded; >0 may speed up I/O for large datasets.
-  num_workers: 0
-
-# ----------------------
-# Model & optimizer hyperparameters
-# ----------------------
-model:
-  # Learning rate used by the optimizer (AdamW in the training script)
-  lr: 1e-4
-  # Sample rate of audio data
-  sample_rate: 16000
-
-  # Select the conditioning method here:
-  # Options: "addition", "concatenation", "film"
-  conditioning_type: "film"
-
-    
-  cleanunet_checkpoint: "checkpoints/cleanunet/last.ckpt"
-  cleanspecnet_checkpoint: "checkpoints/cleanspecnet/last.ckpt"
-
-  # Controle de Congelamento (True = Treinar, False = Congelar)
-  train_cleanunet: true        # Mantém CleanUNet congelado
-  train_cleanspecnet: true     # Mantém CleanSpecNet congelado
-
-  # Loss configuration grouped for clarity
-  loss_config:
-    ell_p: 1                 # 1 -> L1, 2 -> L2
-    ell_p_lambda: 1.0        # weight of the waveform reconstruction loss
-    stft_lambda: 1.0         # weight for STFT-based losses inside CleanUNet2Loss
-    sc_lambda: 0.5           # weight for spectral convergence inside MR-STFT
-    mag_lambda: 0.5          # weight for magnitude (log-magnitude) inside MR-STFT
-    # Multi-resolution STFT parameters (must be same length lists)
-    stft_config:
-      fft_sizes: [512, 1024, 2048]
-      hop_sizes: [50, 120, 240]
-      win_lengths: [240, 600, 1200]
-
-# Audio processing parameters (used during pre/post processing)
-audio:
-  # Target sample rate to resample inputs to (Hz). PESQ/STOI usually expect 16k for many setups.
-  target_sample_rate: 16000
-
-  # Expected number of channels in input audio. If stereo, loader may mix to mono.
-  target_channels: 1
-
-  # Whether to normalize audio amplitude to -1..1 before feeding the model.
-  normalize: true
-
-  # Padding/trimming policy for inputs that are shorter or longer than the model's expectation.
-  # Options: "pad" (zero-pad shorter), "trim" (truncate longer), "none" (no adjustment).
-  pad_trim: "pad"
-
-# Output audio file format settings
-output:
-  # Output file extension/format. torchaudio supports "wav", "flac", etc.
-  format: "wav"
-
-  # Bit-depth when saving WAV (16 or 32). Use 16 for standard PCM.
-  bit_depth: 16
-
-  # Whether to apply inverse normalization (if inputs were normalized before inference).
-  undo_normalize: true
-
-# Logging and runtime
-runtime:
-  # Whether to print progress info to stdout during inference.
-  verbose: true
-
-  # Save a JSON report with objective metrics (PESQ/STOI/SI-SDR) for each file.
-  save_metrics_report: true
-
-  # Path to write the per-file metrics JSON report (if save_metrics_report is true).
-  metrics_report_path: "inference_metrics.json"
-
-# Notes:
-# - The LightningModule used for inference should be instantiated with `model` and
-#   `loss_config` fields above if required by your constructor.
-# - If you set force_cpu=true, ensure the code maps the loaded checkpoint to CPU
-#   (e.g. torch.load(checkpoint, map_location='cpu')).
-
+# Inference settings
+device: "auto"                              # "auto", "cuda", or "cpu"
+batch_size: 16
+compute_metrics: false                      # Set to true if reference clean audio available

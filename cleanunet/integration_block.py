@@ -1,6 +1,6 @@
 """
-Integration Blocks for fusing X-Vectors with latent features.
-Similar to the Integration Block described in the CNUNet-TB paper.
+Integration Blocks for fusing embeddings with latent features.
+Supports both pooled embeddings (X-Vectors) and sequence embeddings (raw Wav2Vec2).
 """
 
 import torch
@@ -151,5 +151,132 @@ class SpecIntegrationBlock(nn.Module):
         # Apply normalization and activation
         fused = self.norm(fused)
         fused = self.activation(fused)
-        
+
+        return fused
+
+
+class SequenceIntegrationBlock(nn.Module):
+    """
+    Integration block for fusing sequence embeddings (raw Wav2Vec2) with latent features.
+    Uses self-attention to process sequence embeddings before fusion.
+
+    This handles embeddings with temporal dimension: (batch, seq_len, embedding_dim)
+    """
+
+    def __init__(self, latent_channels, embedding_dim=1024, num_heads=8, dropout=0.1):
+        """
+        Initialize the sequence integration block with self-attention.
+
+        Args:
+            latent_channels (int): Number of channels in latent features
+            embedding_dim (int): Dimension of sequence embeddings (e.g., 1920 for wav2vec2-xls-r-2b)
+            num_heads (int): Number of attention heads (default: 8)
+            dropout (float): Dropout rate (default: 0.1)
+        """
+        super().__init__()
+
+        self.latent_channels = latent_channels
+        self.embedding_dim = embedding_dim
+        self.num_heads = num_heads
+
+        # Multi-head self-attention for processing sequence embeddings
+        self.self_attention = nn.MultiheadAttention(
+            embed_dim=embedding_dim,
+            num_heads=num_heads,
+            dropout=dropout,
+            batch_first=True
+        )
+
+        # Layer normalization after attention
+        self.attn_norm = nn.LayerNorm(embedding_dim)
+
+        # Learnable query for pooling attended features
+        self.query = nn.Parameter(torch.randn(1, 1, embedding_dim))
+
+        # Cross-attention for pooling
+        self.cross_attention = nn.MultiheadAttention(
+            embed_dim=embedding_dim,
+            num_heads=num_heads,
+            dropout=dropout,
+            batch_first=True
+        )
+
+        # Layer normalization after cross-attention
+        self.cross_norm = nn.LayerNorm(embedding_dim)
+
+        # Project to latent space for fusion
+        self.projection = nn.Sequential(
+            nn.Linear(embedding_dim, latent_channels),
+            nn.LayerNorm(latent_channels),
+            nn.PReLU()
+        )
+
+        # 1x1 convolution for feature fusion
+        self.fusion_conv = nn.Conv1d(
+            in_channels=latent_channels * 2,
+            out_channels=latent_channels,
+            kernel_size=1,
+            bias=False
+        )
+
+        # Layer normalization for stabilization
+        self.norm = nn.LayerNorm(latent_channels)
+
+        # PReLU activation
+        self.activation = nn.PReLU()
+
+    def forward(self, latent_features, sequence_embeddings):
+        """
+        Forward pass: process sequence embeddings with self-attention, then fuse with latent features.
+
+        Args:
+            latent_features (torch.Tensor): Latent features from encoder
+                                            Shape: (batch, latent_channels, time)
+            sequence_embeddings (torch.Tensor): Raw sequence embeddings
+                                                Shape: (batch, seq_len, embedding_dim)
+
+        Returns:
+            fused_features (torch.Tensor): Fused features
+                                          Shape: (batch, latent_channels, time)
+        """
+        batch_size, latent_channels, time_steps = latent_features.shape
+
+        # Step 1: Self-attention on sequence embeddings
+        # Capture long-range contextual dependencies
+        attn_output, _ = self.self_attention(
+            query=sequence_embeddings,
+            key=sequence_embeddings,
+            value=sequence_embeddings
+        )
+        attn_output = self.attn_norm(attn_output + sequence_embeddings)  # Residual connection
+
+        # Step 2: Cross-attention pooling
+        # Use learnable query to pool attended embeddings
+        query = self.query.expand(batch_size, -1, -1)
+        pooled_output, _ = self.cross_attention(
+            query=query,
+            key=attn_output,
+            value=attn_output
+        )
+        pooled_output = pooled_output.squeeze(1)  # (batch, embedding_dim)
+        pooled_output = self.cross_norm(pooled_output)
+
+        # Step 3: Project to latent space
+        projected = self.projection(pooled_output)  # (batch, latent_channels)
+
+        # Step 4: Expand to match temporal dimension
+        projected = projected.unsqueeze(2).expand(-1, -1, time_steps)  # (batch, latent_channels, time)
+
+        # Step 5: Concatenate and fuse
+        concatenated = torch.cat([latent_features, projected], dim=1)  # (batch, 2*latent_channels, time)
+        fused = self.fusion_conv(concatenated)  # (batch, latent_channels, time)
+
+        # Step 6: Apply layer normalization
+        fused = fused.transpose(1, 2)  # (batch, time, latent_channels)
+        fused = self.norm(fused)
+        fused = fused.transpose(1, 2)  # (batch, latent_channels, time)
+
+        # Step 7: Apply activation
+        fused = self.activation(fused)
+
         return fused

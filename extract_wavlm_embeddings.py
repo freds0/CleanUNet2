@@ -6,7 +6,7 @@ datasets and saves them to disk. During training, the model will load pre-extrac
 embeddings instead of extracting them on-the-fly.
 
 Usage:
-    python extract_wav2vec2_embeddings.py --config configs/train_xvector_vanilla_stage1.yaml
+    python extract_wavlm_embeddings.py --config configs/stage1_wavlm_test.yaml
 """
 
 import torch
@@ -17,7 +17,7 @@ from pathlib import Path
 from tqdm import tqdm
 import hashlib
 import os
-from cleanunet.wav2vec2_extractor import Wav2Vec2Extractor
+from cleanunet.wavlm_extractor import WavLMExtractor
 
 
 def get_cache_key(audio_path):
@@ -133,7 +133,10 @@ def load_audio_files_from_config(config):
 
 def extract_and_save_embeddings(config, device='cuda', force_reextract=False):
     """
-    Extract WavLM embeddings for all audio files and save to disk.
+    Extract WavLM embeddings for all audio files and save as RAW sequences.
+
+    Saves full temporal sequence (batch, time_steps, embedding_dim) instead of pooled embeddings.
+    Self-attention pooling will be applied during model training.
 
     Args:
         config (dict): Configuration dictionary
@@ -141,13 +144,14 @@ def extract_and_save_embeddings(config, device='cuda', force_reextract=False):
         force_reextract (bool): If True, re-extract even if embeddings exist
     """
     # Get cache directory from config
-    cache_dir = config['model'].get('wav2vec2_cache_dir', 'wav2vec2_embeddings')
+    cache_dir = config['model'].get('wavlm_cache_dir', 'wavlm_embeddings_raw')
     cache_dir = Path(cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
 
     print("\n" + "=" * 80)
-    print("WavLM Embedding Pre-Extraction")
+    print("WavLM Raw Embedding Pre-Extraction (No Pooling)")
     print("=" * 80)
+    print("Saving full temporal sequences for self-attention pooling during training")
     print(f"Cache directory: {cache_dir}")
     print(f"Device: {device}")
     print(f"Force re-extract: {force_reextract}")
@@ -160,26 +164,66 @@ def extract_and_save_embeddings(config, device='cuda', force_reextract=False):
         print("[Extract] Error: No audio files found!")
         return
 
+    # Load WavLM configuration (try multiple keys for compatibility)
+    expected_model = 'microsoft/wavlm-large'
+
+    # Support multiple config key names for model
+    model_name = (config['model'].get('wavlm_model') or
+                  config['model'].get('wavlm', {}).get('model_name'))
+
+    # Helpful error message if config is missing WavLM model
+    if model_name is None:
+        print("[Extract] ERROR: Missing WavLM model in config!")
+        print()
+        print("[Extract] Add the following to your config under 'model' section:")
+        print()
+        print("  model:")
+        print("    wavlm:")
+        print(f"      model_name: \"{expected_model}\"")
+        print()
+        raise ValueError("WavLM model not specified in config")
+
+    # Validate model is correct
+    if model_name != expected_model:
+        print(f"[Extract] ERROR: Wrong WavLM model in config!")
+        print(f"[Extract] Expected: {expected_model}")
+        print(f"[Extract] Got:      {model_name}")
+        print()
+        print("[Extract] Fix your config - update under 'model' section:")
+        print(f"  wavlm_model: \"{expected_model}\"")
+        print()
+        raise ValueError(f"Model must be {expected_model}, got {model_name}")
+
     # Initialize WavLM extractor
-    print("[Extract] Initializing WavLM extractor...")
-    model_name = config['model'].get('wav2vec2_model', 'microsoft/wavlm-base')
-    extractor = Wav2Vec2Extractor(
+    print("[Extract] Initializing WavLM extractor (raw sequences, no pooling)...")
+    print(f"[Extract] Model: {model_name}")
+    print(f"[Extract] Layer: 12 (of 24 in {model_name})")
+
+    extractor = WavLMExtractor(
         model_name=model_name,
         device=device,
-        layer=-1  # Use last layer
+        layer=12,  # Use middle layer (12 of 24 layers for WavLM-Large)
+        pooling_method='mean'  # Initializer param (not used for extraction)
     )
 
     # Get target sample rate
     target_sr = config['data'].get('sampling_rate', 16000)
+
+    # Get embedding dimension
+    embedding_dim = extractor.get_embedding_dim()
 
     # Statistics
     extracted = 0
     skipped = 0
     failed = 0
 
+    # Track shapes for logging
+    time_steps_list = []
+
     # Extract embeddings
-    print(f"\n[Extract] Extracting embeddings for {len(audio_files)} files...")
-    print(f"[Extract] Target sample rate: {target_sr} Hz\n")
+    print(f"\n[Extract] Extracting RAW embeddings for {len(audio_files)} files...")
+    print(f"[Extract] Target sample rate: {target_sr} Hz")
+    print(f"[Extract] Embedding dimension: {embedding_dim}\n")
 
     with torch.no_grad():
         for audio_path in tqdm(audio_files, desc="Extracting embeddings"):
@@ -214,17 +258,23 @@ def extract_and_save_embeddings(config, device='cuda', force_reextract=False):
                     )
                     waveform = resampler(waveform)
 
-                # Extract embeddings
+                # Extract RAW embeddings (NO POOLING)
                 # waveform shape: (1, samples) -> need (batch, samples)
                 embedding = extractor.extract_embeddings(
                     waveform,
                     sample_rate=target_sr,
-                    return_mean=True  # Mean pooled embedding
+                    return_mean=False  # Get full temporal sequence!
                 )
 
-                # embedding shape: (1, embedding_dim)
-                # Save to disk (CPU tensor for efficient storage)
-                torch.save(embedding.squeeze(0).cpu(), cache_file)
+                # embedding shape: (batch, time_steps, embedding_dim)
+                # Squeeze batch dimension: (time_steps, embedding_dim)
+                embedding = embedding.squeeze(0).cpu()
+
+                # Store metadata about this sequence
+                time_steps_list.append(embedding.shape[0])
+
+                # Save to disk
+                torch.save(embedding, cache_file)
                 extracted += 1
 
             except Exception as e:
@@ -242,17 +292,32 @@ def extract_and_save_embeddings(config, device='cuda', force_reextract=False):
     print(f"  - Failed: {failed}")
     print(f"\nEmbeddings saved to: {cache_dir}")
     print(f"Cache size: {sum(f.stat().st_size for f in cache_dir.glob('*.pt')) / (1024**2):.2f} MB")
+
+    if time_steps_list:
+        print(f"\nTemporal Sequence Statistics:")
+        print(f"  - Embedding dimension: {embedding_dim}")
+        print(f"  - Min time steps: {min(time_steps_list)}")
+        print(f"  - Max time steps: {max(time_steps_list)}")
+        print(f"  - Mean time steps: {sum(time_steps_list) / len(time_steps_list):.1f}")
+        print(f"  - Output shape per file: (time_steps, {embedding_dim})")
+
     print("=" * 80 + "\n")
 
     # Save metadata
     metadata = {
         'model_name': model_name,
-        'embedding_dim': extractor.get_embedding_dim(),
+        'embedding_dim': embedding_dim,
         'sample_rate': target_sr,
         'total_files': len(audio_files),
         'extracted': extracted,
         'skipped': skipped,
-        'failed': failed
+        'failed': failed,
+        'format': 'raw_sequences',
+        'pooling': 'none (applied during training)',
+        'output_shape_per_file': f'(time_steps, {embedding_dim})',
+        'time_steps_min': min(time_steps_list) if time_steps_list else 0,
+        'time_steps_max': max(time_steps_list) if time_steps_list else 0,
+        'time_steps_mean': sum(time_steps_list) / len(time_steps_list) if time_steps_list else 0,
     }
 
     metadata_file = cache_dir / 'metadata.yaml'
@@ -263,7 +328,7 @@ def extract_and_save_embeddings(config, device='cuda', force_reextract=False):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Pre-extract Wav2Vec2 embeddings')
+    parser = argparse.ArgumentParser(description='Pre-extract WavLM embeddings')
     parser.add_argument('--config', type=str, required=True,
                         help='Path to training config file')
     parser.add_argument('--device', type=str, default='cuda',
@@ -286,8 +351,17 @@ def main():
     # Extract embeddings
     extract_and_save_embeddings(config, device=args.device, force_reextract=args.force)
 
-    print("[Extract] Done! You can now start training with pre-extracted embeddings.")
-    print("[Extract] Make sure to set 'use_preextracted_embeddings: true' in your config.\n")
+    print("[Extract] Done! You can now start training with pre-extracted raw embeddings.")
+    print("")
+    print("IMPORTANT: These embeddings are RAW sequences (time_steps, embedding_dim)")
+    print("Self-attention pooling will be applied during model training.")
+    print("")
+    print("[Extract] Make sure to set the following in your config:")
+    print("  - use_preextracted_embeddings: true")
+    print("  - wavlm_cache_dir: 'wavlm_embeddings_raw'  (or your custom directory)")
+    print("")
+    print("[Extract] The model will automatically apply self-attention pooling")
+    print("         to each raw sequence during training.\n")
 
 
 if __name__ == '__main__':

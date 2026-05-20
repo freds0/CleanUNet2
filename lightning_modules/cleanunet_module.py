@@ -28,6 +28,9 @@ class CleanUNetLightningModule(pl.LightningModule):
         super().__init__()
         self.save_hyperparameters(hparams)
 
+        self.stage = getattr(self.hparams, "stage", 1)
+        print(f"[INFO] Training Stage: {self.stage}")
+
         # ------------------------------------------------------------------
         # 1. Initialize Model
         # ------------------------------------------------------------------
@@ -64,6 +67,21 @@ class CleanUNetLightningModule(pl.LightningModule):
         else:
             print("[INFO] No CleanSpecNet checkpoint provided. Initializing with random weights.")
 
+        # Load Stage 1 checkpoint if Stage 2
+        if self.stage == 2:
+            stage1_ckpt = getattr(self.hparams, "stage1_checkpoint", None)
+            if stage1_ckpt:
+                try:
+                    print(f"[INFO] Loading Stage 1 checkpoint for Stage 2: {stage1_ckpt}")
+                    checkpoint = torch.load(stage1_ckpt, map_location=self.device)
+                    state_dict = checkpoint.get('state_dict', checkpoint)
+                    self.model.load_state_dict(state_dict, strict=False)
+                    print("[INFO] Stage 1 weights loaded successfully for Stage 2 initialization")
+                except Exception as e:
+                    print(f"[WARNING] Failed to load Stage 1 checkpoint: {e}")
+            else:
+                print("[WARNING] Stage 2 but no stage1_checkpoint provided. Using random initialization.")
+
         # ------------------------------------------------------------------
         # 3. Freezing / Unfreezing
         # ------------------------------------------------------------------
@@ -77,15 +95,18 @@ class CleanUNetLightningModule(pl.LightningModule):
             param.requires_grad = True
 
         # [STEP 3.2] Apply specific freezing based on configuration.
-        # Determine if submodules should be trained or frozen based on config.
-        # Default: False (Frozen) if not specified in config.
-        train_cleanunet = getattr(self.hparams, "train_cleanunet", False)
-        train_cleanspecnet = getattr(self.hparams, "train_cleanspecnet", False)
+        # Default: False (trainable) if not specified in config.
+        freeze_cleanunet = getattr(self.hparams, "freeze_cleanunet", False)
+        freeze_cleanspecnet = getattr(self.hparams, "freeze_cleanspecnet", False)
+
+        # Invert freeze flags to trainable flags
+        train_cleanunet = not freeze_cleanunet
+        train_cleanspecnet = not freeze_cleanspecnet
 
         print(f"[INFO] Training Config -> CleanUNet: {'TRAIN' if train_cleanunet else 'FREEZE'}, "
               f"CleanSpecNet: {'TRAIN' if train_cleanspecnet else 'FREEZE'}")
 
-        # Apply gradients setting (if False, it will overwrite the True we set above)
+        # Apply gradients setting
         self._set_requires_grad(self.model.clean_unet, train_cleanunet)
         self._set_requires_grad(self.model.clean_spec_net, train_cleanspecnet)
 
@@ -179,7 +200,11 @@ class CleanUNetLightningModule(pl.LightningModule):
     # Training
     # -------------------------
     def training_step(self, batch, batch_idx):
-        noisy, noisy_spec, clean, clean_spec = batch
+        # Handle both with and without audio paths
+        if len(batch) == 4:
+            noisy, noisy_spec, clean, clean_spec = batch
+        else:
+            noisy, noisy_spec, clean, clean_spec = batch[:4]  # Ignore audio paths if present
         enhanced, enhanced_spec = self(noisy, noisy_spec)
 
         # 1. Waveform-domain loss
@@ -198,7 +223,13 @@ class CleanUNetLightningModule(pl.LightningModule):
         total_loss = (self.weight_waveform * loss_waveform) + \
                      (self.weight_spec * loss_spec) + \
                      (self.weight_phase * loss_phase)
-                
+
+        # Stage 2: Add L2 regularization (learning to replicate embeddings internally)
+        if self.stage == 2:
+            l2_reg = sum(p.pow(2).sum() for p in self.model.parameters()) * 0.001
+            total_loss = total_loss + l2_reg
+            self.log("train/l2_reg_loss", l2_reg, on_step=True, on_epoch=True, prog_bar=False)
+
         # Logging
         self.log("train/waveform_loss", loss_waveform, on_step=True, on_epoch=True, prog_bar=False)
         self.log("train/spec_loss", loss_spec, on_step=True, on_epoch=True, prog_bar=False)
@@ -218,7 +249,11 @@ class CleanUNetLightningModule(pl.LightningModule):
          - Computes the custom 'weighted_score'.
          - Logs everything.
         """
-        noisy, noisy_spec, clean, clean_spec = batch
+        # Handle both with and without audio paths
+        if len(batch) == 4:
+            noisy, noisy_spec, clean, clean_spec = batch
+        else:
+            noisy, noisy_spec, clean, clean_spec = batch[:4]  # Ignore audio paths if present
         enhanced, enhanced_spec = self(noisy, noisy_spec)
 
         # --- 1. Calculate Losses ---
@@ -237,46 +272,46 @@ class CleanUNetLightningModule(pl.LightningModule):
         # Note: Input shape to metrics should be (Batch, Time). Squeeze channels.
         # Disable autocast for metrics computation to ensure float32 precision
         with torch.amp.autocast(device_type="cuda", enabled=False):
-        preds = enhanced.squeeze(1).float()
-        target = clean.squeeze(1).float()
+            preds = enhanced.squeeze(1).float()
+            target = clean.squeeze(1).float()
 
-        # Check for Silence or NaNs to prevent PESQ crashes (NoUtterancesError)
-        # If the max amplitude is too low, PESQ considers it empty.
-        is_silent_or_nan = (preds.abs().max() < 1e-5) or torch.isnan(preds).any()
+            # Check for Silence or NaNs to prevent PESQ crashes (NoUtterancesError)
+            # If the max amplitude is too low, PESQ considers it empty.
+            is_silent_or_nan = (preds.abs().max() < 1e-5) or torch.isnan(preds).any()
 
-        if is_silent_or_nan:
-            # Assign worst-case values if model collapsed
-            val_pesq = torch.tensor(1.0, device=self.device)   # Min PESQ is ~1.0
-            val_stoi = torch.tensor(1e-5, device=self.device)  # Min STOI is 0.0
-            val_sisdr = torch.tensor(-50.0, device=self.device) # Very low SI-SDR
-        else:
-            # PESQ calculation
-            try:
-                # CORRECTED: PESQ expects (reference, degraded) order, i.e., (clean, enhanced)
-                # Move to CPU for PESQ calculation (PESQ internal weights are on CPU)
-                preds_cpu = preds.cpu()
-                target_cpu = target.cpu()
+            if is_silent_or_nan:
+                # Assign worst-case values if model collapsed
+                val_pesq = torch.tensor(1.0, device=self.device)   # Min PESQ is ~1.0
+                val_stoi = torch.tensor(1e-5, device=self.device)  # Min STOI is 0.0
+                val_sisdr = torch.tensor(-50.0, device=self.device) # Very low SI-SDR
+            else:
+                # PESQ calculation
+                try:
+                    # CORRECTED: PESQ expects (reference, degraded) order, i.e., (clean, enhanced)
+                    # Move to CPU for PESQ calculation (PESQ internal weights are on CPU)
+                    preds_cpu = preds.cpu()
+                    target_cpu = target.cpu()
 
-                val_pesq = self.val_pesq(target_cpu, preds_cpu)
-            except Exception as e:
-                print(f"[WARNING] PESQ computation failed: {e}")
-                val_pesq = torch.tensor(1.0, device=self.device)
+                    val_pesq = self.val_pesq(target_cpu, preds_cpu)
+                except Exception as e:
+                    print(f"[WARNING] PESQ computation failed: {e}")
+                    val_pesq = torch.tensor(1.0, device=self.device)
 
-            # STOI calculation
-            try:
-                # CORRECTED: STOI expects (reference, degraded) order
-                val_stoi = self.val_stoi(target, preds)
-            except Exception as e:
-                print(f"[WARNING] STOI computation failed: {e}")
-                val_stoi = torch.tensor(1e-5, device=self.device)
+                # STOI calculation
+                try:
+                    # CORRECTED: STOI expects (reference, degraded) order
+                    val_stoi = self.val_stoi(target, preds)
+                except Exception as e:
+                    print(f"[WARNING] STOI computation failed: {e}")
+                    val_stoi = torch.tensor(1e-5, device=self.device)
 
-            # SI-SDR calculation
-            try:
-                # CORRECTED: SI-SDR expects (reference, degraded) order
-                val_sisdr = self.val_sisdr(target, preds)
-            except Exception as e:
-                print(f"[WARNING] SI-SDR computation failed: {e}")
-                val_sisdr = torch.tensor(-50.0, device=self.device)
+                # SI-SDR calculation
+                try:
+                    # CORRECTED: SI-SDR expects (reference, degraded) order
+                    val_sisdr = self.val_sisdr(target, preds)
+                except Exception as e:
+                    print(f"[WARNING] SI-SDR computation failed: {e}")
+                    val_sisdr = torch.tensor(-50.0, device=self.device)
 
         # --- 3. Calculate Custom Weighted Score ---
         # Formula: (STOI + PESQ/4.5 + SI_SDR/30.0) / 3.0

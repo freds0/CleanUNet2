@@ -1,15 +1,13 @@
 # ============================================================================
-# CleanUNet2-wav2vec2: Requirements
+# CleanUNet2-WavLM: Requirements
 # ============================================================================
-# This project supports TWO types of self-supervised speech embeddings:
-#   1. X-Vectors (SpeechBrain) - 512 dimensions
-#   2. Wav2Vec2 (facebook/wav2vec2-xls-r-300m) - 1024 dimensions [NEW!]
+# This project uses WavLM embeddings exclusively (microsoft/wavlm-large)
+# X-Vectors have been completely removed
 #
-# To use Wav2Vec2 embeddings (recommended):
-#   - See WAV2VEC2_GUIDE.md for complete setup instructions
+# To get started:
 #   - Run: pip install -r requirements.txt
-#   - Run: python extract_wav2vec2_embeddings.py --config configs/train_wav2vec2_stage1.yaml
-#   - Train: python train_xvector.py --config configs/train_wav2vec2_stage1.yaml --stage stage1
+#   - Run: python extract_wavlm_embeddings.py --config configs/train.yaml
+#   - Train: python train.py --config configs/train.yaml --stage 1
 # ============================================================================
 
 # --- Core Deep Learning ---
@@ -41,16 +39,11 @@ wandb
 matplotlib>=3.6.0
 einops>=0.7.0
 
-# --- X-Vector Integration (Two-Stage Training) ---
-speechbrain>=0.5.16  # For X-Vector extraction
-ruamel.yaml  # Additional YAML support for SpeechBrain
-
-# --- Wav2Vec2 Integration (Two-Stage Training - NEW!) ---
-transformers>=4.30.0  # For Wav2Vec2 models (facebook/wav2vec2-xls-r-300m)
-huggingface_hub>=0.20.0  # For downloading pretrained models from HuggingFace
-safetensors>=0.4.0  # Secure model loading (required by transformers)
-sentencepiece>=0.1.99  # Required by some transformers tokenizers (optional)
+# --- WavLM Integration ---
+transformers>=4.30.0
+huggingface_hub>=0.20.0
+safetensors>=0.4.0
 
 # --- Data Augmentation ---
-torch-audiomentations>=0.11.0  # On-the-fly audio augmentation
+torch-audiomentations>=0.11.0
 

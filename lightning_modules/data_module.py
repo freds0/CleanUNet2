@@ -42,7 +42,9 @@ class CleanUNetDataModule(pl.LightningDataModule):
         segment_size: int = None,
         sampling_rate: int = 16000,
         augmentations: list = None,
-        use_xvector_cache: bool = False
+        use_preextracted_embeddings: bool = False,
+        quick_test: bool = False,
+        quick_test_samples: int = 30
     ):
         super().__init__()
 
@@ -56,7 +58,9 @@ class CleanUNetDataModule(pl.LightningDataModule):
         self.segment_size = segment_size
         self.sampling_rate = sampling_rate
         self.augmentations = augmentations
-        self.use_xvector_cache = use_xvector_cache
+        self.use_preextracted_embeddings = use_preextracted_embeddings
+        self.quick_test = quick_test
+        self.quick_test_samples = quick_test_samples
 
         # Validar configuração
         if self.val_list_path is None and self.val_split is None:
@@ -94,15 +98,11 @@ class CleanUNetDataModule(pl.LightningDataModule):
         if self.val_list_path is not None:
             print(f"Usando arquivo separado para validação: {self.val_list_path}")
 
-            # Select dataset class based on cache configuration
-            if self.use_xvector_cache:
-                print("[INFO] Using XVectorMelDataset with file path tracking for caching")
-                from xvector_dataset import XVectorMelDataset
-                dataset_class = XVectorMelDataset
-                # Add return_paths parameter
-                dataset_kwargs["return_paths"] = True
-            else:
-                dataset_class = MelDataset
+            # Always use MelDataset for WavLM-only pipeline
+            dataset_class = MelDataset
+            # Add return_audio_paths if using pre-extracted WavLM embeddings
+            if self.use_preextracted_embeddings:
+                dataset_kwargs["return_audio_paths"] = True
 
             # Training dataset with augmentation
             train_kwargs = dataset_kwargs.copy()
@@ -122,8 +122,18 @@ class CleanUNetDataModule(pl.LightningDataModule):
                 **dataset_kwargs
             )
 
-            print(f"✅ Dataset de treino: {len(self.train_dataset)} amostras")
-            print(f"✅ Dataset de validação: {len(self.val_dataset)} amostras")
+            train_size = len(self.train_dataset)
+            val_size = len(self.val_dataset)
+
+            if self.quick_test:
+                print(f"[QUICK TEST] Limitando a {self.quick_test_samples} amostras")
+                self.train_dataset = Subset(self.train_dataset, range(min(self.quick_test_samples, train_size)))
+                self.val_dataset = Subset(self.val_dataset, range(min(self.quick_test_samples, val_size)))
+                train_size = len(self.train_dataset)
+                val_size = len(self.val_dataset)
+
+            print(f"✅ Dataset de treino: {train_size} amostras")
+            print(f"✅ Dataset de validação: {val_size} amostras")
 
         # OPÇÃO 2: val_split fornecido - fazer split automático
         else:
@@ -184,19 +194,12 @@ class CleanUNetDataModule(pl.LightningDataModule):
         - custom_collate_fn for handling variable-length spectrograms
         - shuffling enabled
         """
-        # Select collate function based on cache configuration
-        if self.use_xvector_cache:
-            from xvector_dataset import xvector_collate_fn
-            collate_fn = xvector_collate_fn
-        else:
-            collate_fn = custom_collate_fn
-
         return DataLoader(
             dataset=self.train_dataset,
             batch_size=self.batch_size,
             shuffle=True,
             num_workers=self.num_workers,
-            collate_fn=collate_fn,
+            collate_fn=custom_collate_fn,
             persistent_workers=self.persistent_workers
         )
 
@@ -209,19 +212,12 @@ class CleanUNetDataModule(pl.LightningDataModule):
 
         No shuffling to ensure deterministic metrics.
         """
-        # Select collate function based on cache configuration
-        if self.use_xvector_cache:
-            from xvector_dataset import xvector_collate_fn
-            collate_fn = xvector_collate_fn
-        else:
-            collate_fn = custom_collate_fn
-
         return DataLoader(
             dataset=self.val_dataset,
             batch_size=self.batch_size,
             shuffle=False,
             num_workers=self.num_workers,
-            collate_fn=collate_fn,
+            collate_fn=custom_collate_fn,
             persistent_workers=self.persistent_workers
         )
 
