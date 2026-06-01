@@ -10,17 +10,17 @@ trainer:
   accelerator: "auto"
   # Use an integer (number of devices) or "auto" depending on your environment
   devices: 1
-  max_epochs: 10000
+  max_epochs: 1000
   # Optionally use max_steps instead of max_epochs
   # max_steps: 1000000
   # Numerical precision: choose "32-true" (full float32) or "16-mixed" for AMP
-  precision: "32-true"
+  precision: "16-mixed"
   # How often (in steps) Lightning logs metrics
-  log_every_n_steps: 100
+  log_every_n_steps: 10
   # Validate every N epochs (float allowed for fraction of epoch)
-  check_val_every_n_epoch: 10
+  check_val_every_n_epoch: 1
   # Gradient clipping to stabilize training (None or numeric)
-  gradient_clip_val: 1.0
+  gradient_clip_val: 5.0
   # Deterministic flags (helpful for reproducibility; may slow down training)
   deterministic: false
   benchmark: true
@@ -37,35 +37,79 @@ logging_dir: "logs"   # base dir for loggers (TensorBoard, etc.)
 # ----------------------
 model:
   # Learning rate used by the optimizer (AdamW in the training script)
-  lr: 1e-5
+  lr: 5.0e-5
   # Sample rate of audio data
   sample_rate: 16000
 
   # Select the conditioning method here:
   # Options: "addition", "concatenation", "film"
-  conditioning_type: "addition"
+  conditioning_type: "film"
+
+  # Training control: freeze or unfreeze submodules
+  # Set to true to train the module, false to freeze it
+  #
+  # Examples:
+  #   - Both false (default): Only train the conditioning/glue layers (recommended for fine-tuning)
+  #   - train_cleanunet: true, train_cleanspecnet: false: Train CleanUNet + glue layers
+  #   - train_cleanunet: false, train_cleanspecnet: true: Train CleanSpecNet + glue layers
+  #   - Both true: Full end-to-end training (requires more GPU memory)
+  #
+  train_cleanunet: true      # If false, CleanUNet weights are frozen
+  train_cleanspecnet: true   # If false, CleanSpecNet weights are frozen
+
+  # Checkpoint paths for pretrained submodules (optional)
+  # These will be loaded before training starts
+  # cleanunet_checkpoint: "path/to/cleanunet_pretrained.ckpt"
+  # cleanspecnet_checkpoint: "path/to/cleanspecnet_pretrained.ckpt"
 
   # Loss configuration grouped for clarity
   loss_config:
-    ell_p: 1                 # 1 -> L1, 2 -> L2
-    ell_p_lambda: 1.0        # weight of the waveform reconstruction loss
-    stft_lambda: 1.0         # weight for STFT-based losses inside CleanUNet2Loss
-    sc_lambda: 0.5           # weight for spectral convergence inside MR-STFT
-    mag_lambda: 0.5          # weight for magnitude (log-magnitude) inside MR-STFT
-    # Multi-resolution STFT parameters (must be same length lists)
-    stft_config:
-      fft_sizes: [512, 1024, 2048]
-      hop_sizes: [50, 120, 240]
-      win_lengths: [240, 600, 1200]
+      # ────────────────────────────────────────────────────────────────
+      # Time domain and frequency domain loss weights
+      # ────────────────────────────────────────────────────────────────
+      time_domain_weight: 1.0           # Weight for time-domain losses
+      stft_magnitude_weight: 1.0        # Weight for STFT magnitude component
+      stft_phase_weight: 0.1            # Weight for STFT phase component
+      phase_consistency_weight: 0.1     # Weight for phase consistency
+      spectral_convergence_weight: 0.0  # Weight for spectral convergence
+
+      # ────────────────────────────────────────────────────────────────
+      # Waveform reconstruction loss parameters (CleanUNet2Loss)
+      # ────────────────────────────────────────────────────────────────
+      ell_p: 1                          # 1 -> L1 loss, 2 -> L2 loss (MSE)
+      ell_p_lambda: 1.0                 # Weight of waveform reconstruction loss
+
+      # ────────────────────────────────────────────────────────────────
+      # STFT loss parameters (inside CleanUNet2Loss)
+      # ────────────────────────────────────────────────────────────────
+      stft_lambda: 1.0                  # Overall weight for STFT-based losses
+      sc_lambda: 0.8                    # Spectral convergence weight (inside MR-STFT)
+      mag_lambda: 0.2                   # Magnitude weight (log-magnitude inside MR-STFT)
+
+      # ────────────────────────────────────────────────────────────────
+      # Global loss combination weights (training & validation)
+      # ────────────────────────────────────────────────────────────────
+      weight_waveform: 10.0             # Waveform domain loss weight
+      weight_spec: 5.0                  # Spectrogram domain loss weight
+      weight_phase: 5.0                 # Phase consistency loss weight
+
+      # ────────────────────────────────────────────────────────────────
+      # Multi-resolution STFT parameters (must have same length)
+      # ────────────────────────────────────────────────────────────────
+      stft_config:
+        fft_sizes: [512, 1024, 2048]    # FFT sizes for multi-resolution analysis
+        hop_sizes: [50, 120, 240]       # Hop sizes (stride) for each resolution
+        win_lengths: [240, 600, 1200]   # Window lengths for each resolution
+
 
 # ----------------------
 # Data configuration
 # ----------------------
 data:
-  data_dir: "/home/fred/Projetos/DATASETS/VoiceBank-DEMAND-16k/"
+  data_dir: "/home/ubuntu/fred-experiments/DATASETS/VoiceBank-DEMAND-16k/"
   train_list_path: "filelists/train.csv"
   val_list_path: "filelists/test.csv"
-  batch_size: 10
+  batch_size: 16
   num_workers: 8
   persistent_workers: true
   # Optional: segment length (samples) used by dataset sampling (if supported)
@@ -106,14 +150,9 @@ callbacks:
 # Logger
 # ----------------------
 logger:
-  _target_: "pytorch_lightning.loggers.TensorBoardLogger"
-  save_dir: "logs"
-  name: "cleanunet2"
-
-logger:
   # Choose: 'tensorboard', 'wandb' or 'both' (for both)
-  choice: "tensorboard"
-  
+  choice: "wandb"
+
   tensorboard:
     _target_: pytorch_lightning.loggers.TensorBoardLogger
     save_dir: "logs"
@@ -125,12 +164,11 @@ logger:
     project: "CleanUNet2_Project"
     name: "cleanunet2_run"
     save_dir: "logs"
-    offline: false  # Change for true if no internet
+    offline: false  # Change to true if no internet
     log_model: true
 
 # ----------------------
 # Resume / checkpoints
 # ----------------------
 # Set this to a checkpoint path to resume training
-# resume_from_checkpoint: "logs/checkpoints/last.ckpt"
-
+resume_from_checkpoint: "logs/checkpoints/last.ckpt"

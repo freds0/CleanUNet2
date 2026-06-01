@@ -151,13 +151,7 @@ class CleanUNetLightningModule(pl.LightningModule):
         self.val_sisdr = ScaleInvariantSignalNoiseRatio()
 
         # Legacy Helper (kept unused for validation now)
-        self.obj_metrics = ObjectiveMetricsPredictor()
-
-        # Loss combination weights
-        self.weight_waveform = float(getattr(self.hparams, "weight_waveform", 10.0))
-        self.weight_spec = float(getattr(self.hparams, "weight_spec", 1.0))
-        self.weight_phase = float(getattr(self.hparams, "weight_phase", 1.0))
-        # self.weight_consistency = 1.0 
+        self.obj_metrics = ObjectiveMetricsPredictor() 
 
     # -------------------------
     # Helpers
