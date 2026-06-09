@@ -350,7 +350,7 @@ class MelDataset(torch.utils.data.Dataset):
         self.spectrogram_fn = T.Spectrogram(n_fft=self.n_fft, hop_length=self.hop_size,
                                            win_length=self.win_size, power=1.0, normalized=True, center=False)
 
-    def __getitem__(self, index: int):
+    def __getitem__(self, index: int, _retry_count: int = 0):
         """
         Return a tuple:
             (noisy_audio_tensor, noisy_spec_tensor, clean_audio_tensor, clean_spec_tensor)
@@ -358,6 +358,16 @@ class MelDataset(torch.utils.data.Dataset):
             audio tensors -> (1, samples)
             spec tensors -> (n_freq_bins, time_frames)  (squeezed)
         """
+        # Proteção contra recursão infinita
+        if _retry_count >= 10:
+            clean_rel, noisy_rel = self.audio_files[index]
+            clean_path = os.path.join(self.data_dir, clean_rel)
+            raise RuntimeError(
+                f"Failed to load any valid audio after 10 retries. "
+                f"Last attempted file: {clean_path}. "
+                f"Check if audio files exist and are valid."
+            )
+
         clean_rel, noisy_rel = self.audio_files[index]
         clean_path = os.path.join(self.data_dir, clean_rel)
         noisy_path = os.path.join(self.data_dir, noisy_rel)
@@ -379,8 +389,12 @@ class MelDataset(torch.utils.data.Dataset):
         except Exception as e:
             # Provide a helpful error message for debugging
             filename = os.path.basename(clean_path)
-            print(f"Error processing file {filename}: {e}")
-            return self.__getitem__(random.randint(0, len(self.audio_files)-1))
+            if _retry_count == 0:  # Apenas mostra erro na primeira tentativa
+                print(f"[WARNING] Error processing file {filename}: {e}")
+                print(f"  Clean path: {clean_path}")
+                print(f"  Noisy path: {noisy_path}")
+                print(f"  Attempting to load another file...")
+            return self.__getitem__(random.randint(0, len(self.audio_files)-1), _retry_count + 1)
 
         # If cache is active, reuse previously loaded audio (cheap)
         if self._cache_ref_count > 0 and self.cached_wav is not None:

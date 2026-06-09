@@ -128,15 +128,21 @@ class CleanUNet2Stage2Module(pl.LightningModule):
         }
         self._pesq_resampler_cache = None
 
-        # ===== Load Stored Latents from Stage-1 =====
+        # ===== Load Stored Latents from Stage-1 (LAZY LOADING) =====
         self.latents_dir = Path(config.get('latents_dir', 'stored_latents_stage1'))
 
         if not self.latents_dir.exists():
             raise ValueError(f"Latents directory not found: {self.latents_dir}. "
                            "Please run Stage-1 training first.")
 
-        self.stored_latents = self._load_stored_latents()
-        print(f"[Stage-2] Loaded {len(self.stored_latents)} latent files from Stage-1")
+        # LAZY LOADING: Store apenas os caminhos dos arquivos, não carrega na RAM
+        self.latent_file_map = self._build_latent_file_map()
+        print(f"[Stage-2] Found {len(self.latent_file_map)} latent files from Stage-1 (lazy loading)")
+
+        # Cache para manter latents recentemente usados (LRU cache)
+        from collections import OrderedDict
+        self.latent_cache = OrderedDict()
+        self.latent_cache_size = 100  # Manter apenas 100 latents em cache (~1GB)
 
         # Validation batch counter
         self.global_val_batch_idx = 0
@@ -145,34 +151,61 @@ class CleanUNet2Stage2Module(pl.LightningModule):
         self.val_audio_samples = []
         self.max_audio_samples = 6
 
-    def _load_stored_latents(self):
-        """Load all stored latents from Stage-1."""
+    def _build_latent_file_map(self):
+        """Build a map of batch_idx -> file_path (lazy loading, sem carregar na RAM)."""
         latent_files = sorted(self.latents_dir.glob('val_batch_*.pt'))
 
         if not latent_files:
             raise ValueError(f"No latent files found in {self.latents_dir}. "
                            "Please run Stage-1 training first.")
 
-        stored_latents = {}
+        file_map = {}
 
         for latent_file in latent_files:
-            try:
-                data = torch.load(latent_file, map_location='cpu')
-                batch_idx = data.get('batch_idx', None)
+            # Extrair batch_idx do nome do arquivo (val_batch_000123.pt)
+            filename = latent_file.stem  # val_batch_000123
+            idx = int(filename.split('_')[-1])
+            file_map[idx] = latent_file
 
-                if batch_idx is not None:
-                    stored_latents[batch_idx] = data
-                else:
-                    # Fallback: extract batch_idx from filename
-                    filename = latent_file.stem  # val_batch_000123
-                    idx = int(filename.split('_')[-1])
-                    stored_latents[idx] = data
+        return file_map
 
-            except Exception as e:
-                print(f"[WARNING] Failed to load {latent_file}: {e}")
+    def _get_latent(self, batch_idx):
+        """
+        Carrega um latent específico sob demanda (lazy loading com cache LRU).
 
-        print(f"[Stage-2] Successfully loaded {len(stored_latents)} latent files")
-        return stored_latents
+        Args:
+            batch_idx (int): Índice do batch
+
+        Returns:
+            dict: Dados do latent ou None se não encontrado
+        """
+        # Verificar se está no cache
+        if batch_idx in self.latent_cache:
+            # Mover para o final (MRU - most recently used)
+            self.latent_cache.move_to_end(batch_idx)
+            return self.latent_cache[batch_idx]
+
+        # Verificar se o arquivo existe
+        if batch_idx not in self.latent_file_map:
+            return None
+
+        # Carregar do disco
+        try:
+            latent_file = self.latent_file_map[batch_idx]
+            data = torch.load(latent_file, map_location='cpu')
+
+            # Adicionar ao cache
+            self.latent_cache[batch_idx] = data
+
+            # Limitar tamanho do cache (remover o mais antigo)
+            if len(self.latent_cache) > self.latent_cache_size:
+                self.latent_cache.popitem(last=False)  # Remove o primeiro (LRU)
+
+            return data
+
+        except Exception as e:
+            print(f"[WARNING] Failed to load latent {batch_idx} from {latent_file}: {e}")
+            return None
 
     def _get_pesq_resampler(self):
         """
@@ -299,15 +332,34 @@ class CleanUNet2Stage2Module(pl.LightningModule):
                      self.weight_spec * loss_spec +
                      self.weight_phase * loss_phase)
 
-        # ===== Compute Latent Replication Loss =====
-        if self.global_val_batch_idx in self.stored_latents:
-            stored_data = self.stored_latents[self.global_val_batch_idx]
+        # ===== Compute Latent Replication Loss (com lazy loading) =====
+        stored_data = self._get_latent(self.global_val_batch_idx)
+
+        if stored_data is not None:
             stored_latent = stored_data['fused_latent'].to(self.device)
 
-            # L2 loss between predicted and stored latents
-            loss_latent = F.mse_loss(predicted_latent, stored_latent)
+            # Verificar se os shapes são compatíveis (batch size pode ser diferente)
+            pred_batch = predicted_latent.shape[0]
+            stored_batch = stored_latent.shape[0]
+
+            if pred_batch != stored_batch:
+                # Truncar para o menor batch size
+                min_batch = min(pred_batch, stored_batch)
+                predicted_latent_slice = predicted_latent[:min_batch]
+                stored_latent_slice = stored_latent[:min_batch]
+
+                if self.global_val_batch_idx == 0:  # Avisar apenas na primeira iteração
+                    print(f"[WARNING] Batch size mismatch: predicted={pred_batch}, stored={stored_batch}")
+                    print(f"[WARNING] Using first {min_batch} samples for latent loss")
+
+                loss_latent = F.mse_loss(predicted_latent_slice, stored_latent_slice)
+            else:
+                # Shapes compatíveis, calcular loss normalmente
+                loss_latent = F.mse_loss(predicted_latent, stored_latent)
         else:
             loss_latent = torch.tensor(0.0, device=self.device)
+            if self.global_val_batch_idx < 10:  # Apenas avisa nas primeiras iterações
+                print(f"[WARNING] No stored latent found for batch {self.global_val_batch_idx}")
 
         # Total loss
         total_loss = loss_recon + self.gamma_latent * loss_latent
@@ -456,10 +508,101 @@ class CleanUNet2Stage2Module(pl.LightningModule):
         lr = float(optimizer_cfg.get('lr', 1e-4))
         betas = optimizer_cfg.get('betas', [0.9, 0.999])
 
-        # All parameters are trainable in Stage-2 (no frozen X-Vector extractor)
+        # DESCONGELAR TODOS OS MÓDULOS (Stage-2 não usa X-Vector extractor)
+        print("[Stage-2] Descongelando todos os módulos...")
+        for name, param in self.named_parameters():
+            if not param.requires_grad:
+                print(f"  - Descongelando: {name}")
+            param.requires_grad = True
+
+        # Todos os parâmetros são treináveis em Stage-2
         optimizer = torch.optim.AdamW(self.parameters(), lr=lr, betas=betas)
 
+        # Estatísticas de parâmetros
+        total_params = sum(p.numel() for p in self.parameters())
+        trainable_params_count = sum(p.numel() for p in self.parameters() if p.requires_grad)
+
         print(f"[Stage-2] Optimizer: AdamW(lr={lr}, betas={betas})")
+        print(f"[Stage-2] Total params: {total_params:,}")
+        print(f"[Stage-2] Trainable params: {trainable_params_count:,}")
+
+        # ===== Learning Rate Scheduler (Optional) =====
+        scheduler_cfg = self.config.get('lr_scheduler', {})
+        if scheduler_cfg:
+            scheduler_type = scheduler_cfg.get('type', None)
+
+            if scheduler_type == 'cosine_annealing_warm_restarts':
+                params = scheduler_cfg.get('cosine_annealing_warm_restarts', {})
+                scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+                    optimizer,
+                    T_0=params.get('T_0', 50),
+                    T_mult=params.get('T_mult', 2),
+                    eta_min=params.get('eta_min', 1e-7)
+                )
+                print(f"[Stage-2] LR Scheduler: CosineAnnealingWarmRestarts(T_0={params.get('T_0', 50)}, T_mult={params.get('T_mult', 2)}, eta_min={params.get('eta_min', 1e-7)})")
+                return {
+                    'optimizer': optimizer,
+                    'lr_scheduler': {
+                        'scheduler': scheduler,
+                        'interval': 'epoch',
+                        'frequency': 1
+                    }
+                }
+
+            elif scheduler_type == 'reduce_on_plateau':
+                params = scheduler_cfg.get('reduce_on_plateau', {})
+                scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                    optimizer,
+                    mode=params.get('mode', 'min'),
+                    factor=params.get('factor', 0.5),
+                    patience=params.get('patience', 10),
+                    min_lr=params.get('min_lr', 1e-7)
+                )
+                print(f"[Stage-2] LR Scheduler: ReduceLROnPlateau(mode={params.get('mode', 'min')}, factor={params.get('factor', 0.5)}, patience={params.get('patience', 10)})")
+                return {
+                    'optimizer': optimizer,
+                    'lr_scheduler': {
+                        'scheduler': scheduler,
+                        'monitor': params.get('monitor', 'val_loss'),
+                        'interval': 'epoch',
+                        'frequency': 1
+                    }
+                }
+
+            elif scheduler_type == 'exponential':
+                params = scheduler_cfg.get('exponential', {})
+                scheduler = torch.optim.lr_scheduler.ExponentialLR(
+                    optimizer,
+                    gamma=params.get('gamma', 0.995)
+                )
+                print(f"[Stage-2] LR Scheduler: ExponentialLR(gamma={params.get('gamma', 0.995)})")
+                return {
+                    'optimizer': optimizer,
+                    'lr_scheduler': {
+                        'scheduler': scheduler,
+                        'interval': 'epoch',
+                        'frequency': 1
+                    }
+                }
+
+            elif scheduler_type == 'cosine_annealing':
+                params = scheduler_cfg.get('cosine_annealing', {})
+                scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                    optimizer,
+                    T_max=params.get('T_max', 1000),
+                    eta_min=params.get('eta_min', 1e-7)
+                )
+                print(f"[Stage-2] LR Scheduler: CosineAnnealingLR(T_max={params.get('T_max', 1000)}, eta_min={params.get('eta_min', 1e-7)})")
+                return {
+                    'optimizer': optimizer,
+                    'lr_scheduler': {
+                        'scheduler': scheduler,
+                        'interval': 'epoch',
+                        'frequency': 1
+                    }
+                }
+            else:
+                print(f"[Stage-2] Warning: Unknown scheduler type '{scheduler_type}'. Using optimizer without scheduler.")
 
         return optimizer
 

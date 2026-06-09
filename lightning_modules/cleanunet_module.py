@@ -237,51 +237,51 @@ class CleanUNetLightningModule(pl.LightningModule):
         # Note: Input shape to metrics should be (Batch, Time). Squeeze channels.
         # Disable autocast for metrics computation to ensure float32 precision
         with torch.amp.autocast(device_type="cuda", enabled=False):
-        preds = enhanced.squeeze(1).float()
-        target = clean.squeeze(1).float()
+            preds = enhanced.squeeze(1).float()
+            target = clean.squeeze(1).float()
 
-        # Check for Silence or NaNs to prevent PESQ crashes (NoUtterancesError)
-        # If the max amplitude is too low, PESQ considers it empty.
-        is_silent_or_nan = (preds.abs().max() < 1e-5) or torch.isnan(preds).any()
+            # Check for Silence or NaNs to prevent PESQ crashes (NoUtterancesError)
+            # If the max amplitude is too low, PESQ considers it empty.
+            is_silent_or_nan = (preds.abs().max() < 1e-5) or torch.isnan(preds).any()
 
-        if is_silent_or_nan:
-            # Assign worst-case values if model collapsed
-            val_pesq = torch.tensor(1.0, device=self.device)   # Min PESQ is ~1.0
-            val_stoi = torch.tensor(1e-5, device=self.device)  # Min STOI is 0.0
-            val_sisdr = torch.tensor(-50.0, device=self.device) # Very low SI-SDR
-        else:
-            # PESQ calculation
-            try:
-                # CORRECTED: PESQ expects (reference, degraded) order, i.e., (clean, enhanced)
-                # Move to CPU for PESQ calculation (PESQ internal weights are on CPU)
-                preds_cpu = preds.cpu()
-                target_cpu = target.cpu()
+            if is_silent_or_nan:
+                # Assign worst-case values if model collapsed
+                val_pesq = torch.tensor(1.0, device=self.device)   # Min PESQ is ~1.0
+                val_stoi = torch.tensor(1e-5, device=self.device)  # Min STOI is 0.0
+                val_sisdr = torch.tensor(-50.0, device=self.device) # Very low SI-SDR
+            else:
+                # PESQ calculation
+                try:
+                    # CORRECTED: PESQ expects (reference, degraded) order, i.e., (clean, enhanced)
+                    # Move to CPU for PESQ calculation (PESQ internal weights are on CPU)
+                    preds_cpu = preds.cpu()
+                    target_cpu = target.cpu()
 
-                val_pesq = self.val_pesq(target_cpu, preds_cpu)
-            except Exception as e:
-                # print(f"[WARNING] PESQ computation failed: {e}")
-                val_pesq = torch.tensor(1.0, device=self.device)
+                    val_pesq = self.val_pesq(target_cpu, preds_cpu)
+                except Exception as e:
+                    # print(f"[WARNING] PESQ computation failed: {e}")
+                    val_pesq = torch.tensor(1.0, device=self.device)
 
-            # STOI calculation
-            try:
-                # CORRECTED: STOI expects (reference, degraded) order
-                val_stoi = self.val_stoi(target, preds)
-            except Exception as e:
-                print(f"[WARNING] STOI computation failed: {e}")
-                val_stoi = torch.tensor(1e-5, device=self.device)
+                # STOI calculation
+                try:
+                    # CORRECTED: STOI expects (reference, degraded) order
+                    val_stoi = self.val_stoi(target, preds)
+                except Exception as e:
+                    print(f"[WARNING] STOI computation failed: {e}")
+                    val_stoi = torch.tensor(1e-5, device=self.device)
 
-            # SI-SDR calculation
-            try:
-                # CORRECTED: SI-SDR expects (reference, degraded) order
-                val_sisdr = self.val_sisdr(target, preds)
-            except Exception as e:
-                print(f"[WARNING] SI-SDR computation failed: {e}")
-                val_sisdr = torch.tensor(-50.0, device=self.device)
+                # SI-SDR calculation
+                try:
+                    # CORRECTED: SI-SDR expects (reference, degraded) order
+                    val_sisdr = self.val_sisdr(target, preds)
+                except Exception as e:
+                    print(f"[WARNING] SI-SDR computation failed: {e}")
+                    val_sisdr = torch.tensor(-50.0, device=self.device)
 
-        # --- 3. Calculate Custom Weighted Score ---
-        # Formula: (STOI + PESQ/4.5 + SI_SDR/30.0) / 3.0
-        # We ensure values are on the correct device for logging
-        weighted_score = (val_stoi + (val_pesq / 4.5) + (val_sisdr / 30.0)) / 3.0
+            # --- 3. Calculate Custom Weighted Score ---
+            # Formula: (STOI + PESQ/4.5 + SI_SDR/30.0) / 3.0
+            # We ensure values are on the correct device for logging
+            weighted_score = (val_stoi + (val_pesq / 4.5) + (val_sisdr / 30.0)) / 3.0
 
         # --- 4. Logging ---
         # Log 'val_loss' explicitly for ModelCheckpoint
@@ -315,8 +315,26 @@ class CleanUNetLightningModule(pl.LightningModule):
     # Optimizers
     # -------------------------
     def configure_optimizers(self):
-        lr = float(getattr(self.hparams, "lr", 1e-4))
-        # Filter parameters to only update those with requires_grad=True
-        trainable_params = filter(lambda p: p.requires_grad, self.parameters())
-        optimizer = torch.optim.AdamW(trainable_params, lr=lr)
+        optimizer_cfg = getattr(self.hparams, 'optimizer', {})
+        lr = float(optimizer_cfg.get('lr', getattr(self.hparams, 'lr', 1e-4)))
+        betas = optimizer_cfg.get('betas', [0.9, 0.999])
+
+        # DESCONGELAR TODOS OS MÓDULOS E SUBMÓDULOS
+        print("[CleanUNet] Descongelando todos os módulos e submódulos...")
+        for name, param in self.named_parameters():
+            if not param.requires_grad:
+                print(f"  - Descongelando: {name}")
+            param.requires_grad = True
+
+        # Usar TODOS os parâmetros
+        optimizer = torch.optim.AdamW(self.parameters(), lr=lr, betas=betas)
+
+        # Estatísticas de parâmetros
+        total_params = sum(p.numel() for p in self.parameters())
+        trainable_params_count = sum(p.numel() for p in self.parameters() if p.requires_grad)
+
+        print(f"[CleanUNet] Optimizer: AdamW(lr={lr}, betas={betas})")
+        print(f"[CleanUNet] Total params: {total_params:,}")
+        print(f"[CleanUNet] Trainable params: {trainable_params_count:,}")
+
         return optimizer

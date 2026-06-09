@@ -1,0 +1,186 @@
+# configs/train_xvector_optimized_stage2.yaml
+# Stage-2 Training Configuration: Optimized with Best Hyperparameters
+# Training WITHOUT X-Vectors - replicates Stage-1 fused latents using only noisy audio
+#
+# Configuração Otimizada baseada nos melhores experimentos:
+# - lr: 5e-5 (exp04)
+# - conditioning: FiLM (exp09) - Nota: Stage-2 usa 'addition' ao invés de 'film'
+# - loss: L1 (exp10)
+# - weights: wave=10, spec=5, phase=5 (exp16)
+# - stft_lambda: 0.5 (exp18)
+# - sc/mag: 0.8/0.2 (exp20)
+# - batch_size: 4 (exp22 - MELHOR EXPERIMENTO GERAL)
+# - precision: fp16-mixed (exp25)
+# - grad_clip: 5.0 (exp29)
+
+# ----------------------
+# Trainer configuration
+# ----------------------
+trainer:
+  accelerator: auto
+  devices: 1
+  max_epochs: 1000  # 1000 épocas como solicitado
+  precision: 16-mixed  # fp16-mixed (exp25)
+  log_every_n_steps: 50
+  check_val_every_n_epoch: 5
+  gradient_clip_val: 5.0  # exp29
+  deterministic: false
+  benchmark: true
+
+# ----------------------
+# Global / runtime
+# ----------------------
+seed: 1234
+checkpoint_dir: experiments/exp_xvector_optimized_stage2/checkpoints
+logging_dir: experiments/exp_xvector_optimized_stage2
+latents_dir: experiments/exp_xvector_optimized_stage1/stored_latents_stage1  # Load from Stage-1
+
+# ----------------------
+# Audio configuration
+# ----------------------
+audio:
+  sample_rate: 16000
+
+# ----------------------
+# Stage-1 Checkpoint
+# ----------------------
+# REQUIRED: Path to Stage-1 checkpoint for weight initialization
+# Ajuste este caminho para o melhor checkpoint do Stage-1
+stage1_checkpoint: experiments/exp_xvector_optimized_stage1/checkpoints/stage1-best.ckpt
+
+# ----------------------
+# Model Configuration
+# ----------------------
+model:
+  # X-Vector settings (architecture uses it, but no extractor in Stage-2)
+  xvector_dim: 512
+  conditioning_type: addition  # Stage-2 normalmente usa 'addition' ao invés de 'film'
+
+  # CleanUNet parameters (same as Stage-1)
+  cleanunet_params:
+    channels_input: 1
+    channels_output: 1
+    channels_H: 64
+    max_H: 768
+    encoder_n_layers: 8
+    kernel_size: 4
+    stride: 2
+    tsfm_n_layers: 5
+    tsfm_n_head: 8
+    tsfm_d_model: 512
+    tsfm_d_inner: 2048
+
+  # CleanSpecNet parameters (same as Stage-1)
+  cleanspecnet_params:
+    input_channels: 513
+    num_conv_layers: 5
+    kernel_size: 4
+    stride: 1
+    conv_hidden_dim: 64
+    hidden_dim: 512
+    num_attention_layers: 5
+    num_heads: 8
+    dropout: 0.1
+
+# ----------------------
+# Loss Configuration
+# ----------------------
+losses:
+  # Loss weights (exp16)
+  weight_waveform: 10.0  # Weight for waveform reconstruction loss
+  weight_spec: 5.0       # Weight for spectrogram loss (exp16)
+  weight_phase: 5.0      # Weight for phase loss (exp16)
+  gamma_latent: 0.05     # Weight for latent replication loss (γ from paper)
+
+  # Loss type (exp10)
+  ell_p: 1  # L1 loss
+  ell_p_lambda: 1.0
+
+  # STFT loss parameters (exp18, exp20)
+  stft_lambda: 0.5   # exp18
+  sc_lambda: 0.8     # exp20 - spectral convergence weight
+  mag_lambda: 0.2    # exp20 - magnitude weight
+
+  # STFT loss configuration
+  stft_config:
+    fft_sizes: [512, 1024, 2048]
+    hop_sizes: [50, 120, 240]     # Mesmos parâmetros do seu config original
+    win_lengths: [240, 600, 1200] # Mesmos parâmetros do seu config original
+
+# ----------------------
+# Optimizer Configuration
+# ----------------------
+optimizer:
+  lr: 5.0e-05  # exp04 - learning rate otimizada
+  betas: [0.9, 0.999]
+
+# ----------------------
+# Data configuration
+# ----------------------
+data:
+  data_dir: /raid/user_fredoliveira/DATASETS/VoiceBank-DEMAND-16k/
+  train_list_path: filelists/train.csv
+  val_list_path: filelists/test.csv
+  batch_size: 4  # exp22 - MELHOR EXPERIMENTO GERAL
+  num_workers: 8
+  persistent_workers: true
+  segment_size: 32768  # Tamanho do segmento para 16kHz
+  sampling_rate: 16000
+
+# ----------------------
+# Callbacks
+# ----------------------
+callbacks:
+  # Save best checkpoint based on validation loss
+  best_checkpoint:
+    _target_: pytorch_lightning.callbacks.ModelCheckpoint
+    monitor: val_loss
+    dirpath: experiments/exp_xvector_optimized_stage2/checkpoints
+    filename: stage2-best-{epoch:02d}-{val_loss:.4f}
+    save_top_k: 3
+    mode: min
+
+  # Periodic checkpointing
+  periodic_checkpoint:
+    _target_: pytorch_lightning.callbacks.ModelCheckpoint
+    dirpath: experiments/exp_xvector_optimized_stage2/checkpoints
+    filename: stage2-epoch-{epoch:04d}
+    every_n_epochs: 10
+    save_top_k: 5
+    save_last: true
+    monitor: val_loss
+    mode: min
+
+  # Early stopping
+  early_stopping:
+    _target_: pytorch_lightning.callbacks.EarlyStopping
+    monitor: val_loss
+    patience: 20
+    mode: min
+    min_delta: 0.001
+
+# ----------------------
+# Logger
+# ----------------------
+logger:
+  choice: both  # Use both TensorBoard and WandB
+
+  tensorboard:
+    _target_: pytorch_lightning.loggers.TensorBoardLogger
+    save_dir: experiments/exp_xvector_optimized_stage2
+    name: tb_logs
+    default_hp_metric: false
+
+  wandb:
+    _target_: pytorch_lightning.loggers.WandbLogger
+    project: CleanUNet2_XVector_Optimized
+    name: stage2_optimized
+    save_dir: experiments/exp_xvector_optimized_stage2
+    offline: false
+    log_model: true
+
+# ----------------------
+# Resume / checkpoints
+# ----------------------
+# Descomente para retomar treinamento de um checkpoint
+# resume_from_checkpoint: experiments/exp_xvector_optimized_stage2/checkpoints/last.ckpt

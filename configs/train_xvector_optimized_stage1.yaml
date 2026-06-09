@@ -1,0 +1,230 @@
+# configs/train_xvector_optimized_stage1.yaml
+# Stage-1 Training Configuration: Optimized with Best Hyperparameters
+# X-Vectors are extracted from clean audio and fused into latent space
+#
+# Configuração Otimizada baseada nos melhores experimentos:
+# - lr: 5e-5 (exp04)
+# - conditioning: FiLM (exp09)
+# - loss: L1 (exp10)
+# - weights: wave=10, spec=5, phase=5 (exp16)
+# - stft_lambda: 0.5 (exp18)
+# - sc/mag: 0.8/0.2 (exp20)
+# - batch_size: 4 (exp22 - MELHOR EXPERIMENTO GERAL)
+# - precision: fp16-mixed (exp25)
+# - grad_clip: 5.0 (exp29)
+
+# ----------------------
+# Trainer configuration
+# ----------------------
+trainer:
+  accelerator: auto
+  devices: 1
+  max_epochs: 1000  # 1000 épocas como solicitado
+  precision: 16-mixed  # fp16-mixed (exp25)
+  log_every_n_steps: 50
+  check_val_every_n_epoch: 5
+  gradient_clip_val: 5.0  # exp29
+  deterministic: false
+  benchmark: true
+
+# ----------------------
+# Global / runtime
+# ----------------------
+seed: 1234
+checkpoint_dir: experiments/exp_xvector_optimized_stage1/checkpoints
+logging_dir: experiments/exp_xvector_optimized_stage1
+latents_dir: experiments/exp_xvector_optimized_stage1/stored_latents_stage1
+
+# ----------------------
+# Audio configuration
+# ----------------------
+audio:
+  sample_rate: 16000  # Usando 16kHz como nos seus parâmetros originais
+
+# ----------------------
+# Model Configuration
+# ----------------------
+model:
+  # X-Vector settings
+  xvector_dim: 512  # SpeechBrain X-Vector dimension
+  conditioning_type: film  # FiLM conditioning (exp09)
+
+  # X-Vector Cache (to avoid re-extracting x-vectors on every step)
+  xvector_cache_enabled: true
+  xvector_cache_dir: experiments/exp_xvector_optimized_stage1/xvector_cache_stage1
+
+  # Optional: Load vanilla CleanUNet2 checkpoint for warm start
+  # Descomente e ajuste o caminho se desejar usar warm start
+  vanilla_checkpoint: null
+
+  # CleanUNet parameters
+  cleanunet_params:
+    channels_input: 1
+    channels_output: 1
+    channels_H: 64
+    max_H: 768
+    encoder_n_layers: 8
+    kernel_size: 4
+    stride: 2
+    tsfm_n_layers: 5
+    tsfm_n_head: 8
+    tsfm_d_model: 512
+    tsfm_d_inner: 2048
+
+  # CleanSpecNet parameters
+  cleanspecnet_params:
+    input_channels: 513
+    num_conv_layers: 5
+    kernel_size: 4
+    stride: 1
+    conv_hidden_dim: 64
+    hidden_dim: 512
+    num_attention_layers: 5
+    num_heads: 8
+    dropout: 0.1
+
+# ----------------------
+# Loss Configuration
+# ----------------------
+losses:
+  # Loss weights (exp16)
+  weight_waveform: 10.0  # Weight for waveform reconstruction loss
+  weight_spec: 5.0       # Weight for spectrogram loss (exp16)
+  weight_phase: 5.0      # Weight for phase loss (exp16)
+
+  # Loss type (exp10)
+  ell_p: 1  # L1 loss
+  ell_p_lambda: 1.0
+
+  # STFT loss parameters (exp18, exp20)
+  stft_lambda: 0.5   # exp18
+  sc_lambda: 0.8     # exp20 - spectral convergence weight
+  mag_lambda: 0.2    # exp20 - magnitude weight
+
+  # STFT loss configuration
+  stft_config:
+    fft_sizes: [512, 1024, 2048]
+    hop_sizes: [50, 120, 240]     # Mesmos parâmetros do seu config original
+    win_lengths: [240, 600, 1200] # Mesmos parâmetros do seu config original
+
+# ----------------------
+# Optimizer Configuration
+# ----------------------
+optimizer:
+  lr: 5.0e-05  # exp04 - learning rate otimizada
+  betas: [0.9, 0.999]
+
+# ----------------------
+# Data configuration
+# ----------------------
+data:
+  data_dir: /raid/user_fredoliveira/DATASETS/VoiceBank-DEMAND-16k/
+  train_list_path: filelists/train.csv
+  val_list_path: filelists/test.csv
+  batch_size: 4  # exp22 - MELHOR EXPERIMENTO GERAL
+  num_workers: 8
+  persistent_workers: true
+  segment_size: 32768  # Tamanho do segmento para 16kHz
+  sampling_rate: 16000
+  use_xvector_cache: true  # Use caching for x-vectors
+
+  # ============================================================
+  # Data Augmentation (On-the-Fly) - Opcional
+  # ============================================================
+  # Descomente se desejar usar augmentações on-the-fly
+  # augmentations:
+  #   # 1. Ruído colorido (pink, brown, white)
+  #   - name: AddColoredNoise
+  #     params:
+  #       min_snr_in_db: -5.0
+  #       max_snr_in_db: 20.0
+  #       min_f_decay: -2.0
+  #       max_f_decay: 2.0
+  #       p: 0.7
+  #
+  #   # 2. Ruído de fundo (sons ambientais)
+  #   - name: AddBackgroundNoise
+  #     params:
+  #       background_paths: /raid/user_fredoliveira/DATASETS/NOISES/
+  #       min_snr_in_db: -10.0
+  #       max_snr_in_db: 15.0
+  #       p: 0.5
+  #
+  #   # 3. Variação de volume
+  #   - name: Gain
+  #     params:
+  #       min_gain_in_db: -12.0
+  #       max_gain_in_db: 6.0
+  #       p: 0.5
+  #
+  #   # 4. Filtro passa-baixa
+  #   - name: LowPassFilter
+  #     params:
+  #       min_cutoff_freq: 2000.0
+  #       max_cutoff_freq: 8000.0
+  #       p: 0.3
+  #
+  #   # 5. Filtro passa-alta
+  #   - name: HighPassFilter
+  #     params:
+  #       min_cutoff_freq: 100.0
+  #       max_cutoff_freq: 400.0
+  #       p: 0.3
+
+# ----------------------
+# Callbacks
+# ----------------------
+callbacks:
+  # Save best checkpoint based on validation loss
+  best_checkpoint:
+    _target_: pytorch_lightning.callbacks.ModelCheckpoint
+    monitor: val_loss
+    dirpath: experiments/exp_xvector_optimized_stage1/checkpoints
+    filename: stage1-best-{epoch:02d}-{val_loss:.4f}
+    save_top_k: 3
+    mode: min
+
+  # Periodic checkpointing
+  periodic_checkpoint:
+    _target_: pytorch_lightning.callbacks.ModelCheckpoint
+    dirpath: experiments/exp_xvector_optimized_stage1/checkpoints
+    filename: stage1-epoch-{epoch:04d}
+    every_n_epochs: 10
+    save_top_k: 5
+    save_last: true
+    monitor: val_loss
+    mode: min
+
+  # Early stopping
+  early_stopping:
+    _target_: pytorch_lightning.callbacks.EarlyStopping
+    monitor: val_loss
+    patience: 20
+    mode: min
+    min_delta: 0.001
+
+# ----------------------
+# Logger
+# ----------------------
+logger:
+  choice: both  # Use both TensorBoard and WandB
+
+  tensorboard:
+    _target_: pytorch_lightning.loggers.TensorBoardLogger
+    save_dir: experiments/exp_xvector_optimized_stage1
+    name: tb_logs
+    default_hp_metric: false
+
+  wandb:
+    _target_: pytorch_lightning.loggers.WandbLogger
+    project: CleanUNet2_XVector_Optimized
+    name: stage1_optimized
+    save_dir: experiments/exp_xvector_optimized_stage1
+    offline: false
+    log_model: true
+
+# ----------------------
+# Resume / checkpoints
+# ----------------------
+# Descomente para retomar treinamento de um checkpoint
+resume_from_checkpoint: experiments/exp_xvector_optimized_stage1/checkpoints/last.ckpt

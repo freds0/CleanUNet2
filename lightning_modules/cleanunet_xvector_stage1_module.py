@@ -421,11 +421,107 @@ class CleanUNet2Stage1Module(pl.LightningModule):
         lr = float(optimizer_cfg.get('lr', 1e-4))
         betas = optimizer_cfg.get('betas', [0.9, 0.999])
 
-        # Filter trainable parameters (X-Vector extractor is frozen)
-        trainable_params = filter(lambda p: p.requires_grad, self.parameters())
+        # DESCONGELAR TODOS OS MÓDULOS EXCETO X-Vector extractor
+        print("[Stage-1] Descongelando todos os módulos (exceto X-Vector extractor)...")
+        for name, param in self.named_parameters():
+            # Manter X-Vector extractor congelado (modelo pré-treinado)
+            if 'xvector_extractor' in name:
+                param.requires_grad = False
+            else:
+                if not param.requires_grad:
+                    print(f"  - Descongelando: {name}")
+                param.requires_grad = True
 
+        # Filtrar apenas parâmetros treináveis (exclui X-Vector extractor)
+        trainable_params = filter(lambda p: p.requires_grad, self.parameters())
         optimizer = torch.optim.AdamW(trainable_params, lr=lr, betas=betas)
 
+        # Estatísticas de parâmetros
+        total_params = sum(p.numel() for p in self.parameters())
+        trainable_params_count = sum(p.numel() for p in self.parameters() if p.requires_grad)
+        frozen_params_count = total_params - trainable_params_count
+
         print(f"[Stage-1] Optimizer: AdamW(lr={lr}, betas={betas})")
+        print(f"[Stage-1] Total params: {total_params:,}")
+        print(f"[Stage-1] Trainable params: {trainable_params_count:,}")
+        print(f"[Stage-1] Frozen params (X-Vector): {frozen_params_count:,}")
+
+        # ===== Learning Rate Scheduler (Optional) =====
+        scheduler_cfg = self.config.get('lr_scheduler', {})
+        if scheduler_cfg:
+            scheduler_type = scheduler_cfg.get('type', None)
+
+            if scheduler_type == 'cosine_annealing_warm_restarts':
+                params = scheduler_cfg.get('cosine_annealing_warm_restarts', {})
+                scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+                    optimizer,
+                    T_0=params.get('T_0', 50),
+                    T_mult=params.get('T_mult', 2),
+                    eta_min=params.get('eta_min', 1e-7)
+                )
+                print(f"[Stage-1] LR Scheduler: CosineAnnealingWarmRestarts(T_0={params.get('T_0', 50)}, T_mult={params.get('T_mult', 2)}, eta_min={params.get('eta_min', 1e-7)})")
+                return {
+                    'optimizer': optimizer,
+                    'lr_scheduler': {
+                        'scheduler': scheduler,
+                        'interval': 'epoch',
+                        'frequency': 1
+                    }
+                }
+
+            elif scheduler_type == 'reduce_on_plateau':
+                params = scheduler_cfg.get('reduce_on_plateau', {})
+                scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                    optimizer,
+                    mode=params.get('mode', 'min'),
+                    factor=params.get('factor', 0.5),
+                    patience=params.get('patience', 10),
+                    min_lr=params.get('min_lr', 1e-7)
+                )
+                print(f"[Stage-1] LR Scheduler: ReduceLROnPlateau(mode={params.get('mode', 'min')}, factor={params.get('factor', 0.5)}, patience={params.get('patience', 10)})")
+                return {
+                    'optimizer': optimizer,
+                    'lr_scheduler': {
+                        'scheduler': scheduler,
+                        'monitor': params.get('monitor', 'val_loss'),
+                        'interval': 'epoch',
+                        'frequency': 1
+                    }
+                }
+
+            elif scheduler_type == 'exponential':
+                params = scheduler_cfg.get('exponential', {})
+                scheduler = torch.optim.lr_scheduler.ExponentialLR(
+                    optimizer,
+                    gamma=params.get('gamma', 0.995)
+                )
+                print(f"[Stage-1] LR Scheduler: ExponentialLR(gamma={params.get('gamma', 0.995)})")
+                return {
+                    'optimizer': optimizer,
+                    'lr_scheduler': {
+                        'scheduler': scheduler,
+                        'interval': 'epoch',
+                        'frequency': 1
+                    }
+                }
+
+            elif scheduler_type == 'cosine_annealing':
+                params = scheduler_cfg.get('cosine_annealing', {})
+                scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                    optimizer,
+                    T_max=params.get('T_max', 1000),
+                    eta_min=params.get('eta_min', 1e-7)
+                )
+                print(f"[Stage-1] LR Scheduler: CosineAnnealingLR(T_max={params.get('T_max', 1000)}, eta_min={params.get('eta_min', 1e-7)})")
+                return {
+                    'optimizer': optimizer,
+                    'lr_scheduler': {
+                        'scheduler': scheduler,
+                        'interval': 'epoch',
+                        'frequency': 1
+                    }
+                }
+            else:
+                print(f"[Stage-1] Warning: Unknown scheduler type '{scheduler_type}'. Using optimizer without scheduler.")
 
         return optimizer
