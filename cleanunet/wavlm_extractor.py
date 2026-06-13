@@ -5,6 +5,7 @@ Uses microsoft/wavlm-large for self-supervised speech embeddings
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from transformers import WavLMModel
 import warnings
 
@@ -86,7 +87,8 @@ class WavLMExtractor(nn.Module):
     """
 
     def __init__(self, model_name="microsoft/wavlm-large", device='cpu', layer=12,
-                 pooling_method='self_attention', num_attention_heads=8):
+                 pooling_method='self_attention', num_attention_heads=8,
+                 use_weighted_layers=False):
         """
         Initialize the WavLM extractor.
 
@@ -96,6 +98,9 @@ class WavLMExtractor(nn.Module):
             layer (int): Which layer to extract features from (default: 12 = middle layer for 24-layer model, -1 = last layer)
             pooling_method (str): Pooling method - 'mean' or 'self_attention' (default: 'self_attention')
             num_attention_heads (int): Number of attention heads for self-attention pooling (default: 8)
+            use_weighted_layers (bool): If True, use a learnable softmax-weighted sum over ALL
+                                        transformer layers (SUPERB-style) instead of a single layer.
+                                        When enabled, the `layer` argument is ignored. (default: False)
         """
         super().__init__()
 
@@ -103,6 +108,7 @@ class WavLMExtractor(nn.Module):
         self.layer = layer
         self.model_name = model_name
         self.pooling_method = pooling_method
+        self.use_weighted_layers = use_weighted_layers
 
         print(f"[WavLMExtractor] Loading model: {model_name}")
         print(f"[WavLMExtractor] Device: {device}")
@@ -182,6 +188,17 @@ class WavLMExtractor(nn.Module):
         self.embedding_dim = self.model.config.hidden_size
         print(f"[WavLMExtractor] Embedding dimension: {self.embedding_dim}")
 
+        # Learnable weighted sum over ALL transformer layers (SUPERB-style).
+        # A softmax over these per-layer weights determines which layers matter most.
+        # These weights stay trainable (they are NOT part of the frozen backbone).
+        if self.use_weighted_layers:
+            self.num_layers = self.model.config.num_hidden_layers + 1  # +1 for embedding output
+            self.layer_weights = nn.Parameter(torch.ones(self.num_layers) / self.num_layers)
+            print(f"[WavLMExtractor] Weighted-sum over ALL {self.num_layers} layers enabled "
+                  f"(learnable softmax; `layer` argument ignored)")
+        else:
+            self.num_layers = None
+
         # Initialize pooling layer
         if self.pooling_method == 'self_attention':
             print(f"[WavLMExtractor] Initializing Self-Attention Pooling (heads={num_attention_heads})...")
@@ -215,71 +232,121 @@ class WavLMExtractor(nn.Module):
                 - If return_mean=True: shape (batch, embedding_dim) [e.g., (batch, 1024)]
                 - If return_mean=False: shape (batch, time_steps, embedding_dim)
         """
+        # Save original device
+        original_device = waveform.device
+
+        # Ensure correct format (batch, samples)
+        if waveform.dim() == 3:
+            waveform = waveform.squeeze(1)
+
+        # Move to model device
+        waveform = waveform.to(self.device)
+
+        # Normalize audio to [-1, 1] range (WavLM expects this)
+        max_val = waveform.abs().max(dim=-1, keepdim=True)[0]
+        max_val = torch.clamp(max_val, min=1e-8)  # Avoid division by zero
+        waveform = waveform / max_val
+
+        # Resample if needed (WavLM expects 16kHz)
+        if sample_rate != 16000:
+            print(f"[WavLMExtractor] Warning: Input sample rate is {sample_rate}Hz, "
+                  f"but WavLM expects 16kHz. Resampling...")
+            import torchaudio
+            resampler = torchaudio.transforms.Resample(
+                orig_freq=sample_rate,
+                new_freq=16000
+            ).to(self.device)
+            waveform = resampler(waveform)
+
+        # Run the frozen WavLM backbone under no_grad (no gradients into the backbone).
         with torch.no_grad():
-            # Save original device
-            original_device = waveform.device
-
-            # Ensure correct format (batch, samples)
-            if waveform.dim() == 3:
-                waveform = waveform.squeeze(1)
-
-            # Move to model device
-            waveform = waveform.to(self.device)
-
-            # Normalize audio to [-1, 1] range (WavLM expects this)
-            max_val = waveform.abs().max(dim=-1, keepdim=True)[0]
-            max_val = torch.clamp(max_val, min=1e-8)  # Avoid division by zero
-            waveform = waveform / max_val
-
-            # Resample if needed (WavLM expects 16kHz)
-            if sample_rate != 16000:
-                print(f"[WavLMExtractor] Warning: Input sample rate is {sample_rate}Hz, "
-                      f"but WavLM expects 16kHz. Resampling...")
-                import torchaudio
-                resampler = torchaudio.transforms.Resample(
-                    orig_freq=sample_rate,
-                    new_freq=16000
-                ).to(self.device)
-                waveform = resampler(waveform)
-
-            # Extract features using WavLM
             outputs = self.model(
                 waveform,
                 output_hidden_states=True,
                 return_dict=True
             )
 
-            # Get hidden states from specified layer
-            if self.layer == -1:
-                # Use last layer
-                hidden_states = outputs.last_hidden_state
+        # Combine layers. NOTE: this is computed OUTSIDE the no_grad block above so
+        # that the learnable layer weights (and attention pooling) receive gradients
+        # during training, while the backbone stays frozen.
+        if self.use_weighted_layers:
+            # outputs.hidden_states: tuple of (num_layers + 1) tensors (batch, time, dim)
+            weights = F.softmax(self.layer_weights, dim=0)
+            hidden_states = sum(w * h for w, h in zip(weights, outputs.hidden_states))
+        elif self.layer == -1:
+            # Use last layer
+            hidden_states = outputs.last_hidden_state
+        else:
+            # Use specific layer
+            hidden_states = outputs.hidden_states[self.layer]
+
+        # hidden_states shape: (batch, time_steps, embedding_dim)
+
+        if return_mean:
+            # Apply pooling based on method
+            if self.pooling_method == 'self_attention':
+                # Self-attention pooling (learnable)
+                embeddings = self.attention_pooling(hidden_states)
+                # embeddings shape: (batch, embedding_dim)
+            elif self.pooling_method == 'mean':
+                # Mean pooling over time dimension
+                embeddings = hidden_states.mean(dim=1)
+                # embeddings shape: (batch, embedding_dim)
             else:
-                # Use specific layer
-                hidden_states = outputs.hidden_states[self.layer]
+                raise ValueError(f"Unknown pooling method: {self.pooling_method}")
+        else:
+            # Return full sequence
+            embeddings = hidden_states
+            # embeddings shape: (batch, time_steps, embedding_dim)
 
-            # hidden_states shape: (batch, time_steps, embedding_dim)
+        # Move back to original device
+        embeddings = embeddings.to(original_device)
 
-            if return_mean:
-                # Apply pooling based on method
-                if self.pooling_method == 'self_attention':
-                    # Self-attention pooling (learnable)
-                    embeddings = self.attention_pooling(hidden_states)
-                    # embeddings shape: (batch, embedding_dim)
-                elif self.pooling_method == 'mean':
-                    # Mean pooling over time dimension
-                    embeddings = hidden_states.mean(dim=1)
-                    # embeddings shape: (batch, embedding_dim)
-                else:
-                    raise ValueError(f"Unknown pooling method: {self.pooling_method}")
-            else:
-                # Return full sequence
-                embeddings = hidden_states
-                # embeddings shape: (batch, time_steps, embedding_dim)
+        return embeddings
 
-            # Move back to original device
-            embeddings = embeddings.to(original_device)
+    @torch.no_grad()
+    def extract_all_layers(self, waveform, sample_rate=16000):
+        """
+        Extract the hidden states of ALL WavLM layers, stacked along a new layer axis.
 
-            return embeddings
+        Useful for pre-extracting embeddings to disk so a learnable softmax over the
+        layers can later be applied cheaply at training time (without re-running WavLM).
+
+        Args:
+            waveform (torch.Tensor): Audio tensor (batch, samples) or (batch, 1, samples)
+            sample_rate (int): Sample rate of the audio (WavLM expects 16kHz)
+
+        Returns:
+            embeddings (torch.Tensor): shape (batch, num_layers, time_steps, embedding_dim),
+                                       where num_layers = config.num_hidden_layers + 1.
+        """
+        original_device = waveform.device
+
+        if waveform.dim() == 3:
+            waveform = waveform.squeeze(1)
+
+        waveform = waveform.to(self.device)
+
+        # Normalize audio to [-1, 1] range (WavLM expects this)
+        max_val = waveform.abs().max(dim=-1, keepdim=True)[0]
+        max_val = torch.clamp(max_val, min=1e-8)
+        waveform = waveform / max_val
+
+        # Resample if needed (WavLM expects 16kHz)
+        if sample_rate != 16000:
+            print(f"[WavLMExtractor] Warning: Input sample rate is {sample_rate}Hz, "
+                  f"but WavLM expects 16kHz. Resampling...")
+            import torchaudio
+            resampler = torchaudio.transforms.Resample(
+                orig_freq=sample_rate, new_freq=16000
+            ).to(self.device)
+            waveform = resampler(waveform)
+
+        outputs = self.model(waveform, output_hidden_states=True, return_dict=True)
+        # tuple of (num_layers + 1) tensors (batch, time, dim) -> (batch, num_layers + 1, time, dim)
+        stacked = torch.stack(outputs.hidden_states, dim=1)
+
+        return stacked.to(original_device)
 
     @torch.no_grad()
     def extract_and_interpolate(self, waveform, target_length, sample_rate=16000):
@@ -314,3 +381,7 @@ class WavLMExtractor(nn.Module):
     def get_embedding_dim(self):
         """Return the embedding dimension."""
         return self.embedding_dim
+
+    def get_num_layers(self):
+        """Return the number of hidden-state layers (embedding output + transformer layers)."""
+        return self.model.config.num_hidden_layers + 1

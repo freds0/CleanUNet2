@@ -195,16 +195,19 @@ def extract_and_save_embeddings(config, device='cuda', force_reextract=False):
         raise ValueError(f"Model must be {expected_model}, got {model_name}")
 
     # Initialize WavLM extractor
-    print("[Extract] Initializing WavLM extractor (raw sequences, no pooling)...")
+    print("[Extract] Initializing WavLM extractor (ALL layers, raw sequences, no pooling)...")
     print(f"[Extract] Model: {model_name}")
-    print(f"[Extract] Layer: 12 (of 24 in {model_name})")
 
     extractor = WavLMExtractor(
         model_name=model_name,
         device=device,
-        layer=12,  # Use middle layer (12 of 24 layers for WavLM-Large)
-        pooling_method='mean'  # Initializer param (not used for extraction)
+        pooling_method='mean'  # Initializer param (not used for all-layer extraction)
     )
+
+    # Number of layers saved per file: embedding output + every transformer layer
+    num_layers = extractor.get_num_layers()
+    print(f"[Extract] Saving ALL {num_layers} layers per file "
+          f"(stack shape: ({num_layers}, time, {extractor.get_embedding_dim()}))")
 
     # Get target sample rate
     target_sr = config['data'].get('sampling_rate', 16000)
@@ -258,20 +261,19 @@ def extract_and_save_embeddings(config, device='cuda', force_reextract=False):
                     )
                     waveform = resampler(waveform)
 
-                # Extract RAW embeddings (NO POOLING)
+                # Extract ALL layers (stacked, NO POOLING)
                 # waveform shape: (1, samples) -> need (batch, samples)
-                embedding = extractor.extract_embeddings(
+                embedding = extractor.extract_all_layers(
                     waveform,
                     sample_rate=target_sr,
-                    return_mean=False  # Get full temporal sequence!
                 )
 
-                # embedding shape: (batch, time_steps, embedding_dim)
-                # Squeeze batch dimension: (time_steps, embedding_dim)
+                # embedding shape: (batch, num_layers, time_steps, embedding_dim)
+                # Squeeze batch dimension: (num_layers, time_steps, embedding_dim)
                 embedding = embedding.squeeze(0).cpu()
 
-                # Store metadata about this sequence
-                time_steps_list.append(embedding.shape[0])
+                # Store metadata about this sequence (time is dim 1 now)
+                time_steps_list.append(embedding.shape[1])
 
                 # Save to disk
                 torch.save(embedding, cache_file)
@@ -299,7 +301,7 @@ def extract_and_save_embeddings(config, device='cuda', force_reextract=False):
         print(f"  - Min time steps: {min(time_steps_list)}")
         print(f"  - Max time steps: {max(time_steps_list)}")
         print(f"  - Mean time steps: {sum(time_steps_list) / len(time_steps_list):.1f}")
-        print(f"  - Output shape per file: (time_steps, {embedding_dim})")
+        print(f"  - Output shape per file: ({num_layers}, time_steps, {embedding_dim})")
 
     print("=" * 80 + "\n")
 
@@ -307,14 +309,15 @@ def extract_and_save_embeddings(config, device='cuda', force_reextract=False):
     metadata = {
         'model_name': model_name,
         'embedding_dim': embedding_dim,
+        'num_layers': num_layers,
         'sample_rate': target_sr,
         'total_files': len(audio_files),
         'extracted': extracted,
         'skipped': skipped,
         'failed': failed,
-        'format': 'raw_sequences',
-        'pooling': 'none (applied during training)',
-        'output_shape_per_file': f'(time_steps, {embedding_dim})',
+        'format': 'all_layers_raw_sequences',
+        'pooling': 'none (learnable softmax over layers applied during training)',
+        'output_shape_per_file': f'({num_layers}, time_steps, {embedding_dim})',
         'time_steps_min': min(time_steps_list) if time_steps_list else 0,
         'time_steps_max': max(time_steps_list) if time_steps_list else 0,
         'time_steps_mean': sum(time_steps_list) / len(time_steps_list) if time_steps_list else 0,

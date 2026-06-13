@@ -1,6 +1,9 @@
 # Stage 1 Training Configuration: WavLM Large
-# Trains WITH pre-extracted WavLM embeddings
-# Key: use_preextracted_embeddings: true
+# Trains WITH on-the-fly WavLM embeddings using a learnable softmax-weighted sum
+# over ALL WavLM layers. The per-layer weights are trained jointly here.
+# Key: use_preextracted_embeddings: false  +  wavlm_use_weighted_layers: true
+# (Pre-extracted cache stores a single layer, so it is incompatible with the
+#  trainable all-layer softmax — use on-the-fly extraction for that.)
 
 trainer:
   accelerator: auto
@@ -16,6 +19,7 @@ trainer:
 seed: 1234
 checkpoint_dir: "experiments/checkpoints/stage1"
 logging_dir: "experiments/stage1"
+latents_dir: "stored_latents_stage1"   # Stage-1 saves fused latents here (read back in Stage-2)
 
 audio:
   sample_rate: 16000
@@ -28,9 +32,10 @@ model:
   use_wavlm: true
   wavlm_model: "microsoft/wavlm-large"
   wavlm_cache_dir: "wavlm_embeddings_raw"
-  wavlm_layer: 12
-  use_preextracted_embeddings: true
-  wavlm_pooling_method: "none"
+  wavlm_layer: 12                      # ignored when wavlm_use_weighted_layers is true
+  use_preextracted_embeddings: false   # on-the-fly extraction (required to train the layer softmax)
+  wavlm_use_weighted_layers: true      # learnable softmax-weighted sum over ALL WavLM layers
+  wavlm_pooling_method: "mean"         # unused (full sequence is returned), must be 'mean' or 'self_attention'
   wavlm_attention_heads: 8
   vanilla_checkpoint: null
   cleanunet_params:

@@ -17,6 +17,7 @@ trainer:
 seed: 1234
 checkpoint_dir: "experiments/checkpoints/stage2"
 logging_dir: "experiments/stage2"
+latents_dir: "stored_latents_stage1"   # read the fused latents saved by Stage-1
 
 audio:
   sample_rate: 16000
@@ -31,7 +32,8 @@ model:
   wavlm_cache_dir: "wavlm_embeddings_raw"
   wavlm_layer: 12
   use_preextracted_embeddings: false
-  wavlm_pooling_method: "none"
+  wavlm_use_weighted_layers: true      # inert in Stage-2 (no extractor is built), kept for consistency
+  wavlm_pooling_method: "mean"
   wavlm_attention_heads: 8
   vanilla_checkpoint: null
   cleanunet_params:

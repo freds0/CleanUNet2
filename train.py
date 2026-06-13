@@ -9,7 +9,6 @@ Usage:
 
 import yaml
 import argparse
-from argparse import Namespace
 import logging
 import copy
 import torch
@@ -18,8 +17,8 @@ from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
 from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger
 
 # Make sure these imports point to the correct modules in your repo
-from lightning_modules.cleanunet_module import CleanUNetLightningModule
 from lightning_modules.data_module import CleanUNetDataModule
+# The SSL-embeddings (WavLM) stage modules are imported lazily in train() per stage.
 
 # Configure a simple logger for console output (INFO level)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
@@ -151,11 +150,7 @@ def train(config: dict, quick_test: bool = False, quick_test_samples: int = 30,
     if quick_test:
         logger.info(f"[INFO] Quick Test Mode: True ({quick_test_epochs} epoch, {quick_test_samples} samples)")
 
-    # Merge model+data config into hyperparameters for the LightningModule (non-destructive)
-    model_cfg = config.get("model", {})
     data_cfg = config.get("data", {})
-    hparams_dict = {**model_cfg, **data_cfg}
-    hparams = Namespace(**hparams_dict)
 
     # Instantiate DataModule with quick test support
     logger.info("Instantiating data module.")
@@ -167,8 +162,15 @@ def train(config: dict, quick_test: bool = False, quick_test_samples: int = 30,
         data_cfg_copy["batch_size"] = min(data_cfg_copy.get("batch_size", 32), quick_test_samples)
     data_module = CleanUNetDataModule(**data_cfg_copy)
 
-    logger.info("Instantiating model (CleanUNetLightningModule).")
-    model = CleanUNetLightningModule(hparams)
+    # Select the SSL-embeddings (WavLM) Lightning module based on the training stage.
+    if current_stage == 2:
+        logger.info("Instantiating CleanUNet2SSLEmbeddingsStage2Module (replicate latents, no extractor).")
+        from lightning_modules.cleanunet_ssl_embeddings_stage2_module import CleanUNet2SSLEmbeddingsStage2Module
+        model = CleanUNet2SSLEmbeddingsStage2Module(config)
+    else:
+        logger.info("Instantiating CleanUNet2SSLEmbeddingsStage1Module (WavLM embeddings, softmax over all layers).")
+        from lightning_modules.cleanunet_ssl_embeddings_stage1_module import CleanUNet2SSLEmbeddingsStage1Module
+        model = CleanUNet2SSLEmbeddingsStage1Module(config)
 
     # Instantiate callbacks safely
     callbacks = _safe_instantiate_callbacks(config.get("callbacks", {}))

@@ -1,0 +1,110 @@
+# Quick 1-epoch training test with VoiceBank (paired) + LJSpeech (clean + noise)
+# Usage: python train.py --config configs/train_test_1epoch.yaml
+
+pipeline:
+  stage: 1
+  name: "test_1epoch_multi_dataset"
+
+trainer:
+  accelerator: auto
+  devices: 1
+  max_epochs: 1
+  precision: 16-mixed
+  log_every_n_steps: 5
+  gradient_clip_val: 5.0
+  deterministic: false
+  benchmark: true
+
+model:
+  name: "cleanunet2_wavlm"
+  conditioning_type: "film"
+  freeze_cleanunet: false
+  freeze_cleanspecnet: false
+
+  embeddings:
+    model_name: "microsoft/wavlm-large"
+    layer: 12
+    input_dim: 1024
+    cache_dir: "cached_embeddings/wavlm"
+    use_preextracted: false
+
+  cleanunet:
+    channels_input: 1
+    channels_output: 1
+    channels_H: 64
+    max_H: 768
+    encoder_n_layers: 8
+    kernel_size: 4
+    stride: 2
+    tsfm_n_layers: 5
+    tsfm_n_head: 8
+    tsfm_d_model: 512
+    tsfm_d_inner: 2048
+
+  cleanspecnet:
+    input_channels: 513
+    num_conv_layers: 5
+    kernel_size: 4
+    stride: 1
+    conv_hidden_dim: 64
+    hidden_dim: 512
+    num_attention_layers: 5
+    num_heads: 8
+    dropout: 0.1
+
+losses:
+  weight_waveform: 10.0
+  weight_spec: 5.0
+  weight_phase: 5.0
+  ell_p: 1
+  ell_p_lambda: 1.0
+  stft_lambda: 0.5
+  sc_lambda: 0.8
+  mag_lambda: 0.2
+  stft_config:
+    fft_sizes: [512, 1024, 2048]
+    hop_sizes: [50, 120, 240]
+    win_lengths: [240, 600, 1200]
+
+optimizer:
+  name: "adam"
+  lr: 5.0e-05
+  betas: [0.9, 0.999]
+  weight_decay: 0.0
+
+data:
+  batch_size: 4
+  num_workers: 4
+  persistent_workers: false
+  sampling_rate: 16000
+  segment_size: 32000
+  use_preextracted_embeddings: false
+
+  datasets:
+    - type: "paired"
+      data_dir: "/home/fred/Projetos/DATASETS/VoiceBank-DEMAND-16k"
+      train_list_path: "two_folders:/home/fred/Projetos/DATASETS/VoiceBank-DEMAND-16k/train/clean,/home/fred/Projetos/DATASETS/VoiceBank-DEMAND-16k/train/noisy"
+      val_list_path: "two_folders:/home/fred/Projetos/DATASETS/VoiceBank-DEMAND-16k/test/clean,/home/fred/Projetos/DATASETS/VoiceBank-DEMAND-16k/test/noisy"
+
+    - type: "clean_with_noise"
+      clean_dir: "/home/fred/Projetos/DATASETS/LJSpeech-1.1/wavs"
+      noise_dir: "/home/fred/Projetos/DATASETS/ESC-50-master/audio"
+      val_split: 0.05
+
+checkpoint:
+  save_dir: "experiments/test_1epoch/checkpoints"
+  save_top_k: 1
+  monitor_metric: "val_loss"
+  mode: "min"
+  every_n_epochs: 1
+
+logging:
+  loggers: ["tensorboard"]
+  tensorboard:
+    save_dir: "experiments/test_1epoch"
+    name: "tb_logs"
+    default_hp_metric: false
+
+debug:
+  quick_test: false
+  seed: 1234
