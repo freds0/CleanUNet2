@@ -93,7 +93,7 @@ class Wav2Vec2Config:
     """Wav2Vec2 embeddings configuration."""
     model_name: str = "facebook/wav2vec2-xls-r-2b"
     layer: int = 24  # Extract from middle layer
-    input_dim: int = 1024  # Output dimension (fixed for XLS-R 2B)
+    input_dim: int = 1920  # Output dimension (fixed for XLS-R 2B)
     cache_dir: str = "cached_embeddings/wav2vec2"
     use_preextracted: bool = True  # Load from cache vs. extract on-the-fly
 

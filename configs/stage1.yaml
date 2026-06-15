@@ -1,3 +1,12 @@
+# ============================================================================
+# SSL BACKBONE (standardized documentation -- see CONFIG_STANDARDIZATION_REPORT.md)
+# ssl_model_name: facebook/wav2vec2-xls-r-2b
+# ssl_model_size: 2b
+# ssl_hidden_size: 1920
+# ssl_num_layers: 48
+# ssl_embedding_strategy: all_layers_softmax
+# selected_layers: all (0..48)
+# ============================================================================
 model:
   cleanunet:
     in_channels: 1
@@ -17,7 +26,8 @@ model:
     cache_embeddings: true
     wav2vec2_cache_dir: "wav2vec2_embeddings_raw"
     layer: 24
-    wav2vec2_layer: 24
+    wav2vec2_layer: 24                 # only used if use_weighted_layers is false
+    use_weighted_layers: true          # learnable softmax over ALL wav2vec2 layers
     device: "cuda"
 
   conditioning_type: "film"

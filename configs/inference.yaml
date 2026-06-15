@@ -1,4 +1,13 @@
 # ============================================================================
+# SSL BACKBONE (standardized documentation -- see CONFIG_STANDARDIZATION_REPORT.md)
+# ssl_model_name: facebook/wav2vec2-xls-r-2b
+# ssl_model_size: 2b
+# ssl_hidden_size: 1920
+# ssl_num_layers: 48
+# ssl_embedding_strategy: all_layers_softmax
+# selected_layers: all (0..48)
+# ============================================================================
+# ============================================================================
 # CleanUNet2 Inference Configuration (Wav2Vec2 ONLY)
 # ============================================================================
 

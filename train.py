@@ -21,7 +21,7 @@ from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
 from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger
 
-from lightning_modules.cleanunet_module import CleanUNetLightningModule
+# SSL-embeddings (Wav2Vec2) stage modules are imported lazily in train() per stage.
 from lightning_modules.data_module import CleanUNetDataModule
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
@@ -126,7 +126,7 @@ def _safe_instantiate_logger(logger_config: dict):
 
     return None
 
-def train(config: dict, quick_test: bool = False, quick_test_samples: int = 30, quick_test_epochs: int = 1):
+def train(config: dict, quick_test: bool = False, quick_test_samples: int = 30, quick_test_epochs: int = 1, stage: int = None):
     """
     Main training function with Wav2Vec2 embeddings support.
 
@@ -151,18 +151,55 @@ def train(config: dict, quick_test: bool = False, quick_test_samples: int = 30, 
         config["data"]["quick_test"] = True
         config["data"]["quick_test_samples"] = quick_test_samples
 
-    # Merge model+data config into hyperparameters for the LightningModule
-    model_cfg = config.get("model", {})
     data_cfg = config.get("data", {})
-    hparams_dict = {**model_cfg, **data_cfg}
-    hparams = Namespace(**hparams_dict)
+
+    # Load augmentation config (from separate file or inline)
+    augmentations = None
+    aug_config_path = data_cfg.get("augmentation_config")
+    if aug_config_path:
+        with open(aug_config_path, "r") as f:
+            aug_cfg = yaml.safe_load(f)
+        if aug_cfg.get("enabled", False):
+            augmentations = aug_cfg.get("techniques")
+            logger.info(f"Augmentation loaded from {aug_config_path}: {len(augmentations)} techniques")
+    else:
+        aug_cfg = data_cfg.get("augmentation", {})
+        if aug_cfg.get("enabled", False):
+            augmentations = aug_cfg.get("techniques")
+
+    data_module_kwargs = {
+        "data_dir": data_cfg.get("data_dir", "."),
+        "train_list_path": data_cfg.get("train_list_path"),
+        "val_list_path": data_cfg.get("val_list_path"),
+        "val_split": data_cfg.get("val_split"),
+        "batch_size": data_cfg.get("batch_size", 8),
+        "num_workers": data_cfg.get("num_workers", 4),
+        "persistent_workers": data_cfg.get("persistent_workers", False),
+        "segment_size": data_cfg.get("segment_size"),
+        "sampling_rate": data_cfg.get("sampling_rate", data_cfg.get("sample_rate", 16000)),
+        "augmentations": augmentations,
+        "use_preextracted_embeddings": data_cfg.get("use_preextracted_embeddings", True),
+        "quick_test": data_cfg.get("quick_test", False),
+        "quick_test_samples": data_cfg.get("quick_test_samples", 30),
+        # Multi-dataset support
+        "datasets": data_cfg.get("datasets"),
+        "noise_dir": data_cfg.get("noise_dir"),
+    }
 
     # Instantiate DataModule and LightningModule
     logger.info("Instantiating data module (Wav2Vec2 embeddings pipeline).")
-    data_module = CleanUNetDataModule(**data_cfg)
+    data_module = CleanUNetDataModule(**data_module_kwargs)
 
-    logger.info("Instantiating model (CleanUNetLightningModule with Wav2Vec2).")
-    model = CleanUNetLightningModule(hparams)
+    # Select the SSL-embeddings (Wav2Vec2) Lightning module based on the training stage.
+    current_stage = stage if stage is not None else config.get("pipeline", {}).get("stage", 1)
+    if current_stage == 2:
+        logger.info("Instantiating CleanUNet2SSLEmbeddingsStage2Module (replicate latents, no extractor).")
+        from lightning_modules.cleanunet_ssl_embeddings_stage2_module import CleanUNet2SSLEmbeddingsStage2Module
+        model = CleanUNet2SSLEmbeddingsStage2Module(config)
+    else:
+        logger.info("Instantiating CleanUNet2SSLEmbeddingsStage1Module (Wav2Vec2 embeddings, all-layer softmax).")
+        from lightning_modules.cleanunet_ssl_embeddings_stage1_module import CleanUNet2SSLEmbeddingsStage1Module
+        model = CleanUNet2SSLEmbeddingsStage1Module(config)
 
     # Instantiate callbacks safely
     callbacks = _safe_instantiate_callbacks(config.get("callbacks", {}))
@@ -274,4 +311,4 @@ if __name__ == "__main__":
 
     # Run training
     train(config, quick_test=args.quick_test, quick_test_samples=args.quick_test_samples,
-          quick_test_epochs=args.quick_test_epochs)
+          quick_test_epochs=args.quick_test_epochs, stage=stage)

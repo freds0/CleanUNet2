@@ -271,17 +271,15 @@ def custom_collate_fn(batch):
         clean_audios_stacked = torch.stack(clean_audios)
         clean_specs_stacked = torch.stack(clean_specs)
     except RuntimeError:
-        # Fall back to padding on time dimension (assumes dims: [T] or [1, T])
-        def pad_list(tensors: List[torch.Tensor], dim=-1):
-            # Ensure 2D or 3D tensors; pad along last dim
-            shapes = [t.shape for t in tensors]
-            max_len = max(s[-1] for s in shapes)
+        # Fall back to padding on time dimension, preserving all other dims
+        def pad_list(tensors: List[torch.Tensor]):
+            max_len = max(t.shape[-1] for t in tensors)
             padded = [torch.nn.functional.pad(t, (0, max_len - t.shape[-1])) for t in tensors]
             return torch.stack(padded)
-        audios_stacked = pad_list([a.squeeze() for a in audios])
-        specs_stacked = pad_list([s for s in specs])
-        clean_audios_stacked = pad_list([c.squeeze() for c in clean_audios])
-        clean_specs_stacked = pad_list([cs for cs in clean_specs])
+        audios_stacked = pad_list(list(audios))
+        specs_stacked = pad_list(list(specs))
+        clean_audios_stacked = pad_list(list(clean_audios))
+        clean_specs_stacked = pad_list(list(clean_specs))
 
     if has_paths:
         return audios_stacked, specs_stacked, clean_audios_stacked, clean_specs_stacked, list(clean_paths)

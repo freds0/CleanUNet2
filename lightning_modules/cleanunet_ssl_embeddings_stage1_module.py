@@ -1,9 +1,9 @@
 """
-PyTorch Lightning module for CleanUNet2 Stage-2 training.
+PyTorch Lightning module for CleanUNet2 Stage-1 training with SSL Embeddings.
 
-Stage-2: Training without X-Vectors, replicating latent vectors from Stage-1.
-The model learns to predict the fused latents without using the X-Vector extractor,
-enabling fast inference while maintaining the benefits of speaker information.
+Stage-1: Training with SSL embeddings (Wav2Vec2) injected into latent space.
+The model learns to denoise using speaker embeddings as guidance.
+Latent vectors are saved for Stage-2 training.
 """
 
 import torch
@@ -12,7 +12,7 @@ import pytorch_lightning as pl
 from pathlib import Path
 import torchaudio
 
-from cleanunet.cleanunet2_with_xvector import CleanUNet2WithXVector
+from cleanunet.cleanunet2_with_ssl_embeddings import CleanUNet2WithSSLEmbeddings
 from losses import CleanUNet2Loss, MultiResolutionSTFTLoss, AntiWrappingPhaseLoss
 
 # Import TorchMetrics
@@ -21,12 +21,12 @@ from torchmetrics.audio import ShortTimeObjectiveIntelligibility
 from torchmetrics.audio import ScaleInvariantSignalNoiseRatio
 
 
-class CleanUNet2Stage2Module(pl.LightningModule):
+class CleanUNet2SSLEmbeddingsStage1Module(pl.LightningModule):
     """
-    Lightning module for Stage-2 training (without X-Vectors).
+    Lightning module for Stage-1 training with SSL Embeddings (Wav2Vec2).
 
-    Trains the model to replicate Stage-1's fused latent vectors using
-    only the noisy audio (no X-Vector extractor).
+    Trains the model using SSL embeddings extracted from clean audio.
+    Saves fused latent vectors for Stage-2 training.
     """
 
     def __init__(self, config):
@@ -35,61 +35,45 @@ class CleanUNet2Stage2Module(pl.LightningModule):
         self.config = config
 
         print("=" * 80)
-        print("STAGE-2: Replicating Latents (without X-Vectors)")
+        print("STAGE-1: Training with SSL Embeddings (Wav2Vec2)")
         print("=" * 80)
 
         # ===== Model Initialization =====
         model_config = config.get('model', {})
 
-        # Determine embedding type from config
-        use_wav2vec2 = model_config.get('use_wav2vec2', False)
-        use_xvector = model_config.get('use_xvector', True)
+        # Wav2Vec2 SSL Embeddings configuration.
+        # Support both flat (model.*) and nested (model.wav2vec2.*) config layouts.
+        w2v = model_config.get('wav2vec2', {})
+        wav2vec2_model = model_config.get('wav2vec2_model') or w2v.get('model_name', 'facebook/wav2vec2-xls-r-2b')
+        wav2vec2_layer = model_config.get('wav2vec_layer', w2v.get('wav2vec2_layer', 24))
+        wav2vec2_cache_dir = model_config.get('wav2vec2_cache_dir') or w2v.get('wav2vec2_cache_dir', 'wav2vec2_embeddings')
+        use_preextracted_embeddings = model_config.get('use_preextracted_embeddings', w2v.get('use_preextracted', False))
+        use_weighted_layers = model_config.get('wav2vec2_use_weighted_layers', w2v.get('use_weighted_layers', True))
 
-        # Prepare model initialization arguments
-        model_args = {
-            'stage': 'stage2',
-            'conditioning_type': model_config.get('conditioning_type', 'addition'),
-            'cleanunet_params': model_config.get('cleanunet_params', {}),
-            'cleanspecnet_params': model_config.get('cleanspecnet_params', {}),
-        }
+        self.model = CleanUNet2WithSSLEmbeddings(
+            stage='stage1',
+            conditioning_type=model_config.get('conditioning_type', 'addition'),
+            cleanunet_params=model_config.get('cleanunet_params', {}),
+            cleanspecnet_params=model_config.get('cleanspecnet_params', {}),
+            # Wav2Vec2 parameters
+            wav2vec2_model=wav2vec2_model,
+            wav2vec2_layer=wav2vec2_layer,
+            wav2vec2_cache_dir=wav2vec2_cache_dir,
+            use_preextracted_embeddings=use_preextracted_embeddings,
+            # Learnable softmax-weighted sum over ALL wav2vec2 layers
+            wav2vec2_use_weighted_layers=use_weighted_layers
+        )
 
-        # Add embedding-specific parameters
-        if use_wav2vec2:
-            model_args.update({
-                'use_wav2vec2': True,
-                'use_xvector': False,
-                'wav2vec2_model': model_config.get('wav2vec2_model', 'facebook/wav2vec2-xls-r-300m'),
-                'wav2vec2_cache_dir': model_config.get('wav2vec2_cache_dir', None),
-                'use_preextracted_embeddings': model_config.get('use_preextracted_embeddings', False),
-                'wav2vec2_pooling_method': model_config.get('wav2vec2_pooling_method', 'self_attention'),
-                'wav2vec2_attention_heads': model_config.get('wav2vec2_attention_heads', 8),
-            })
-        elif use_xvector:
-            model_args.update({
-                'use_xvector': True,
-                'use_wav2vec2': False,
-                'xvector_dim': model_config.get('xvector_dim', 512),
-                'xvector_local_path': model_config.get('xvector_local_path', None),
-            })
+        # ===== Load Vanilla Checkpoint (Optional) =====
+        vanilla_ckpt = model_config.get('vanilla_checkpoint')
+        if vanilla_ckpt:
+            print(f"\n[Stage-1] Loading vanilla checkpoint for warm start: {vanilla_ckpt}")
+            self.model.load_vanilla_checkpoint(vanilla_ckpt)
         else:
-            # No embeddings
-            model_args.update({
-                'use_xvector': False,
-                'use_wav2vec2': False,
-            })
-
-        self.model = CleanUNet2WithXVector(**model_args)
-
-        # ===== Load Stage-1 Checkpoint =====
-        stage1_ckpt = config.get('stage1_checkpoint')
-        if stage1_ckpt:
-            print(f"[Stage-2] Loading Stage-1 checkpoint: {stage1_ckpt}")
-            self.model.load_stage1_weights(stage1_ckpt)
-        else:
-            print("[WARNING] No Stage-1 checkpoint provided. Training from scratch.")
+            print("[Stage-1] No vanilla checkpoint specified. Training from scratch.")
 
         # ===== Loss Initialization =====
-        loss_cfg = config.get('losses', {})
+        loss_cfg = config.get('losses') or config.get('loss', {})
 
         # Multi-Resolution STFT Loss
         stft_cfg = loss_cfg.get('stft_config', {})
@@ -120,11 +104,9 @@ class CleanUNet2Stage2Module(pl.LightningModule):
         self.weight_waveform = float(loss_cfg.get('weight_waveform', 10.0))
         self.weight_spec = float(loss_cfg.get('weight_spec', 1.0))
         self.weight_phase = float(loss_cfg.get('weight_phase', 1.0))
-        self.gamma_latent = float(loss_cfg.get('gamma_latent', 0.05))  # From paper
 
-        print(f"[Stage-2] Loss weights: waveform={self.weight_waveform}, "
+        print(f"[Stage-1] Loss weights: waveform={self.weight_waveform}, "
               f"spec={self.weight_spec}, phase={self.weight_phase}")
-        print(f"[Stage-2] Latent replication weight (γ): {self.gamma_latent}")
 
         # ===== Metrics Initialization =====
         sr = config.get('audio', {}).get('sample_rate', 16000)
@@ -133,18 +115,18 @@ class CleanUNet2Stage2Module(pl.LightningModule):
         # PESQ only supports 8kHz or 16kHz
         if sr < 8000:
             raise ValueError(
-                f"[Stage-2] ERROR: Sample rate {sr} Hz is too low for PESQ metric. "
+                f"[Stage-1] ERROR: Sample rate {sr} Hz is too low for PESQ metric. "
                 f"PESQ requires at least 8000 Hz. Please use sample_rate >= 8000 in your config."
             )
         elif sr in [8000, 16000]:
             # Use sample rate directly for PESQ
             self.pesq_sample_rate = sr
-            print(f"[Stage-2] Using sample rate {sr} Hz for PESQ metric")
+            print(f"[Stage-1] Using sample rate {sr} Hz for PESQ metric")
         else:
             # Sample rate > 16000: downsample to 16kHz for PESQ calculation
             self.pesq_sample_rate = 16000
-            print(f"[Stage-2] ⚠️  WARNING: Sample rate is {sr} Hz, but PESQ only supports 8kHz/16kHz.")
-            print(f"[Stage-2] Audio will be downsampled to {self.pesq_sample_rate} Hz for PESQ calculation.")
+            print(f"[Stage-1] ⚠️  WARNING: Sample rate is {sr} Hz, but PESQ only supports 8kHz/16kHz.")
+            print(f"[Stage-1] Audio will be downsampled to {self.pesq_sample_rate} Hz for PESQ calculation.")
 
         self.val_pesq = PerceptualEvaluationSpeechQuality(fs=self.pesq_sample_rate, mode='wb')
         self.val_stoi = ShortTimeObjectiveIntelligibility(fs=sr, extended=False)
@@ -159,51 +141,17 @@ class CleanUNet2Stage2Module(pl.LightningModule):
         }
         self._pesq_resampler_cache = None
 
-        # ===== Load Stored Latents from Stage-1 =====
+        # ===== Latents Storage =====
         self.latents_dir = Path(config.get('latents_dir', 'stored_latents_stage1'))
+        self.latents_dir.mkdir(parents=True, exist_ok=True)
+        print(f"[Stage-1] Latents will be saved to: {self.latents_dir}")
 
-        if not self.latents_dir.exists():
-            raise ValueError(f"Latents directory not found: {self.latents_dir}. "
-                           "Please run Stage-1 training first.")
-
-        self.stored_latents = self._load_stored_latents()
-        print(f"[Stage-2] Loaded {len(self.stored_latents)} latent files from Stage-1")
-
-        # Validation batch counter
+        # Counter for unique batch identification
         self.global_val_batch_idx = 0
 
         # Audio samples for logging (6 samples: noisy, clean, denoised)
         self.val_audio_samples = []
         self.max_audio_samples = 6
-
-    def _load_stored_latents(self):
-        """Load all stored latents from Stage-1."""
-        latent_files = sorted(self.latents_dir.glob('val_batch_*.pt'))
-
-        if not latent_files:
-            raise ValueError(f"No latent files found in {self.latents_dir}. "
-                           "Please run Stage-1 training first.")
-
-        stored_latents = {}
-
-        for latent_file in latent_files:
-            try:
-                data = torch.load(latent_file, map_location='cpu')
-                batch_idx = data.get('batch_idx', None)
-
-                if batch_idx is not None:
-                    stored_latents[batch_idx] = data
-                else:
-                    # Fallback: extract batch_idx from filename
-                    filename = latent_file.stem  # val_batch_000123
-                    idx = int(filename.split('_')[-1])
-                    stored_latents[idx] = data
-
-            except Exception as e:
-                print(f"[WARNING] Failed to load {latent_file}: {e}")
-
-        print(f"[Stage-2] Successfully loaded {len(stored_latents)} latent files")
-        return stored_latents
 
     def _get_pesq_resampler(self):
         """
@@ -217,7 +165,7 @@ class CleanUNet2Stage2Module(pl.LightningModule):
             self._pesq_resampler_cache = torchaudio.transforms.Resample(
                 orig_freq=self._pesq_resampler_config['orig_freq'],
                 new_freq=self._pesq_resampler_config['new_freq']
-            )
+            ).to(self.device)  # Move to same device as model
         return self._pesq_resampler_cache
 
     def load_state_dict(self, state_dict, strict=True):
@@ -258,25 +206,25 @@ class CleanUNet2Stage2Module(pl.LightningModule):
         # Call parent's load_state_dict with filtered dict
         return super().load_state_dict(filtered_state_dict, strict=strict)
 
-    def forward(self, noisy_wav, noisy_spec):
-        return self.model(noisy_wav, noisy_spec, clean_audio=None)
+    def forward(self, noisy_wav, noisy_spec, clean_wav=None):
+        return self.model(noisy_wav, noisy_spec, clean_wav)
 
     def training_step(self, batch, batch_idx):
-        # Handle both dataset formats: with and without file paths
+        # Unpack batch (may include file paths for caching)
         if len(batch) == 5:
-            noisy_wav, noisy_spec, clean_wav, clean_spec, clean_audio_paths = batch
+            noisy_wav, noisy_spec, clean_wav, clean_spec, clean_paths = batch
         else:
             noisy_wav, noisy_spec, clean_wav, clean_spec = batch
+            clean_paths = None
 
-        # Forward without X-Vectors
+        # Forward with X-Vectors (with optional caching)
         enhanced, enhanced_spec, latents = self.model(
-            noisy_wav, noisy_spec, clean_audio=None,
+            noisy_wav, noisy_spec, clean_wav,
+            clean_audio_paths=clean_paths,
             return_latents=True
         )
 
-        predicted_latent = latents['predicted_latent']
-
-        # ===== Compute Reconstruction Losses =====
+        # Compute losses
         loss_waveform = self.criterion(clean_wav, enhanced)
 
         loss_spec = F.l1_loss(
@@ -286,45 +234,47 @@ class CleanUNet2Stage2Module(pl.LightningModule):
 
         loss_phase = self.phase_loss(enhanced, clean_wav)
 
-        loss_recon = (self.weight_waveform * loss_waveform +
+        total_loss = (self.weight_waveform * loss_waveform +
                      self.weight_spec * loss_spec +
                      self.weight_phase * loss_phase)
 
-        # ===== Compute Latent Replication Loss =====
-        # Note: In training, we don't have direct correspondence with validation batches
-        # So we skip latent loss during training (only reconstruction)
-        # Latent loss is primarily for validation/evaluation
-        loss_latent = torch.tensor(0.0, device=self.device)
-
-        # Total loss (Eq. 5 from paper)
-        total_loss = loss_recon + self.gamma_latent * loss_latent
-
         # Logging
         self.log('train/loss', total_loss, on_step=True, on_epoch=True, prog_bar=True)
-        self.log('train/loss_recon', loss_recon, on_step=False, on_epoch=True)
         self.log('train/loss_waveform', loss_waveform, on_step=False, on_epoch=True)
         self.log('train/loss_spec', loss_spec, on_step=False, on_epoch=True)
         self.log('train/loss_phase', loss_phase, on_step=False, on_epoch=True)
-        self.log('train/loss_latent', loss_latent, on_step=False, on_epoch=True)
 
         return total_loss
 
     def validation_step(self, batch, batch_idx):
-        # Handle both dataset formats: with and without file paths
+        # Unpack batch (may include file paths for caching)
         if len(batch) == 5:
-            noisy_wav, noisy_spec, clean_wav, clean_spec, clean_audio_paths = batch
+            noisy_wav, noisy_spec, clean_wav, clean_spec, clean_paths = batch
         else:
             noisy_wav, noisy_spec, clean_wav, clean_spec = batch
+            clean_paths = None
 
-        # Forward without X-Vectors
+        # Forward with X-Vectors (with optional caching)
         enhanced, enhanced_spec, latents = self.model(
-            noisy_wav, noisy_spec, clean_audio=None,
+            noisy_wav, noisy_spec, clean_wav,
+            clean_audio_paths=clean_paths,
             return_latents=True
         )
 
-        predicted_latent = latents['predicted_latent']
+        # ===== Save Latents for Stage-2 =====
+        latent_path = self.latents_dir / f"val_batch_{self.global_val_batch_idx:06d}.pt"
+        torch.save({
+            'fused_latent': latents['fused_latent'].cpu(),
+            'embedding': latents['embedding'].cpu(),  # Works for both xvector and wav2vec2
+            'latent': latents['latent'].cpu(),
+            'noisy_wav': noisy_wav.cpu(),
+            'clean_wav': clean_wav.cpu(),
+            'batch_idx': self.global_val_batch_idx
+        }, latent_path)
 
-        # ===== Compute Reconstruction Losses =====
+        self.global_val_batch_idx += 1
+
+        # ===== Compute Losses =====
         loss_waveform = self.criterion(clean_wav, enhanced)
 
         loss_spec = F.l1_loss(
@@ -334,35 +284,9 @@ class CleanUNet2Stage2Module(pl.LightningModule):
 
         loss_phase = self.phase_loss(enhanced, clean_wav)
 
-        loss_recon = (self.weight_waveform * loss_waveform +
+        total_loss = (self.weight_waveform * loss_waveform +
                      self.weight_spec * loss_spec +
                      self.weight_phase * loss_phase)
-
-        # ===== Compute Latent Replication Loss =====
-        if self.global_val_batch_idx in self.stored_latents:
-            stored_data = self.stored_latents[self.global_val_batch_idx]
-            stored_latent = stored_data['fused_latent'].to(self.device)
-
-            # Handle batch size mismatch (e.g., last batch may be smaller)
-            batch_size_pred = predicted_latent.size(0)
-            batch_size_stored = stored_latent.size(0)
-
-            if batch_size_pred != batch_size_stored:
-                # Use the minimum batch size to compare only matching samples
-                min_batch_size = min(batch_size_pred, batch_size_stored)
-                predicted_latent_slice = predicted_latent[:min_batch_size]
-                stored_latent_slice = stored_latent[:min_batch_size]
-                loss_latent = F.mse_loss(predicted_latent_slice, stored_latent_slice)
-            else:
-                # L2 loss between predicted and stored latents
-                loss_latent = F.mse_loss(predicted_latent, stored_latent)
-        else:
-            loss_latent = torch.tensor(0.0, device=self.device)
-
-        # Total loss
-        total_loss = loss_recon + self.gamma_latent * loss_latent
-
-        self.global_val_batch_idx += 1
 
         # ===== Compute Metrics (Safe Mode) =====
         # Disable autocast for metrics computation to ensure float32 precision
@@ -388,11 +312,11 @@ class CleanUNet2Stage2Module(pl.LightningModule):
                         preds_pesq = preds
                         target_pesq = target
 
-                    # CORRECTED: PESQ expects (reference, degraded) order, i.e., (clean, enhanced)
                     # Move to CPU for PESQ calculation (PESQ internal weights are on CPU)
                     preds_pesq_cpu = preds_pesq.cpu()
                     target_pesq_cpu = target_pesq.cpu()
 
+                    # CORRECTED: PESQ expects (reference, degraded) order, i.e., (clean, enhanced)
                     val_pesq = self.val_pesq(target_pesq_cpu, preds_pesq_cpu)
                 except Exception as e:
                     print(f"[WARNING] PESQ computation failed: {e}")
@@ -427,8 +351,6 @@ class CleanUNet2Stage2Module(pl.LightningModule):
         # Logging
         self.log('val_loss', total_loss, prog_bar=False, on_epoch=True, sync_dist=True)
         self.log('val/loss', total_loss, prog_bar=True, on_epoch=True, sync_dist=True)
-        self.log('val/loss_recon', loss_recon, on_epoch=True, sync_dist=True)
-        self.log('val/loss_latent', loss_latent, on_epoch=True, sync_dist=True)
         self.log('val/pesq', val_pesq, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         self.log('val/stoi', val_stoi, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         self.log('val/si_sdr', val_sisdr, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
@@ -437,6 +359,11 @@ class CleanUNet2Stage2Module(pl.LightningModule):
         return total_loss
 
     def on_validation_epoch_end(self):
+        print(f"\n[Stage-1] Validation epoch ended")
+        print(f"[Stage-1] Latents saved to: {self.latents_dir}")
+        print(f"[Stage-1] Total latent files: {len(list(self.latents_dir.glob('*.pt')))}")
+        print(f"[Stage-1] Global val batch index: {self.global_val_batch_idx}")
+
         # ===== Log Audio Samples =====
         if len(self.val_audio_samples) > 0:
             # Use the sample rate saved during initialization
@@ -492,25 +419,23 @@ class CleanUNet2Stage2Module(pl.LightningModule):
                             pass  # WandB not available
 
                     except Exception as e:
-                        print(f"[Stage-2] Warning: Could not log audio sample {idx}: {e}")
+                        print(f"[Stage-1] Warning: Could not log audio sample {idx}: {e}")
 
-            print(f"[Stage-2] Logged {len(self.val_audio_samples)} audio samples")
+            print(f"[Stage-1] Logged {len(self.val_audio_samples)} audio samples\n")
 
             # Clear samples for next epoch
             self.val_audio_samples = []
 
-        # Reset counter for next epoch
-        self.global_val_batch_idx = 0
-
     def configure_optimizers(self):
         optimizer_cfg = self.config.get('optimizer', {})
-        lr = float(optimizer_cfg.get('lr', 1e-4))
+        lr = float(optimizer_cfg.get('lr', optimizer_cfg.get('learning_rate', 1e-4)))
         betas = optimizer_cfg.get('betas', [0.9, 0.999])
 
-        # All parameters are trainable in Stage-2 (no frozen X-Vector extractor)
-        optimizer = torch.optim.AdamW(self.parameters(), lr=lr, betas=betas)
+        # Filter trainable parameters (X-Vector extractor is frozen)
+        trainable_params = filter(lambda p: p.requires_grad, self.parameters())
 
-        print(f"[Stage-2] Optimizer: AdamW(lr={lr}, betas={betas})")
+        optimizer = torch.optim.AdamW(trainable_params, lr=lr, betas=betas)
+
+        print(f"[Stage-1] Optimizer: AdamW(lr={lr}, betas={betas})")
 
         return optimizer
-
