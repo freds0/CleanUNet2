@@ -152,7 +152,7 @@ class XVectorExtractor(nn.Module):
                 print("-" * 80)
                 print("If you already have a Stage-1 checkpoint, go directly to Stage-2:")
                 print("")
-                print("  python train_xvector.py --config configs/train_xvector_vanilla_stage2.yaml --stage stage2")
+                print("  python train.py --config configs/train_xvector_vanilla_stage2.yaml --stage stage2")
                 print("")
                 print("=" * 80 + "\n")
                 raise RuntimeError("X-Vector model download failed. See instructions above.") from e

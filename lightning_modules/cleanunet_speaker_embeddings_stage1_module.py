@@ -1,7 +1,7 @@
 """
-PyTorch Lightning module for CleanUNet2 Stage-1 training with X-Vectors.
+PyTorch Lightning module for CleanUNet2 Stage-1 training with Speaker Embeddings.
 
-Stage-1: Training with X-Vectors injected into latent space.
+Stage-1: Training with speaker embeddings (X-Vector) injected into latent space.
 The model learns to denoise using speaker embeddings as guidance.
 Latent vectors are saved for Stage-2 training.
 """
@@ -12,7 +12,7 @@ import pytorch_lightning as pl
 from pathlib import Path
 import torchaudio
 
-from cleanunet.cleanunet2_with_xvector import CleanUNet2WithXVector
+from cleanunet.cleanunet2_with_speaker_embeddings import CleanUNet2WithSpeakerEmbeddings
 from losses import CleanUNet2Loss, MultiResolutionSTFTLoss, AntiWrappingPhaseLoss
 
 # Import TorchMetrics
@@ -21,11 +21,11 @@ from torchmetrics.audio import ShortTimeObjectiveIntelligibility
 from torchmetrics.audio import ScaleInvariantSignalNoiseRatio
 
 
-class CleanUNet2Stage1Module(pl.LightningModule):
+class CleanUNet2SpeakerEmbeddingsStage1Module(pl.LightningModule):
     """
-    Lightning module for Stage-1 training (with X-Vectors).
+    Lightning module for Stage-1 training with Speaker Embeddings (X-Vector).
 
-    Trains the model using X-Vector embeddings extracted from clean audio.
+    Trains the model using speaker embeddings extracted from clean audio.
     Saves fused latent vectors for Stage-2 training.
     """
 
@@ -35,26 +35,20 @@ class CleanUNet2Stage1Module(pl.LightningModule):
         self.config = config
 
         print("=" * 80)
-        print("STAGE-1: Training with X-Vectors")
+        print("STAGE-1: Training with Speaker Embeddings (X-Vector)")
         print("=" * 80)
 
         # ===== Model Initialization =====
         model_config = config.get('model', {})
 
-        # X-Vector cache configuration
-        xvector_cache_enabled = model_config.get('xvector_cache_enabled', False)
-        xvector_cache_dir = model_config.get('xvector_cache_dir', 'xvector_cache')
-
-        self.model = CleanUNet2WithXVector(
+        self.model = CleanUNet2WithSpeakerEmbeddings(
             stage='stage1',
-            use_xvector=True,
-            xvector_dim=model_config.get('xvector_dim', 512),
             conditioning_type=model_config.get('conditioning_type', 'addition'),
             cleanunet_params=model_config.get('cleanunet_params', {}),
             cleanspecnet_params=model_config.get('cleanspecnet_params', {}),
             xvector_local_path=model_config.get('xvector_local_path', None),
-            xvector_cache_enabled=xvector_cache_enabled,
-            xvector_cache_dir=xvector_cache_dir
+            xvector_cache_dir=model_config.get('xvector_cache_dir', None),
+            use_preextracted_embeddings=model_config.get('use_preextracted_embeddings', False),
         )
 
         # ===== Load Vanilla Checkpoint (Optional) =====
@@ -73,14 +67,16 @@ class CleanUNet2Stage1Module(pl.LightningModule):
         mrstft_loss = MultiResolutionSTFTLoss(
             fft_sizes=stft_cfg.get('fft_sizes', [512, 1024, 2048]),
             hop_sizes=stft_cfg.get('hop_sizes', [128, 256, 512]),
-            win_lengths=stft_cfg.get('win_lengths', [512, 1024, 2048])
+            win_lengths=stft_cfg.get('win_lengths', [512, 1024, 2048]),
+            sc_lambda=loss_cfg.get('sc_lambda', 0.1),
+            mag_lambda=loss_cfg.get('mag_lambda', 0.1)
         )
 
         # Primary waveform loss
         self.criterion = CleanUNet2Loss(
-            ell_p=1,
-            ell_p_lambda=1.0,
-            stft_lambda=1.0,
+            ell_p=loss_cfg.get('ell_p', 1),
+            ell_p_lambda=loss_cfg.get('ell_p_lambda', 1.0),
+            stft_lambda=loss_cfg.get('stft_lambda', 1.0),
             mrstftloss=mrstft_loss
         )
 
@@ -110,11 +106,9 @@ class CleanUNet2Stage1Module(pl.LightningModule):
                 f"PESQ requires at least 8000 Hz. Please use sample_rate >= 8000 in your config."
             )
         elif sr in [8000, 16000]:
-            # Use sample rate directly for PESQ
             self.pesq_sample_rate = sr
             print(f"[Stage-1] Using sample rate {sr} Hz for PESQ metric")
         else:
-            # Sample rate > 16000: downsample to 16kHz for PESQ calculation
             self.pesq_sample_rate = 16000
             print(f"[Stage-1] ⚠️  WARNING: Sample rate is {sr} Hz, but PESQ only supports 8kHz/16kHz.")
             print(f"[Stage-1] Audio will be downsampled to {self.pesq_sample_rate} Hz for PESQ calculation.")
@@ -166,19 +160,16 @@ class CleanUNet2Stage1Module(pl.LightningModule):
         This handles cases where old checkpoints have keys that don't exist in the current model,
         such as _pesq_resampler_cache which was changed from a saved object to None.
         """
-        # List of keys to ignore (known incompatibilities from old checkpoints)
         keys_to_ignore = [
             '_pesq_resampler_cache.kernel',
             '_pesq_resampler_cache.width',
             '_pesq_resampler_cache',
         ]
 
-        # Filter out incompatible keys
         filtered_state_dict = {}
         ignored_keys = []
 
         for key, value in state_dict.items():
-            # Check if this key should be ignored
             should_ignore = any(key.startswith(ignore_key) for ignore_key in keys_to_ignore)
 
             if should_ignore:
@@ -186,15 +177,13 @@ class CleanUNet2Stage1Module(pl.LightningModule):
             else:
                 filtered_state_dict[key] = value
 
-        # Print info about ignored keys
         if ignored_keys:
             print(f"[INFO] Ignoring {len(ignored_keys)} incompatible keys from checkpoint:")
-            for key in ignored_keys[:5]:  # Show first 5
+            for key in ignored_keys[:5]:
                 print(f"  - {key}")
             if len(ignored_keys) > 5:
                 print(f"  ... and {len(ignored_keys) - 5} more")
 
-        # Call parent's load_state_dict with filtered dict
         return super().load_state_dict(filtered_state_dict, strict=strict)
 
     def forward(self, noisy_wav, noisy_spec, clean_wav=None):
@@ -208,7 +197,7 @@ class CleanUNet2Stage1Module(pl.LightningModule):
             noisy_wav, noisy_spec, clean_wav, clean_spec = batch
             clean_paths = None
 
-        # Forward with X-Vectors (with optional caching)
+        # Forward with speaker embeddings (with optional caching)
         enhanced, enhanced_spec, latents = self.model(
             noisy_wav, noisy_spec, clean_wav,
             clean_audio_paths=clean_paths,
@@ -245,7 +234,7 @@ class CleanUNet2Stage1Module(pl.LightningModule):
             noisy_wav, noisy_spec, clean_wav, clean_spec = batch
             clean_paths = None
 
-        # Forward with X-Vectors (with optional caching)
+        # Forward with speaker embeddings (with optional caching)
         enhanced, enhanced_spec, latents = self.model(
             noisy_wav, noisy_spec, clean_wav,
             clean_audio_paths=clean_paths,
@@ -256,7 +245,7 @@ class CleanUNet2Stage1Module(pl.LightningModule):
         latent_path = self.latents_dir / f"val_batch_{self.global_val_batch_idx:06d}.pt"
         torch.save({
             'fused_latent': latents['fused_latent'].cpu(),
-            'xvector_emb': latents['xvector_emb'].cpu(),
+            'embedding': latents['embedding'].cpu(),
             'latent': latents['latent'].cpu(),
             'noisy_wav': noisy_wav.cpu(),
             'clean_wav': clean_wav.cpu(),
@@ -280,9 +269,7 @@ class CleanUNet2Stage1Module(pl.LightningModule):
                      self.weight_phase * loss_phase)
 
         # ===== Compute Metrics (Safe Mode) =====
-        # Disable autocast for metrics computation to ensure float32 precision
         with torch.amp.autocast(device_type="cuda", enabled=False):
-            # Convert to float32 for metrics (AMP uses float16, but metrics need float32)
             preds = enhanced.squeeze(1).float()
             target = clean_wav.squeeze(1).float()
 
@@ -294,7 +281,6 @@ class CleanUNet2Stage1Module(pl.LightningModule):
                 val_sisdr = torch.tensor(-50.0, device=self.device)
             else:
                 try:
-                    # Resample for PESQ if needed
                     pesq_resampler = self._get_pesq_resampler()
                     if pesq_resampler is not None:
                         preds_pesq = pesq_resampler(preds)
@@ -303,24 +289,21 @@ class CleanUNet2Stage1Module(pl.LightningModule):
                         preds_pesq = preds
                         target_pesq = target
 
-                    # CORRECTED: PESQ expects (reference, degraded) order, i.e., (clean, enhanced)
-                    # Move to CPU for PESQ calculation (PESQ internal weights are on CPU)
                     preds_pesq_cpu = preds_pesq.cpu()
                     target_pesq_cpu = target_pesq.cpu()
 
                     val_pesq = self.val_pesq(target_pesq_cpu, preds_pesq_cpu)
-                except Exception:
+                except Exception as e:
+                    print(f"[WARNING] PESQ computation failed: {e}")
                     val_pesq = torch.tensor(1.0, device=self.device)
 
                 try:
-                    # CORRECTED: STOI expects (reference, degraded) order
                     val_stoi = self.val_stoi(target, preds)
                 except Exception as e:
                     print(f"[WARNING] STOI computation failed: {e}")
                     val_stoi = torch.tensor(1e-5, device=self.device)
 
                 try:
-                    # CORRECTED: SI-SDR expects (reference, degraded) order
                     val_sisdr = self.val_sisdr(target, preds)
                 except Exception as e:
                     print(f"[WARNING] SI-SDR computation failed: {e}")
@@ -331,7 +314,6 @@ class CleanUNet2Stage1Module(pl.LightningModule):
 
         # ===== Collect Audio Samples for Logging =====
         if len(self.val_audio_samples) < self.max_audio_samples:
-            # Collect first sample from batch
             self.val_audio_samples.append({
                 'noisy': noisy_wav[0].detach().cpu(),
                 'clean': clean_wav[0].detach().cpu(),
@@ -356,41 +338,26 @@ class CleanUNet2Stage1Module(pl.LightningModule):
 
         # ===== Log Audio Samples =====
         if len(self.val_audio_samples) > 0:
-            # Use the sample rate saved during initialization
             sr = self.sample_rate
-
-            # Handle both single logger and multiple loggers (list)
             loggers = self.logger if isinstance(self.logger, list) else [self.logger] if self.logger else []
 
             for idx, sample in enumerate(self.val_audio_samples):
-                # Iterate over all loggers
                 for logger in loggers:
                     if logger is None:
                         continue
 
                     try:
-                        # TensorBoard logger
                         if hasattr(logger.experiment, 'add_audio'):
                             logger.experiment.add_audio(
-                                f'audio/sample_{idx}_noisy',
-                                sample['noisy'],
-                                self.current_epoch,
-                                sample_rate=sr
+                                f'audio/sample_{idx}_noisy', sample['noisy'], self.current_epoch, sample_rate=sr
                             )
                             logger.experiment.add_audio(
-                                f'audio/sample_{idx}_clean',
-                                sample['clean'],
-                                self.current_epoch,
-                                sample_rate=sr
+                                f'audio/sample_{idx}_clean', sample['clean'], self.current_epoch, sample_rate=sr
                             )
                             logger.experiment.add_audio(
-                                f'audio/sample_{idx}_denoised',
-                                sample['denoised'],
-                                self.current_epoch,
-                                sample_rate=sr
+                                f'audio/sample_{idx}_denoised', sample['denoised'], self.current_epoch, sample_rate=sr
                             )
 
-                        # WandB logger
                         try:
                             import wandb
                             if isinstance(logger.experiment, wandb.sdk.wandb_run.Run):
@@ -413,7 +380,6 @@ class CleanUNet2Stage1Module(pl.LightningModule):
 
             print(f"[Stage-1] Logged {len(self.val_audio_samples)} audio samples\n")
 
-            # Clear samples for next epoch
             self.val_audio_samples = []
 
     def configure_optimizers(self):
@@ -421,107 +387,11 @@ class CleanUNet2Stage1Module(pl.LightningModule):
         lr = float(optimizer_cfg.get('lr', 1e-4))
         betas = optimizer_cfg.get('betas', [0.9, 0.999])
 
-        # DESCONGELAR TODOS OS MÓDULOS EXCETO X-Vector extractor
-        print("[Stage-1] Descongelando todos os módulos (exceto X-Vector extractor)...")
-        for name, param in self.named_parameters():
-            # Manter X-Vector extractor congelado (modelo pré-treinado)
-            if 'xvector_extractor' in name:
-                param.requires_grad = False
-            else:
-                if not param.requires_grad:
-                    print(f"  - Descongelando: {name}")
-                param.requires_grad = True
-
-        # Filtrar apenas parâmetros treináveis (exclui X-Vector extractor)
+        # Filter trainable parameters (X-Vector extractor is frozen)
         trainable_params = filter(lambda p: p.requires_grad, self.parameters())
+
         optimizer = torch.optim.AdamW(trainable_params, lr=lr, betas=betas)
 
-        # Estatísticas de parâmetros
-        total_params = sum(p.numel() for p in self.parameters())
-        trainable_params_count = sum(p.numel() for p in self.parameters() if p.requires_grad)
-        frozen_params_count = total_params - trainable_params_count
-
         print(f"[Stage-1] Optimizer: AdamW(lr={lr}, betas={betas})")
-        print(f"[Stage-1] Total params: {total_params:,}")
-        print(f"[Stage-1] Trainable params: {trainable_params_count:,}")
-        print(f"[Stage-1] Frozen params (X-Vector): {frozen_params_count:,}")
-
-        # ===== Learning Rate Scheduler (Optional) =====
-        scheduler_cfg = self.config.get('lr_scheduler', {})
-        if scheduler_cfg:
-            scheduler_type = scheduler_cfg.get('type', None)
-
-            if scheduler_type == 'cosine_annealing_warm_restarts':
-                params = scheduler_cfg.get('cosine_annealing_warm_restarts', {})
-                scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
-                    optimizer,
-                    T_0=params.get('T_0', 50),
-                    T_mult=params.get('T_mult', 2),
-                    eta_min=params.get('eta_min', 1e-7)
-                )
-                print(f"[Stage-1] LR Scheduler: CosineAnnealingWarmRestarts(T_0={params.get('T_0', 50)}, T_mult={params.get('T_mult', 2)}, eta_min={params.get('eta_min', 1e-7)})")
-                return {
-                    'optimizer': optimizer,
-                    'lr_scheduler': {
-                        'scheduler': scheduler,
-                        'interval': 'epoch',
-                        'frequency': 1
-                    }
-                }
-
-            elif scheduler_type == 'reduce_on_plateau':
-                params = scheduler_cfg.get('reduce_on_plateau', {})
-                scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-                    optimizer,
-                    mode=params.get('mode', 'min'),
-                    factor=params.get('factor', 0.5),
-                    patience=params.get('patience', 10),
-                    min_lr=params.get('min_lr', 1e-7)
-                )
-                print(f"[Stage-1] LR Scheduler: ReduceLROnPlateau(mode={params.get('mode', 'min')}, factor={params.get('factor', 0.5)}, patience={params.get('patience', 10)})")
-                return {
-                    'optimizer': optimizer,
-                    'lr_scheduler': {
-                        'scheduler': scheduler,
-                        'monitor': params.get('monitor', 'val_loss'),
-                        'interval': 'epoch',
-                        'frequency': 1
-                    }
-                }
-
-            elif scheduler_type == 'exponential':
-                params = scheduler_cfg.get('exponential', {})
-                scheduler = torch.optim.lr_scheduler.ExponentialLR(
-                    optimizer,
-                    gamma=params.get('gamma', 0.995)
-                )
-                print(f"[Stage-1] LR Scheduler: ExponentialLR(gamma={params.get('gamma', 0.995)})")
-                return {
-                    'optimizer': optimizer,
-                    'lr_scheduler': {
-                        'scheduler': scheduler,
-                        'interval': 'epoch',
-                        'frequency': 1
-                    }
-                }
-
-            elif scheduler_type == 'cosine_annealing':
-                params = scheduler_cfg.get('cosine_annealing', {})
-                scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-                    optimizer,
-                    T_max=params.get('T_max', 1000),
-                    eta_min=params.get('eta_min', 1e-7)
-                )
-                print(f"[Stage-1] LR Scheduler: CosineAnnealingLR(T_max={params.get('T_max', 1000)}, eta_min={params.get('eta_min', 1e-7)})")
-                return {
-                    'optimizer': optimizer,
-                    'lr_scheduler': {
-                        'scheduler': scheduler,
-                        'interval': 'epoch',
-                        'frequency': 1
-                    }
-                }
-            else:
-                print(f"[Stage-1] Warning: Unknown scheduler type '{scheduler_type}'. Using optimizer without scheduler.")
 
         return optimizer

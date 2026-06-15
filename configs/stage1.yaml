@@ -1,8 +1,17 @@
-# configs/train_xvector_optimized_stage1_lr_decay.yaml
-# Stage-1 Training Configuration: Optimized with Best Hyperparameters + LR Decay
+# ============================================================================
+# SSL BACKBONE (standardized documentation -- see CONFIG_STANDARDIZATION_REPORT.md)
+# ssl_model_name: speechbrain/spkrec-xvect-voxceleb
+# ssl_model_size: tdnn-xvect
+# ssl_hidden_size: 512
+# ssl_num_layers: 5
+# ssl_embedding_strategy: utterance_level_speaker_embedding
+# selected_layers: []  # not an SSL layer model
+# ============================================================================
+# configs/train_xvector_optimized_stage1.yaml
+# Stage-1 Training Configuration: Optimized with Best Hyperparameters
 # X-Vectors are extracted from clean audio and fused into latent space
 #
-# Configuração Otimizada com Learning Rate Decay:
+# Configuração Otimizada baseada nos melhores experimentos:
 # - lr: 5e-5 (exp04)
 # - conditioning: FiLM (exp09)
 # - loss: L1 (exp10)
@@ -12,7 +21,6 @@
 # - batch_size: 4 (exp22 - MELHOR EXPERIMENTO GERAL)
 # - precision: fp16-mixed (exp25)
 # - grad_clip: 5.0 (exp29)
-# + LR Scheduler: CosineAnnealingWarmRestarts
 
 # ----------------------
 # Trainer configuration
@@ -20,7 +28,7 @@
 trainer:
   accelerator: auto
   devices: 1
-  max_epochs: 500  # 1000 épocas como solicitado
+  max_epochs: 1000  # 1000 épocas como solicitado
   precision: 16-mixed  # fp16-mixed (exp25)
   log_every_n_steps: 50
   check_val_every_n_epoch: 5
@@ -32,9 +40,9 @@ trainer:
 # Global / runtime
 # ----------------------
 seed: 1234
-checkpoint_dir: experiments/exp_xvector_optimized_stage1_lr_decay/checkpoints
-logging_dir: experiments/exp_xvector_optimized_stage1_lr_decay
-latents_dir: experiments/exp_xvector_optimized_stage1_lr_decay/stored_latents_stage1
+checkpoint_dir: experiments/exp_xvector_optimized_stage1/checkpoints
+logging_dir: experiments/exp_xvector_optimized_stage1
+latents_dir: experiments/exp_xvector_optimized_stage1/stored_latents_stage1
 
 # ----------------------
 # Audio configuration
@@ -52,7 +60,7 @@ model:
 
   # X-Vector Cache (to avoid re-extracting x-vectors on every step)
   xvector_cache_enabled: true
-  xvector_cache_dir: experiments/exp_xvector_optimized_stage1_lr_decay/xvector_cache_stage1
+  xvector_cache_dir: experiments/exp_xvector_optimized_stage1/xvector_cache_stage1
 
   # Optional: Load vanilla CleanUNet2 checkpoint for warm start
   # Descomente e ajuste o caminho se desejar usar warm start
@@ -112,65 +120,65 @@ losses:
 # Optimizer Configuration
 # ----------------------
 optimizer:
-  lr: 5.0e-05  # exp04 - learning rate otimizada (inicial)
+  lr: 5.0e-05  # exp04 - learning rate otimizada
   betas: [0.9, 0.999]
-
-# ----------------------
-# Learning Rate Scheduler
-# ----------------------
-# Opções disponíveis:
-# 1. cosine_annealing_warm_restarts - Reduz LR com cosine e reinicia periodicamente
-# 2. reduce_on_plateau - Reduz LR quando métrica para de melhorar
-# 3. exponential - Reduz LR exponencialmente a cada época
-# 4. cosine_annealing - Reduz LR com cosine até T_max épocas
-lr_scheduler:
-  # Escolha o scheduler (descomente apenas um)
-  type: cosine_annealing_warm_restarts  # RECOMENDADO para treinamentos longos
-  # type: reduce_on_plateau
-  # type: exponential
-  # type: cosine_annealing
-
-  # === Parâmetros para CosineAnnealingWarmRestarts ===
-  # Reduz LR seguindo uma curva cosine e reinicia periodicamente
-  cosine_annealing_warm_restarts:
-    T_0: 50        # Reinicia a cada 50 épocas
-    T_mult: 2      # Multiplica T_0 por 2 após cada reinício (50, 100, 200, ...)
-    eta_min: 1.0e-07  # LR mínimo (não vai abaixo disso)
-
-  # === Parâmetros para ReduceLROnPlateau ===
-  # Reduz LR quando val_loss para de melhorar
-  reduce_on_plateau:
-    monitor: val_loss
-    mode: min
-    factor: 0.5     # Reduz LR para 50% do valor atual
-    patience: 10    # Espera 10 épocas sem melhora antes de reduzir
-    min_lr: 1.0e-07    # LR mínimo
-    verbose: true
-
-  # === Parâmetros para ExponentialLR ===
-  # Reduz LR exponencialmente: lr = lr * gamma a cada época
-  exponential:
-    gamma: 0.995    # lr multiplicado por 0.995 a cada época
-
-  # === Parâmetros para CosineAnnealingLR ===
-  # Reduz LR seguindo curva cosine até T_max
-  cosine_annealing:
-    T_max: 1000     # Número total de épocas
-    eta_min: 1.0e-07  # LR mínimo
 
 # ----------------------
 # Data configuration
 # ----------------------
 data:
-  data_dir: /home/ubuntu/fred-experiments/DATASETS/VoiceBank-DEMAND-16k
+  data_dir: /raid/user_fredoliveira/DATASETS/VoiceBank-DEMAND-16k/
   train_list_path: filelists/train.csv
   val_list_path: filelists/test.csv
-  batch_size: 16  # exp22 - MELHOR EXPERIMENTO GERAL
+  batch_size: 4  # exp22 - MELHOR EXPERIMENTO GERAL
   num_workers: 8
   persistent_workers: true
   segment_size: 32768  # Tamanho do segmento para 16kHz
   sampling_rate: 16000
   use_xvector_cache: true  # Use caching for x-vectors
+
+  # ============================================================
+  # Data Augmentation (On-the-Fly) - Opcional
+  # ============================================================
+  # Descomente se desejar usar augmentações on-the-fly
+  # augmentations:
+  #   # 1. Ruído colorido (pink, brown, white)
+  #   - name: AddColoredNoise
+  #     params:
+  #       min_snr_in_db: -5.0
+  #       max_snr_in_db: 20.0
+  #       min_f_decay: -2.0
+  #       max_f_decay: 2.0
+  #       p: 0.7
+  #
+  #   # 2. Ruído de fundo (sons ambientais)
+  #   - name: AddBackgroundNoise
+  #     params:
+  #       background_paths: /raid/user_fredoliveira/DATASETS/NOISES/
+  #       min_snr_in_db: -10.0
+  #       max_snr_in_db: 15.0
+  #       p: 0.5
+  #
+  #   # 3. Variação de volume
+  #   - name: Gain
+  #     params:
+  #       min_gain_in_db: -12.0
+  #       max_gain_in_db: 6.0
+  #       p: 0.5
+  #
+  #   # 4. Filtro passa-baixa
+  #   - name: LowPassFilter
+  #     params:
+  #       min_cutoff_freq: 2000.0
+  #       max_cutoff_freq: 8000.0
+  #       p: 0.3
+  #
+  #   # 5. Filtro passa-alta
+  #   - name: HighPassFilter
+  #     params:
+  #       min_cutoff_freq: 100.0
+  #       max_cutoff_freq: 400.0
+  #       p: 0.3
 
 # ----------------------
 # Callbacks
@@ -180,7 +188,7 @@ callbacks:
   best_checkpoint:
     _target_: pytorch_lightning.callbacks.ModelCheckpoint
     monitor: val_loss
-    dirpath: experiments/exp_xvector_optimized_stage1_lr_decay/checkpoints
+    dirpath: experiments/exp_xvector_optimized_stage1/checkpoints
     filename: stage1-best-{epoch:02d}-{val_loss:.4f}
     save_top_k: 3
     mode: min
@@ -188,7 +196,7 @@ callbacks:
   # Periodic checkpointing
   periodic_checkpoint:
     _target_: pytorch_lightning.callbacks.ModelCheckpoint
-    dirpath: experiments/exp_xvector_optimized_stage1_lr_decay/checkpoints
+    dirpath: experiments/exp_xvector_optimized_stage1/checkpoints
     filename: stage1-epoch-{epoch:04d}
     every_n_epochs: 10
     save_top_k: 5
@@ -200,14 +208,9 @@ callbacks:
   early_stopping:
     _target_: pytorch_lightning.callbacks.EarlyStopping
     monitor: val_loss
-    patience: 30  # Aumentado para 30 devido ao LR scheduler
+    patience: 20
     mode: min
     min_delta: 0.001
-
-  # Learning Rate Monitor (mostra LR no TensorBoard/WandB)
-  lr_monitor:
-    _target_: pytorch_lightning.callbacks.LearningRateMonitor
-    logging_interval: epoch
 
 # ----------------------
 # Logger
@@ -217,15 +220,15 @@ logger:
 
   tensorboard:
     _target_: pytorch_lightning.loggers.TensorBoardLogger
-    save_dir: experiments/exp_xvector_optimized_stage1_lr_decay
+    save_dir: experiments/exp_xvector_optimized_stage1
     name: tb_logs
     default_hp_metric: false
 
   wandb:
     _target_: pytorch_lightning.loggers.WandbLogger
     project: CleanUNet2_XVector_Optimized
-    name: stage1_optimized_lr_decay
-    save_dir: experiments/exp_xvector_optimized_stage1_lr_decay
+    name: stage1_optimized
+    save_dir: experiments/exp_xvector_optimized_stage1
     offline: false
     log_model: true
 
@@ -233,4 +236,4 @@ logger:
 # Resume / checkpoints
 # ----------------------
 # Descomente para retomar treinamento de um checkpoint
-resume_from_checkpoint: experiments/exp_xvector_optimized_stage1_lr_decay/checkpoints/last.ckpt
+resume_from_checkpoint: experiments/exp_xvector_optimized_stage1/checkpoints/last.ckpt

@@ -42,7 +42,7 @@ This repository includes full training, validation, inference workflows using **
 │    ├── config.yaml             # Training configuration
 │    ├── inference.yaml          # Inference configuration
 │
-│── train.py                     # Training script
+│── train.py                     # Training script (X-Vector, two-stage)
 │── inference.py                 # Inference script
 │── metrics.py                   # PESQ/STOI/SI-SDR prediction
 │── losses.py                    # Loss functions (MR-STFT, Phase Loss)
@@ -64,10 +64,14 @@ pip install -r requirements.txt
 
 ## 🎚️ Training
 
-Edit `configs/train.yaml` as needed, then run:
+Training is two-stage with X-Vector (speaker embeddings). Edit a config as needed, then run:
 
 ```bash
-python train.py --config=configs/train.yaml
+# Stage 1: train with X-Vectors extracted from clean audio
+python train.py --config configs/train_xvector_vanilla_stage1.yaml --stage stage1
+
+# Stage 2: replicate Stage-1 latents without the X-Vector extractor
+python train.py --config configs/train_xvector_vanilla_stage2.yaml --stage stage2
 ```
 
 TensorBoard logs will appear under:

@@ -1,3 +1,12 @@
+# ============================================================================
+# SSL BACKBONE (standardized documentation -- see CONFIG_STANDARDIZATION_REPORT.md)
+# ssl_model_name: speechbrain/spkrec-xvect-voxceleb
+# ssl_model_size: tdnn-xvect
+# ssl_hidden_size: 512
+# ssl_num_layers: 5
+# ssl_embedding_strategy: utterance_level_speaker_embedding
+# selected_layers: []  # not an SSL layer model
+# ============================================================================
 # configs/train_xvector_optimized_stage2.yaml
 # Stage-2 Training Configuration: Optimized with Best Hyperparameters
 # Training WITHOUT X-Vectors - replicates Stage-1 fused latents using only noisy audio

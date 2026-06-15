@@ -1,112 +1,68 @@
-# -----------------------------------------------------------
-# Inference configuration for CleanUNet2 Lightning model
-# -----------------------------------------------------------
+# ============================================================================
+# SSL BACKBONE (standardized documentation -- see CONFIG_STANDARDIZATION_REPORT.md)
+# ssl_model_name: speechbrain/spkrec-xvect-voxceleb
+# ssl_model_size: tdnn-xvect
+# ssl_hidden_size: 512
+# ssl_num_layers: 5
+# ssl_embedding_strategy: utterance_level_speaker_embedding
+# selected_layers: []  # not an SSL layer model
+# ============================================================================
+# ============================================================================
+# CleanUNet2 Inference Configuration (Wav2Vec2 ONLY)
+# ============================================================================
 
-# Inference runtime options
 inference:
-  # Directory containing noisy input audio files (one or many .wav)
-  input_dir: "/home/fred/Projetos/DATASETS/VoiceBank-DEMAND-16k/test/noisy/"
-
-  # Output directory where denoised audio will be written.
-  # If it does not exist the script should create it.
-  output_dir: "denoised_results"
-
-  # Path to the checkpoint to load for inference.
-  # Use an absolute path or path relative to your project root.
-  checkpoint_path: "checkpoints_cleanunet2_paper/last.ckpt"
-
-  # Force CPU usage even if CUDA is available. Set to true or false.
-  force_cpu: false
-
-  # File glob / pattern to search for audio files in input_dir.
-  # Example: "*.wav" or "**/*.wav" (if your loader supports recursive globbing).
+  checkpoint_path: "/media/fred/FRED5TB/CleanUNet2-SSL-Experiments/checkpoints_cleanunet2-xvectors/stage2-best-epoch=284-val_loss=3.5667.ckpt"
+  input_dir: "/home/fred/Projetos/DATASETS/VoiceBank-DEMAND-16k/test/noisy"
   input_pattern: "*.wav"
+  output_dir: "./denoised_voicebank/"
+  force_cpu: false
+  use_amp: true
 
-  # Overwrite existing files in output_dir if True.
-  overwrite: false
-
-  batch_size: 16   
-
-  use_amp: true # Mixed Precision
-
-  # Number of worker processes used to load/process audio during inference.
-  # 0 = single-threaded; >0 may speed up I/O for large datasets.
-  num_workers: 0
-
-# ----------------------
-# Model & optimizer hyperparameters
-# ----------------------
 model:
-  # Learning rate used by the optimizer (AdamW in the training script)
-  lr: 1e-4
-  # Sample rate of audio data
-  sample_rate: 16000
+  input_channels: 1
+  channels: 64
+  num_layers: 4
+  kernel_size: 3
+  skip_channels: 128
+  use_wav2vec: true
+  wav2vec_model: "facebook/wav2vec2-xls-r-2b"
+  wav2vec_layer: 24
+  wav2vec_dim: 1024
 
-  # Select the conditioning method here:
-  # Options: "addition", "concatenation", "film"
-  conditioning_type: "film"
-
-    
-  cleanunet_checkpoint: "checkpoints/cleanunet/last.ckpt"
-  cleanspecnet_checkpoint: "checkpoints/cleanspecnet/last.ckpt"
-
-  # Controle de Congelamento (True = Treinar, False = Congelar)
-  train_cleanunet: true        # Mantém CleanUNet congelado
-  train_cleanspecnet: true     # Mantém CleanSpecNet congelado
-
-  # Loss configuration grouped for clarity
-  loss_config:
-    ell_p: 1                 # 1 -> L1, 2 -> L2
-    ell_p_lambda: 1.0        # weight of the waveform reconstruction loss
-    stft_lambda: 1.0         # weight for STFT-based losses inside CleanUNet2Loss
-    sc_lambda: 0.5           # weight for spectral convergence inside MR-STFT
-    mag_lambda: 0.5          # weight for magnitude (log-magnitude) inside MR-STFT
-    # Multi-resolution STFT parameters (must be same length lists)
-    stft_config:
-      fft_sizes: [512, 1024, 2048]
-      hop_sizes: [50, 120, 240]
-      win_lengths: [240, 600, 1200]
-
-# Audio processing parameters (used during pre/post processing)
 audio:
-  # Target sample rate to resample inputs to (Hz). PESQ/STOI usually expect 16k for many setups.
   target_sample_rate: 16000
-
-  # Expected number of channels in input audio. If stereo, loader may mix to mono.
-  target_channels: 1
-
-  # Whether to normalize audio amplitude to -1..1 before feeding the model.
   normalize: true
 
-  # Padding/trimming policy for inputs that are shorter or longer than the model's expectation.
-  # Options: "pad" (zero-pad shorter), "trim" (truncate longer), "none" (no adjustment).
-  pad_trim: "pad"
-
-# Output audio file format settings
 output:
-  # Output file extension/format. torchaudio supports "wav", "flac", etc.
   format: "wav"
+  overwrite: false
 
-  # Bit-depth when saving WAV (16 or 32). Use 16 for standard PCM.
-  bit_depth: 16
-
-  # Whether to apply inverse normalization (if inputs were normalized before inference).
-  undo_normalize: true
-
-# Logging and runtime
 runtime:
-  # Whether to print progress info to stdout during inference.
+  device: "auto"
   verbose: true
-
-  # Save a JSON report with objective metrics (PESQ/STOI/SI-SDR) for each file.
-  save_metrics_report: true
-
-  # Path to write the per-file metrics JSON report (if save_metrics_report is true).
+  save_metrics_report: false
   metrics_report_path: "inference_metrics.json"
 
-# Notes:
-# - The LightningModule used for inference should be instantiated with `model` and
-#   `loss_config` fields above if required by your constructor.
-# - If you set force_cpu=true, ensure the code maps the loaded checkpoint to CPU
-#   (e.g. torch.load(checkpoint, map_location='cpu')).
 
+# ────────────────────────────────────────────────────────────────────────────
+# Notes
+# ────────────────────────────────────────────────────────────────────────────
+#
+# 1. Checkpoint Selection:
+#    - Use the best Stage 2 checkpoint for final inference
+#    - Use Stage 1 checkpoint if Stage 2 didn't improve results
+#
+# 2. Embedding Extraction:
+#    - If use_preextracted: true, embeddings must be cached in 'cache_dir'
+#    - Pre-extract embeddings with: python scripts/extract_embeddings.py
+#    - For on-the-fly extraction (slower), set use_preextracted: false
+#
+# 3. Device Selection:
+#    - "auto": automatically select GPU if available, otherwise CPU
+#    - "cuda": use GPU (fails if not available)
+#    - "cpu": use CPU only
+#
+# 4. Output Options:
+#    - Save denoised audio to 'output_dir'
+#    - Optionally generate metrics report for evaluation
