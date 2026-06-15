@@ -9,11 +9,11 @@ inference:
 
   # Output directory where denoised audio will be written.
   # If it does not exist the script should create it.
-  output_dir: "denoised_results"
+  output_dir: "denoised_voicebank"
 
   # Path to the checkpoint to load for inference.
   # Use an absolute path or path relative to your project root.
-  checkpoint_path: "logs/checkpoints/last.ckpt"
+  checkpoint_path: "/media/fred/FRED5TB/CleanUNet2-SSL-Experiments/checkpoints_cleanunet2_baseline/last.ckpt"
 
   # Force CPU usage even if CUDA is available. Set to true or false.
   force_cpu: false
