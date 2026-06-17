@@ -446,7 +446,7 @@ class MelDataset(torch.utils.data.Dataset):
         clean_audio = clean_audio.squeeze().unsqueeze(0)
 
         if self.return_audio_paths:
-            return noisy_audio, noisy_spec, clean_audio, clean_spec, clean_rel
+            return noisy_audio, noisy_spec, clean_audio, clean_spec, clean_path
         else:
             return noisy_audio, noisy_spec, clean_audio, clean_spec
 
