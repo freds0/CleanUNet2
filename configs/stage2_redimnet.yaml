@@ -1,0 +1,117 @@
+# ============================================================================
+# Stage-2 Training Configuration: ReDimNet Speaker Embeddings
+# Model: IDRnD/ReDimNet b2 (192-dim)
+# Training WITHOUT extractor - replicates Stage-1 fused latents
+# ============================================================================
+
+trainer:
+  accelerator: auto
+  devices: 1
+  max_epochs: 1000
+  precision: 16-mixed
+  log_every_n_steps: 50
+  check_val_every_n_epoch: 5
+  gradient_clip_val: 5.0
+  deterministic: false
+  benchmark: true
+
+seed: 1234
+checkpoint_dir: experiments/exp_redimnet_stage2/checkpoints
+logging_dir: experiments/exp_redimnet_stage2
+latents_dir: experiments/exp_redimnet_stage1/stored_latents_stage1
+
+audio:
+  sample_rate: 16000
+
+stage1_checkpoint: experiments/exp_redimnet_stage1/checkpoints/stage1-best.ckpt
+
+model:
+  speaker_model: redimnet
+  conditioning_type: addition
+
+  cleanunet_params:
+    channels_input: 1
+    channels_output: 1
+    channels_H: 64
+    max_H: 768
+    encoder_n_layers: 8
+    kernel_size: 4
+    stride: 2
+    tsfm_n_layers: 5
+    tsfm_n_head: 8
+    tsfm_d_model: 512
+    tsfm_d_inner: 2048
+
+  cleanspecnet_params:
+    input_channels: 513
+    num_conv_layers: 5
+    kernel_size: 4
+    stride: 1
+    conv_hidden_dim: 64
+    hidden_dim: 512
+    num_attention_layers: 5
+    num_heads: 8
+    dropout: 0.1
+
+losses:
+  weight_waveform: 10.0
+  weight_spec: 5.0
+  weight_phase: 5.0
+  ell_p: 1
+  ell_p_lambda: 1.0
+  stft_lambda: 0.5
+  sc_lambda: 0.8
+  mag_lambda: 0.2
+  stft_config:
+    fft_sizes: [512, 1024, 2048]
+    hop_sizes: [50, 120, 240]
+    win_lengths: [240, 600, 1200]
+
+optimizer:
+  lr: 5.0e-05
+  betas: [0.9, 0.999]
+
+data:
+  data_dir: /home/fred/Projetos/DATASETS/VoiceBank-DEMAND-16k/
+  train_list_path: filelists/train.csv
+  val_list_path: filelists/test.csv
+  batch_size: 4
+  num_workers: 8
+  persistent_workers: true
+  segment_size: 32768
+  sampling_rate: 16000
+
+callbacks:
+  best_checkpoint:
+    _target_: pytorch_lightning.callbacks.ModelCheckpoint
+    monitor: val_loss
+    dirpath: experiments/exp_redimnet_stage2/checkpoints
+    filename: stage2-best-{epoch:02d}-{val_loss:.4f}
+    save_top_k: 3
+    mode: min
+
+  periodic_checkpoint:
+    _target_: pytorch_lightning.callbacks.ModelCheckpoint
+    dirpath: experiments/exp_redimnet_stage2/checkpoints
+    filename: stage2-epoch-{epoch:04d}
+    every_n_epochs: 10
+    save_top_k: 5
+    save_last: true
+    monitor: val_loss
+    mode: min
+
+  early_stopping:
+    _target_: pytorch_lightning.callbacks.EarlyStopping
+    monitor: val_loss
+    patience: 20
+    mode: min
+    min_delta: 0.001
+
+logger:
+  choice: tensorboard
+
+  tensorboard:
+    _target_: pytorch_lightning.loggers.TensorBoardLogger
+    save_dir: experiments/exp_redimnet_stage2
+    name: tb_logs
+    default_hp_metric: false

@@ -144,8 +144,13 @@ def train(config: dict, stage: str):
     if stage not in ['stage1', 'stage2']:
         raise ValueError(f"Invalid stage: {stage}. Must be 'stage1' or 'stage2'.")
 
+    # Log speaker model being used
+    model_cfg = config.get("model", {})
+    speaker_model = model_cfg.get("speaker_model", "xvector")
+
     logger.info("=" * 80)
     logger.info(f"Starting Two-Stage Training - {stage.upper()}")
+    logger.info(f"Speaker Embedding Model: {speaker_model.upper()}")
     logger.info("=" * 80)
 
     # Get config sections

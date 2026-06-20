@@ -34,20 +34,22 @@ class CleanUNet2SpeakerEmbeddingsStage1Module(pl.LightningModule):
         self.save_hyperparameters(config)
         self.config = config
 
-        print("=" * 80)
-        print("STAGE-1: Training with Speaker Embeddings (X-Vector)")
-        print("=" * 80)
-
         # ===== Model Initialization =====
         model_config = config.get('model', {})
+        speaker_model = model_config.get('speaker_model', 'xvector')
+
+        print("=" * 80)
+        print(f"STAGE-1: Training with Speaker Embeddings ({speaker_model.upper()})")
+        print("=" * 80)
 
         self.model = CleanUNet2WithSpeakerEmbeddings(
             stage='stage1',
             conditioning_type=model_config.get('conditioning_type', 'addition'),
             cleanunet_params=model_config.get('cleanunet_params', {}),
             cleanspecnet_params=model_config.get('cleanspecnet_params', {}),
-            xvector_local_path=model_config.get('xvector_local_path', None),
-            xvector_cache_dir=model_config.get('xvector_cache_dir', None),
+            speaker_model=speaker_model,
+            speaker_model_local_path=model_config.get('speaker_model_local_path', None),
+            embedding_cache_dir=model_config.get('embedding_cache_dir', None),
             use_preextracted_embeddings=model_config.get('use_preextracted_embeddings', False),
         )
 

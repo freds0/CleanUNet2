@@ -1,255 +1,222 @@
-# 📢 CleanUNet2 — A Hybrid Speech Denoising Model on Waveform and Spectrogram
+# CleanUNet2 — Speech Enhancement with Speaker Embeddings
 
 CleanUNet2 is a deep-learning architecture for **speech enhancement**, combining:
 
 * **CleanUNet (waveform UNet)**
 * **CleanSpecNet (frequency-domain transformer network)**
-* **Multi-resolution STFT losses**
-* **Phase-aware losses**
-* **A hybrid spectrogram-to-waveform conditioning block**
-
-This repository includes full training, validation, inference workflows using **PyTorch Lightning**.
+* **Speaker embeddings** for speaker-informed denoising
+* **Two-stage training**: Stage 1 uses speaker embeddings, Stage 2 replicates without them
 
 ---
 
-## 🚀 Features
+## Supported Speaker Embedding Models
 
-* **Hybrid enhancement**: spectrogram refinement + waveform denoising
-* **Multi-Resolution STFT Loss (MR-STFT)**
-* **Anti-Wrapping Phase Loss** for improved phase reconstruction
-* **Fully configurable training (YAML-based)**
-* **Trainer, callbacks, and logging (TensorBoard)**
-* **Modular dataset pipeline (VoiceBank-DEMAND compatible)**
-* **Clean code with English documentation and comments**
+| Model | Dim | Backend | Dependency |
+|-------|-----|---------|------------|
+| `xvector` | 512 | SpeechBrain | `speechbrain` |
+| `ecapa` | 192 | SpeechBrain | `speechbrain` |
+| `clova` | 512 | Local checkpoint | — |
+| `redimnet` | 192 | torch.hub | — |
+| `titanet` | 192 | NeMo | `nemo_toolkit[asr]` |
+| `speakernet` | 256 | NeMo | `nemo_toolkit[asr]` |
+
+The model is selected via the `speaker_model` field in the YAML config. The embedding dimension is handled automatically.
 
 ---
 
-## 📁 Repository Structure
+## Repository Structure
 
 ```
 .
-│── lightning_modules/
-│    ├── cleanunet_module.py     # Lightning training module
-│    ├── data_module.py          # DataModule for dataset handling
+├── cleanunet/
+│   ├── cleanunet.py                        # CleanUNet (waveform model)
+│   ├── cleanspecnet.py                     # CleanSpecNet (spectrogram model)
+│   ├── cleanunet2.py                       # Full hybrid CleanUNet2 system
+│   ├── cleanunet2_with_speaker_embeddings.py  # Two-stage model with speaker embeddings
+│   ├── speaker_extractor.py               # Multi-model speaker embedding extractor
+│   ├── integration_block.py               # Embedding-latent fusion block
+│   ├── xvector_cache.py                   # Embedding cache system
 │
-│── cleanunet/
-│    ├── cleanunet.py            # CleanUNet (waveform model)
-│    ├── cleanspecnet.py         # CleanSpecNet (spectrogram model)
-│    ├── cleanunet2.py           # Full hybrid CleanUNet2 system
+├── lightning_modules/
+│   ├── cleanunet_speaker_embeddings_stage1_module.py
+│   ├── cleanunet_speaker_embeddings_stage2_module.py
+│   ├── data_module.py
 │
-│── filelists/
-│── configs/
-│    ├── config.yaml             # Training configuration
-│    ├── inference.yaml          # Inference configuration
+├── configs/
+│   ├── stage1_xvector.yaml    # Stage 1 configs (one per model)
+│   ├── stage1_ecapa.yaml
+│   ├── stage1_clova.yaml
+│   ├── stage1_redimnet.yaml
+│   ├── stage1_titanet.yaml
+│   ├── stage1_speakernet.yaml
+│   ├── stage2_xvector.yaml    # Stage 2 configs (one per model)
+│   ├── stage2_ecapa.yaml
+│   ├── stage2_clova.yaml
+│   ├── stage2_redimnet.yaml
+│   ├── stage2_titanet.yaml
+│   ├── stage2_speakernet.yaml
+│   ├── test_*.yaml            # Quick test configs
+│   └── inference.yaml
 │
-│── train.py                     # Training script (X-Vector, two-stage)
-│── inference.py                 # Inference script
-│── metrics.py                   # PESQ/STOI/SI-SDR prediction
-│── losses.py                    # Loss functions (MR-STFT, Phase Loss)
-│── spec_dataset.py              # Dataset loader
-│── README.md
+├── filelists/
+│   ├── train.csv
+│   └── test.csv
+│
+├── train.py                   # Training entrypoint
+├── inference.py               # Inference script
+├── losses.py                  # Loss functions (MR-STFT, Phase Loss)
+├── spec_dataset.py            # Dataset loader
+└── metrics.py                 # PESQ/STOI/SI-SDR
 ```
 
 ---
 
-## 🔧 Installation
+## Installation
+
+### Base environment (xvector, ecapa, clova, redimnet)
 
 ```bash
-git clone https://github.com/your-repo/CleanUNet2.git
-cd CleanUNet2
-pip install -r requirements.txt
+pip install torch torchaudio pytorch-lightning speechbrain
+pip install torchmetrics pesq pystoi
 ```
 
----
-
-## 🎚️ Training
-
-Training is two-stage with X-Vector (speaker embeddings). Edit a config as needed, then run:
+### For TitaNet / SpeakerNet (NeMo models)
 
 ```bash
-# Stage 1: train with X-Vectors extracted from clean audio
-python train.py --config configs/train_xvector_vanilla_stage1.yaml --stage stage1
-
-# Stage 2: replicate Stage-1 latents without the X-Vector extractor
-python train.py --config configs/train_xvector_vanilla_stage2.yaml --stage stage2
+conda create -n nemo python=3.10
+conda activate nemo
+pip install 'nemo_toolkit[asr]'
+pip install torch==2.5.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu121
+pip install speechbrain torchmetrics pesq pystoi
 ```
 
-TensorBoard logs will appear under:
+---
 
-```
-logs/cleanunet2/
-```
+## Training
 
-To view them:
+Two-stage training approach:
+
+1. **Stage 1**: Speaker embeddings are extracted from clean audio and fused into the latent space
+2. **Stage 2**: The model learns to replicate Stage 1 latents without the embedding extractor (fast inference)
+
+### Stage 1
 
 ```bash
-tensorboard --logdir logs
+# X-Vector (512-dim)
+python train.py --config configs/stage1_xvector.yaml --stage stage1
+
+# ECAPA-TDNN (192-dim)
+python train.py --config configs/stage1_ecapa.yaml --stage stage1
+
+# Clova ResNet (512-dim)
+python train.py --config configs/stage1_clova.yaml --stage stage1
+
+# ReDimNet (192-dim)
+python train.py --config configs/stage1_redimnet.yaml --stage stage1
+
+# TitaNet-Large (192-dim) — requires nemo env
+python train.py --config configs/stage1_titanet.yaml --stage stage1
+
+# SpeakerNet (256-dim) — requires nemo env
+python train.py --config configs/stage1_speakernet.yaml --stage stage1
 ```
 
----
+### Stage 2
 
-## 🎤 Inference (Denoising Audio)
-
-Configure `configs/inference.yaml`, then run:
+After Stage 1 finishes, update the `stage1_checkpoint` path in the corresponding Stage 2 config, then:
 
 ```bash
-python inference.py --config=configs/inference.yaml
-```
-
-Denoised WAV files are saved to:
-
-```
-denoised_results/
-```
-
----
-
-## 📦 Datasets
-
-The default setup assumes the **VoiceBank-DEMAND (16 kHz)** dataset.
-
-Expected filelist format (`train.csv`, `test.csv`):
-
-```
-clean_file.wav|noisy_file.wav
-```
-
-Example directory:
-
-```
-VoiceBank-DEMAND-16k/
-│── clean/
-│── noisy/
-│── filelists/
-│    ├── train.csv
-│    └── test.csv
+python train.py --config configs/stage2_xvector.yaml --stage stage2
+python train.py --config configs/stage2_ecapa.yaml --stage stage2
+python train.py --config configs/stage2_clova.yaml --stage stage2
+python train.py --config configs/stage2_redimnet.yaml --stage stage2
+python train.py --config configs/stage2_titanet.yaml --stage stage2
+python train.py --config configs/stage2_speakernet.yaml --stage stage2
 ```
 
 ---
 
-## 🧠 Model Overview
+## Config Structure
 
-### CleanUNet (Waveform Domain)
-
-* Multi-scale encoder-decoder UNet
-* Convolutional downsampling & upsampling
-* Transformer bottleneck
-* No skip-connection misalignment thanks to input padding logic
-
-### CleanSpecNet (Spectrogram Domain)
-
-* Convolutional feature extractor
-* Multiple transformer layers
-* GLU gating
-* Causal or non-causal mask support
-
-### Hybrid Combination
-
-The denoising workflow:
-
-1. **CleanSpecNet** refines the noisy spectrogram
-2. **Upsampler** expands spectrogram into a waveform-length feature
-3. **WaveformConditioner** fuses noisy + upsampled features
-4. **CleanUNet** produces the enhanced waveform
-
----
-
-## 🎧 Losses
-
-| Loss Type                          | Purpose                              |
-| ---------------------------------- | ------------------------------------ |
-| **L1/L2 waveform loss**            | Basic reconstruction                 |
-| **MR-STFT Loss**                   | Spectral convergence + log magnitude |
-| **Anti-Wrapping Phase Loss**       | Phase consistency                    |
-| **Spectrogram Log-Magnitude Loss** | Auxiliary stabilization              |
-
----
-
-## 📊 Validation Metrics
-
-During validation:
-
-* **PESQ**
-* **STOI**
-* **SI-SDR**
-
-Metrics are computed per sample and averaged.
-
----
-
-## ⚙️ Configuration (YAML)
-
-Everything is configured through YAML:
-
-### Training Config
-
-`configs/config.yaml` includes:
-
-* Trainer settings
-* Loss weights
-* MR-STFT FFT sizes
-* Batch size
-* Data paths
-
-### Inference Config
-
-`configs/inference.yaml` includes:
-
-* Input directory
-* Output directory
-* Checkpoint path
-* CPU/GPU override
-
----
-
-## 📦 Checkpoints
-
-To resume training:
+The key model field that selects the speaker embedding model:
 
 ```yaml
-resume_from_checkpoint: "logs/checkpoints/last.ckpt"
+model:
+  speaker_model: titanet  # xvector | ecapa | clova | redimnet | titanet | speakernet
+
+  # Optional: local path for clova checkpoint or redimnet variant override
+  # speaker_model_local_path: /path/to/checkpoints_speaker_encoder_clova
+  # speaker_model_local_path: "b6:ft_lm:vox2"  # for redimnet variants
 ```
 
-To load pretrained weights in inference mode:
-
-```yaml
-checkpoint_path: "logs_cleanunet/checkpoints/last.ckpt"
-```
+Stage 2 configs must use the same `speaker_model` as the corresponding Stage 1 (to match the IntegrationBlock dimensions).
 
 ---
 
-## 🧪 Example Output
+## Inference
 
-```python
-model = CleanUNet2().cuda()
-noisy = torch.randn(1, 1, 64000).cuda()
-noisy_spec = torch.randn(1, 513, 256).cuda()
-
-enhanced, enhanced_spec = model(noisy, noisy_spec)
-print(enhanced.shape)   # (1, 1, 64000)
+```bash
+python inference.py --config configs/inference.yaml
 ```
 
 ---
 
-## 🤝 Contributing
+## Datasets
 
-Pull requests are welcome!
-Please open an issue before major feature changes.
+The default setup assumes **VoiceBank-DEMAND (16 kHz)**.
+
+Filelist format (`train.csv`, `test.csv`):
+
+```
+train/clean/p226_001.wav|train/noisy/p226_001.wav
+train/clean/p226_002.wav|train/noisy/p226_002.wav
+```
 
 ---
 
-## 📄 License
+## Architecture
 
-This project is licensed under the **MIT License**.
+### Two-Stage Training
+
+```
+Stage 1:
+  noisy_wav → CleanSpecNet → SpecUpsampler → Conditioner → CleanUNet.encode()
+                                                                ↓
+  clean_wav → SpeakerExtractor → IntegrationBlock(latent, embedding)
+                                                                ↓
+                                                   CleanUNet.decode() → enhanced_wav
+
+Stage 2:
+  noisy_wav → CleanSpecNet → SpecUpsampler → Conditioner → CleanUNet.encode()
+                                                                ↓
+                                                   LatentPredictor(latent)
+                                                                ↓
+                                                   CleanUNet.decode() → enhanced_wav
+```
+
+Stage 2 does NOT use the speaker embedding extractor at inference time — it learns to predict the fused latent directly.
 
 ---
 
-If you want, I can now generate:
+## Losses
 
-✅ A **PDF version** using reportlab
-✅ A more elaborate README including diagrams
-✅ A minimal version for PyPI
-✅ A citation section (BibTeX)
+| Loss | Purpose |
+|------|---------|
+| L1 waveform loss | Basic reconstruction |
+| MR-STFT Loss | Spectral convergence + log magnitude |
+| Anti-Wrapping Phase Loss | Phase consistency |
+| Spectrogram Log-Magnitude Loss | Auxiliary stabilization |
 
-Would you like any of these?
+---
 
+## Validation Metrics
+
+* **PESQ** (Perceptual Evaluation of Speech Quality)
+* **STOI** (Short-Time Objective Intelligibility)
+* **SI-SDR** (Scale-Invariant Signal-to-Distortion Ratio)
+
+---
+
+## License
+
+MIT License

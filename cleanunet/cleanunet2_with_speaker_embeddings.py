@@ -1,13 +1,12 @@
 """
-CleanUNet2 with Speaker Embeddings (X-Vector) for Two-Stage Training
+CleanUNet2 with Speaker Embeddings for Two-Stage Training
 
 Architecture:
-    - Stage 1: Train with speaker embeddings (X-Vector) injected into latent space
+    - Stage 1: Train with speaker embeddings injected into latent space
     - Stage 2: Train to replicate latent vectors without embedding extractor
 
-Two-stage training using speaker embeddings (SpeechBrain X-Vector). The model benefits
-from speaker information during training while maintaining fast inference speed
-(Stage 2 doesn't use the embedding extractor).
+Two-stage training using speaker embeddings (SpeechBrain). Supports both
+X-Vector (512-dim) and ECAPA-TDNN (192-dim) models via the 'speaker_model' config.
 """
 
 import torch
@@ -18,18 +17,17 @@ from .cleanunet2 import CleanUNet2, SpecUpsampler, Conditioner
 from .cleanunet import CleanUNet
 from .cleanspecnet import CleanSpecNet
 from .integration_block import IntegrationBlock
-from .xvector_extractor import XVectorExtractor
+from .speaker_extractor import SpeakerExtractor, SPEAKER_MODELS
 
 
 class CleanUNet2WithSpeakerEmbeddings(nn.Module):
     """
-    CleanUNet2 model with Speaker Embeddings (X-Vector) for two-stage training.
+    CleanUNet2 model with Speaker Embeddings for two-stage training.
 
-    Stage 1: Uses X-Vector extractor to inject speaker embeddings into latent space
+    Stage 1: Uses speaker embedding extractor to inject embeddings into latent space
     Stage 2: Replicates latent vectors without the speaker embedding extractor
 
-    X-Vectors are pooled (utterance-level) embeddings of shape (batch, 512), so they are
-    expanded along the temporal dimension and fused with the latent via IntegrationBlock.
+    Supports X-Vector (512-dim) and ECAPA-TDNN (192-dim) via speaker_model config.
     """
 
     def __init__(
@@ -38,39 +36,48 @@ class CleanUNet2WithSpeakerEmbeddings(nn.Module):
         conditioning_type='addition',
         cleanunet_params=None,
         cleanspecnet_params=None,
-        # Speaker embedding (X-Vector) parameters
-        xvector_local_path=None,
-        xvector_cache_dir=None,
+        speaker_model='xvector',
+        speaker_model_local_path=None,
+        embedding_cache_dir=None,
         use_preextracted_embeddings=False,
     ):
         """
-        Initialize CleanUNet2 with speaker embeddings (X-Vector) integration.
+        Initialize CleanUNet2 with speaker embeddings integration.
 
         Args:
             stage (str): Training stage ('stage1' or 'stage2')
             conditioning_type (str): Conditioning method (addition, concatenation, film)
             cleanunet_params (dict): Parameters for CleanUNet
             cleanspecnet_params (dict): Parameters for CleanSpecNet
-            xvector_local_path (str): Local path to pre-downloaded x-vector model directory
-            xvector_cache_dir (str): Directory with pre-extracted x-vector embeddings
+            speaker_model (str): Speaker model to use ('xvector' or 'ecapa')
+            speaker_model_local_path (str): Local path to pre-downloaded model directory
+            embedding_cache_dir (str): Directory with pre-extracted embeddings
             use_preextracted_embeddings (bool): Whether to use pre-extracted embeddings
         """
         super().__init__()
 
         self.stage = stage
         self.use_preextracted_embeddings = use_preextracted_embeddings
-        self.embedding_type = 'speaker_embeddings'  # Always using speaker embeddings (X-Vector)
-        self.embedding_dim = 512  # X-Vector dimension (SpeechBrain spkrec-xvect-voxceleb)
+        self.speaker_model_name = speaker_model
+        self.embedding_type = 'speaker_embeddings'
+
+        if speaker_model not in SPEAKER_MODELS:
+            raise ValueError(
+                f"Unknown speaker_model: '{speaker_model}'. "
+                f"Supported: {list(SPEAKER_MODELS.keys())}"
+            )
+        self.embedding_dim = SPEAKER_MODELS[speaker_model]['embedding_dim']
 
         if cleanunet_params is None:
             cleanunet_params = {}
         if cleanspecnet_params is None:
             cleanspecnet_params = {}
 
+        display_name = SPEAKER_MODELS[speaker_model]['display_name']
         print(f"[CleanUNet2WithSpeakerEmbeddings] Initializing model...")
         print(f"  - Stage: {stage}")
-        print(f"  - Embedding Type: Speaker Embeddings (X-Vector)")
-        print(f"  - X-Vector Dim: {self.embedding_dim}")
+        print(f"  - Speaker Model: {display_name} ({speaker_model})")
+        print(f"  - Embedding Dim: {self.embedding_dim}")
         print(f"  - Use Pre-extracted: {use_preextracted_embeddings}")
         print(f"  - Conditioning: {conditioning_type}")
 
@@ -107,7 +114,7 @@ class CleanUNet2WithSpeakerEmbeddings(nn.Module):
             cond_channels=1
         )
 
-        # ============ Speaker Embedding Components (X-Vector) ============
+        # ============ Speaker Embedding Components ============
 
         self.embedding_extractor = None
         self.embedding_cache = None
@@ -115,28 +122,27 @@ class CleanUNet2WithSpeakerEmbeddings(nn.Module):
         if stage == 'stage1':
             if use_preextracted_embeddings:
                 print("[CleanUNet2WithSpeakerEmbeddings] Using pre-extracted speaker embeddings...")
-                if xvector_cache_dir:
+                if embedding_cache_dir:
                     from .xvector_cache import XVectorCache
                     self.embedding_cache = XVectorCache(
-                        cache_dir=xvector_cache_dir,
+                        cache_dir=embedding_cache_dir,
                         enabled=True
                     )
                 else:
-                    raise ValueError("xvector_cache_dir must be specified when use_preextracted_embeddings=True")
+                    raise ValueError("embedding_cache_dir must be specified when use_preextracted_embeddings=True")
             else:
-                # Extract X-Vectors on-the-fly (slower)
-                print("[CleanUNet2WithSpeakerEmbeddings] Loading X-Vector extractor...")
-                self.embedding_extractor = XVectorExtractor(
+                print(f"[CleanUNet2WithSpeakerEmbeddings] Loading {display_name} extractor...")
+                self.embedding_extractor = SpeakerExtractor(
+                    model_name=speaker_model,
                     device='cpu',
-                    local_path=xvector_local_path
+                    local_path=speaker_model_local_path
                 )
-                # Freeze X-Vector extractor (pre-trained, inference only)
                 for param in self.embedding_extractor.parameters():
                     param.requires_grad = False
                 self.embedding_extractor.eval()
 
         # Integration Block (for fusing pooled speaker embeddings with latent features)
-        print(f"[CleanUNet2WithSpeakerEmbeddings] Creating IntegrationBlock (xvector_dim={self.embedding_dim})...")
+        print(f"[CleanUNet2WithSpeakerEmbeddings] Creating IntegrationBlock (embedding_dim={self.embedding_dim})...")
         self.integration_block = IntegrationBlock(
             latent_channels=self.latent_dim,
             xvector_dim=self.embedding_dim

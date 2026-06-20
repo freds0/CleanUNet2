@@ -27,8 +27,12 @@ wandb
 matplotlib>=3.6.0
 einops>=0.7.0
 
-# --- X-Vector Integration (Two-Stage Training) ---
-speechbrain>=0.5.16  # For X-Vector extraction
+# --- Speaker Embedding Extraction ---
+speechbrain>=0.5.16  # For X-Vector and ECAPA-TDNN
 huggingface_hub>=0.20.0  # For downloading pretrained models
 ruamel.yaml  # Additional YAML support for SpeechBrain
+
+# --- Optional: NeMo models (TitaNet, SpeakerNet) ---
+# Requires separate env due to heavy dependencies:
+#   pip install 'nemo_toolkit[asr]'
 

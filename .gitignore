@@ -2,6 +2,8 @@
 __pycache__/
 *.py[cod]
 *$py.class
+pretrained_models/
+lightning_logs/
 
 # C extensions
 *.so

@@ -40,14 +40,16 @@ class CleanUNet2SpeakerEmbeddingsStage2Module(pl.LightningModule):
 
         # ===== Model Initialization =====
         model_config = config.get('model', {})
+        speaker_model = model_config.get('speaker_model', 'xvector')
 
         model_args = {
             'stage': 'stage2',
             'conditioning_type': model_config.get('conditioning_type', 'addition'),
             'cleanunet_params': model_config.get('cleanunet_params', {}),
             'cleanspecnet_params': model_config.get('cleanspecnet_params', {}),
-            'xvector_local_path': model_config.get('xvector_local_path', None),
-            'xvector_cache_dir': model_config.get('xvector_cache_dir', None),
+            'speaker_model': speaker_model,
+            'speaker_model_local_path': model_config.get('speaker_model_local_path', None),
+            'embedding_cache_dir': model_config.get('embedding_cache_dir', None),
             'use_preextracted_embeddings': model_config.get('use_preextracted_embeddings', False),
         }
 
