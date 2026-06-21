@@ -81,8 +81,8 @@ def main():
         help='Path to filelist (train.csv or test.csv)'
     )
     parser.add_argument(
-        '--output_dir', type=str, required=True,
-        help='Directory to save extracted embeddings'
+        '--output_dir', type=str, default=None,
+        help='Directory to save extracted embeddings (default: from config embedding_cache_dir)'
     )
     parser.add_argument(
         '--batch_size', type=int, default=8,
@@ -110,6 +110,8 @@ def main():
             args.speaker_model = model_cfg.get('speaker_model', 'xvector')
         if args.speaker_model_local_path is None:
             args.speaker_model_local_path = model_cfg.get('speaker_model_local_path')
+        if args.output_dir is None:
+            args.output_dir = model_cfg.get('embedding_cache_dir')
         if args.data_dir is None:
             args.data_dir = data_cfg.get('data_dir', '.')
         if args.filelist is None:
@@ -124,6 +126,8 @@ def main():
         parser.error("--data_dir is required (or use --config)")
     if args.filelist is None:
         parser.error("--filelist is required (or use --config)")
+    if args.output_dir is None:
+        parser.error("--output_dir is required (or use --config with embedding_cache_dir)")
 
     if args.speaker_model not in SPEAKER_MODELS:
         parser.error(f"Unknown speaker_model: {args.speaker_model}. Options: {list(SPEAKER_MODELS.keys())}")
