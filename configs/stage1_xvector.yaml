@@ -42,8 +42,8 @@ model:
   # Optional: local path to pre-downloaded model
   # speaker_model_local_path: null
 
-  # Embedding Cache (to avoid re-extracting on every step)
-  # embedding_cache_dir: experiments/exp_xvector_stage1/embedding_cache
+  use_preextracted_embeddings: true
+  embedding_cache_dir: experiments/exp_xvector_stage1/embedding_cache
 
   # Optional: Load vanilla CleanUNet2 checkpoint for warm start
   vanilla_checkpoint: null
@@ -110,6 +110,7 @@ data:
   persistent_workers: true
   segment_size: 32768
   sampling_rate: 16000
+  use_preextracted_embeddings: true
 
 # ----------------------
 # Callbacks

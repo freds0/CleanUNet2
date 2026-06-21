@@ -40,6 +40,8 @@ model:
   speaker_model: clova  # Options: 'xvector' (512-dim), 'ecapa' (192-dim), 'clova' (512-dim)
   speaker_model_local_path: ./checkpoints_speaker_encoder_clova
   conditioning_type: film
+  use_preextracted_embeddings: true
+  embedding_cache_dir: experiments/exp_clova_stage1/embedding_cache
 
   # Optional: Load vanilla CleanUNet2 checkpoint for warm start
   vanilla_checkpoint: null
@@ -106,6 +108,7 @@ data:
   persistent_workers: true
   segment_size: 32768
   sampling_rate: 16000
+  use_preextracted_embeddings: true
 
 # ----------------------
 # Callbacks

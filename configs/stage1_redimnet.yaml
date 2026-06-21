@@ -47,6 +47,8 @@ model:
   # speaker_model_local_path: "b6:ft_lm:vox2"
 
   conditioning_type: film
+  use_preextracted_embeddings: true
+  embedding_cache_dir: experiments/exp_redimnet_stage1/embedding_cache
 
   # Optional: Load vanilla CleanUNet2 checkpoint for warm start
   vanilla_checkpoint: null
@@ -113,6 +115,7 @@ data:
   persistent_workers: true
   segment_size: 32768
   sampling_rate: 16000
+  use_preextracted_embeddings: true
 
 # ----------------------
 # Callbacks

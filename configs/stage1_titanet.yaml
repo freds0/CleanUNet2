@@ -38,6 +38,8 @@ audio:
 model:
   speaker_model: titanet
   conditioning_type: film
+  use_preextracted_embeddings: true
+  embedding_cache_dir: experiments/exp_titanet_stage1/embedding_cache
   vanilla_checkpoint: null
 
   cleanunet_params:
@@ -100,6 +102,7 @@ data:
   persistent_workers: true
   segment_size: 32768
   sampling_rate: 16000
+  use_preextracted_embeddings: true
 
 # ----------------------
 # Callbacks
