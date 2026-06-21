@@ -262,7 +262,7 @@ class CleanUNet2WithSpeakerEmbeddings(nn.Module):
                         if cached_data is None:
                             raise RuntimeError(
                                 f"Pre-extracted embedding not found for: {audio_path}\n"
-                                f"Please extract x-vectors first!"
+                                f"Run: python extract_embeddings.py --config <your_config> --output_dir <embedding_cache_dir>"
                             )
 
                         if isinstance(cached_data, dict) and 'embedding' in cached_data:

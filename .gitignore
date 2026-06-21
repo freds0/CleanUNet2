@@ -4,6 +4,7 @@ __pycache__/
 *$py.class
 pretrained_models/
 lightning_logs/
+checkpoints_speaker_encoder_clova/
 
 # C extensions
 *.so

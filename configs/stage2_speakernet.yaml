@@ -72,10 +72,10 @@ optimizer:
   betas: [0.9, 0.999]
 
 data:
-  data_dir: /home/fred/Projetos/DATASETS/VoiceBank-DEMAND-16k/
+  data_dir: /raid/user_fredoliveira/DATASETS/VoiceBank-DEMAND-16k/
   train_list_path: filelists/train.csv
   val_list_path: filelists/test.csv
-  batch_size: 4
+  batch_size: 32
   num_workers: 8
   persistent_workers: true
   segment_size: 32768
@@ -108,10 +108,18 @@ callbacks:
     min_delta: 0.001
 
 logger:
-  choice: tensorboard
+  choice: both
 
   tensorboard:
     _target_: pytorch_lightning.loggers.TensorBoardLogger
     save_dir: experiments/exp_speakernet_stage2
     name: tb_logs
     default_hp_metric: false
+
+  wandb:
+    _target_: pytorch_lightning.loggers.WandbLogger
+    project: CleanUNet2_SpeakerNet
+    name: stage2_speakernet
+    save_dir: experiments/exp_speakernet_stage2
+    offline: false
+    log_model: true
