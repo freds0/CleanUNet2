@@ -235,9 +235,16 @@ def main():
         if args.data_dir is None:
             args.data_dir = data_cfg.get('data_dir', '.')
         if args.filelist is None:
-            args.filelist = data_cfg.get('train_list_path', 'filelists/train.csv')
+            # Use both train and val filelists when loading from config
+            train_list = data_cfg.get('train_list_path', 'filelists/train.csv')
+            val_list = data_cfg.get('val_list_path', 'filelists/test.csv')
+            args.filelist = [train_list, val_list]
         if args.sample_rate == 16000:
             args.sample_rate = data_cfg.get('sampling_rate', 16000)
+
+    # Wrap single filelist string into list for uniform handling
+    if args.filelist and isinstance(args.filelist, str):
+        args.filelist = [args.filelist]
 
     # Validate
     if args.speaker_model is None:
@@ -265,7 +272,7 @@ def main():
     print(f"  Embedding dim: {model_info['embedding_dim']}")
     print(f"  Device: {device}")
     print(f"  Data dir: {args.data_dir}")
-    print(f"  Filelist: {args.filelist}")
+    print(f"  Filelists: {', '.join(args.filelist)}")
     print(f"  Output dir: {args.output_dir}")
     print(f"  Batch size: {args.batch_size}")
     print(f"  Sample rate: {args.sample_rate}")
@@ -278,9 +285,15 @@ def main():
     )
     print("Model loaded!")
 
-    # Load filelist
-    audio_paths = load_filelist(args.filelist)
-    print(f"\nFound {len(audio_paths)} audio files in filelist")
+    # Load filelist(s)
+    audio_paths = []
+    for fl in args.filelist:
+        paths = load_filelist(fl)
+        print(f"  Loaded {len(paths)} files from {fl}")
+        audio_paths.extend(paths)
+    # Deduplicate preserving order
+    audio_paths = list(dict.fromkeys(audio_paths))
+    print(f"\nTotal unique audio files: {len(audio_paths)}")
 
     # Create output directory
     output_dir = Path(args.output_dir)
