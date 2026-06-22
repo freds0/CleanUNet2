@@ -184,12 +184,15 @@ class CleanUNet2SSLEmbeddingsStage2Module(pl.LightningModule):
         self.max_audio_samples = 6
 
     def _load_stored_latents(self):
-        """Load all stored latents from Stage-1."""
+        """Load stored VAL latents from Stage-1. Optional: returns an empty dict (and
+        disables the validation latent metric) if the directory holds no val_batch_*.pt,
+        so an empty/leftover latents_dir never blocks Stage-2 training."""
         latent_files = sorted(self.latents_dir.glob('val_batch_*.pt'))
 
         if not latent_files:
-            raise ValueError(f"No latent files found in {self.latents_dir}. "
-                           "Please run Stage-1 training first.")
+            print(f"[Stage-2] No val_batch_*.pt in {self.latents_dir}; "
+                  f"validation latent metric disabled.")
+            return {}
 
         stored_latents = {}
 
