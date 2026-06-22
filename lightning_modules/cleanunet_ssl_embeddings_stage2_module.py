@@ -176,6 +176,11 @@ class CleanUNet2SSLEmbeddingsStage2Module(pl.LightningModule):
         print(f"[Stage-2] Train latent cache: {len(self.train_latent_keys)} files "
               f"in {self.train_latents_dir} (training-time latent loss ENABLED)")
 
+        # The check above only proves the cache is non-empty. Also verify the cached keys
+        # actually ALIGN with the training paths — a wrong cache dir (e.g. val_batch_*.pt)
+        # or a data_dir/train_list mismatch would otherwise silently zero loss_latent.
+        self._assert_train_latents_aligned(config)
+
         # Validation batch counter
         self.global_val_batch_idx = 0
 
@@ -244,6 +249,53 @@ class CleanUNet2SSLEmbeddingsStage2Module(pl.LightningModule):
                                          dtype=predicted_latent.dtype)
         min_t = min(predicted_latent.size(-1), target.size(-1))
         return F.mse_loss(predicted_latent[..., :min_t], target[..., :min_t])
+
+    def _assert_train_latents_aligned(self, config, min_ratio=0.9):
+        """Abort if the cached train latents don't align with the training paths.
+
+        The fail-fast above only proves the cache is non-empty. Here we check that the
+        MD5 keys of the actual train files resolve to cached <md5>.pt entries — otherwise
+        the latent loss would be silently zeroed every batch (wrong cache dir, or a
+        data_dir/train_list mismatch between generation and training).
+        """
+        import os
+        data_cfg = config.get('data', {})
+        train_list = data_cfg.get('train_list_path')
+        data_dir = data_cfg.get('data_dir', '.')
+
+        # Only the single paired-dataset path builds keys as md5(os.path.join(data_dir, rel));
+        # skip for multi-dataset / pathless configs (can't reconstruct the same keys here).
+        if not train_list or data_cfg.get('datasets'):
+            print("[Stage-2] Skipping train-latent alignment check "
+                  "(no single train_list_path).")
+            return
+
+        try:
+            from spec_dataset import get_dataset_filelist
+            pairs = get_dataset_filelist(train_list)
+        except Exception as e:
+            print(f"[Stage-2] Could not read train list for alignment check ({e}); skipping.")
+            return
+        if not pairs:
+            return
+
+        hit = sum(
+            latent_cache_key(os.path.join(data_dir, clean_rel)) in self.train_latent_keys
+            for clean_rel, _ in pairs
+        )
+        ratio = hit / len(pairs)
+        if ratio < min_ratio:
+            raise RuntimeError(
+                f"[Stage-2] Train latents are MISALIGNED with the training data: only "
+                f"{hit}/{len(pairs)} train paths have a cached latent in "
+                f"'{self.train_latents_dir}' ({ratio:.0%} < {min_ratio:.0%}). The latent "
+                f"loss would be silently zeroed. Likely causes: wrong files in the cache "
+                f"dir (e.g. val_batch_*.pt), or a data_dir/train_list mismatch between "
+                f"generation and training. Regenerate with generate_latents.py using the "
+                f"SAME config and --output-dir == train_latents_dir."
+            )
+        print(f"[Stage-2] Train latents aligned: {hit}/{len(pairs)} train paths cached "
+              f"({ratio:.0%}).")
 
     def _get_pesq_resampler(self):
         """
