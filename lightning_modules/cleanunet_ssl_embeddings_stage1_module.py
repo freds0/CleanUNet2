@@ -1,7 +1,7 @@
 """
 PyTorch Lightning module for CleanUNet2 Stage-1 training with SSL Embeddings.
 
-Stage-1: Training with SSL embeddings (Wav2Vec2) injected into latent space.
+Stage-1: Training with SSL embeddings injected into latent space.
 The model learns to denoise using speaker embeddings as guidance.
 Latent vectors are saved for Stage-2 training.
 """
@@ -13,6 +13,7 @@ from pathlib import Path
 import torchaudio
 
 from cleanunet.cleanunet2_with_ssl_embeddings import CleanUNet2WithSSLEmbeddings
+from cleanunet.ssl_extractor_factory import ssl_args_from_config
 from losses import CleanUNet2Loss, MultiResolutionSTFTLoss, AntiWrappingPhaseLoss
 
 # Import TorchMetrics
@@ -23,7 +24,7 @@ from torchmetrics.audio import ScaleInvariantSignalNoiseRatio
 
 class CleanUNet2SSLEmbeddingsStage1Module(pl.LightningModule):
     """
-    Lightning module for Stage-1 training with SSL Embeddings (Wav2Vec2).
+    Lightning module for Stage-1 training with SSL Embeddings (multi-backbone).
 
     Trains the model using SSL embeddings extracted from clean audio.
     Saves fused latent vectors for Stage-2 training.
@@ -35,33 +36,22 @@ class CleanUNet2SSLEmbeddingsStage1Module(pl.LightningModule):
         self.config = config
 
         print("=" * 80)
-        print("STAGE-1: Training with SSL Embeddings (Wav2Vec2)")
+        print("STAGE-1: Training with SSL Embeddings (multi-backbone)")
         print("=" * 80)
 
         # ===== Model Initialization =====
         model_config = config.get('model', {})
 
-        # Wav2Vec2 SSL Embeddings configuration.
-        # Support both flat (model.*) and nested (model.wav2vec2.*) config layouts.
-        w2v = model_config.get('wav2vec2', {})
-        wav2vec2_model = model_config.get('wav2vec2_model') or w2v.get('model_name', 'facebook/wav2vec2-xls-r-2b')
-        wav2vec2_layer = model_config.get('wav2vec_layer', w2v.get('wav2vec2_layer', 24))
-        wav2vec2_cache_dir = model_config.get('wav2vec2_cache_dir') or w2v.get('wav2vec2_cache_dir', 'wav2vec2_embeddings')
-        use_preextracted_embeddings = model_config.get('use_preextracted_embeddings', w2v.get('use_preextracted', False))
-        use_weighted_layers = model_config.get('wav2vec2_use_weighted_layers', w2v.get('use_weighted_layers', True))
+        # Generic SSL embedding configuration (model.ssl.*).
+        # Falls back to the legacy nested model.wav2vec2.* block for old configs.
+        ssl_args = ssl_args_from_config(model_config)
 
         self.model = CleanUNet2WithSSLEmbeddings(
             stage='stage1',
             conditioning_type=model_config.get('conditioning_type', 'addition'),
             cleanunet_params=model_config.get('cleanunet_params', {}),
             cleanspecnet_params=model_config.get('cleanspecnet_params', {}),
-            # Wav2Vec2 parameters
-            wav2vec2_model=wav2vec2_model,
-            wav2vec2_layer=wav2vec2_layer,
-            wav2vec2_cache_dir=wav2vec2_cache_dir,
-            use_preextracted_embeddings=use_preextracted_embeddings,
-            # Learnable softmax-weighted sum over ALL wav2vec2 layers
-            wav2vec2_use_weighted_layers=use_weighted_layers
+            **ssl_args,
         )
 
         # ===== Load Vanilla Checkpoint (Optional) =====
@@ -265,7 +255,7 @@ class CleanUNet2SSLEmbeddingsStage1Module(pl.LightningModule):
         latent_path = self.latents_dir / f"val_batch_{self.global_val_batch_idx:06d}.pt"
         torch.save({
             'fused_latent': latents['fused_latent'].cpu(),
-            'embedding': latents['embedding'].cpu(),  # Works for both xvector and wav2vec2
+            'embedding': latents['embedding'].cpu(),
             'latent': latents['latent'].cpu(),
             'noisy_wav': noisy_wav.cpu(),
             'clean_wav': clean_wav.cpu(),

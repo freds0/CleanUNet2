@@ -1,0 +1,233 @@
+{
+  "model": {
+    "cleanunet": {
+      "in_channels": 1,
+      "out_channels": 1,
+      "hidden_channels": 128,
+      "num_layers": 20,
+      "kernel_size": 15,
+      "dilation_base": 2,
+      "residual_channels": 64,
+      "skip_channels": 128,
+      "use_film_conditioning": true
+    },
+    "conditioning_type": "film",
+    "freeze_cleanunet": false,
+    "freeze_cleanspecnet": false,
+    "use_spectral_normalization": false,
+    "dropout_rate": 0.0,
+    "activation": "relu",
+    "ssl": {
+      "type": "whisper",
+      "model_name": "openai/whisper-large-v3",
+      "embedding_dim": 1280,
+      "layer": 16,
+      "use_weighted_layers": true,
+      "pooling_method": "mean",
+      "attention_heads": 8,
+      "cache_dir": "ssl_embeddings_whisper",
+      "use_preextracted": false,
+      "layer_strategy": "selected",
+      "selected_layers": [
+        0,
+        16,
+        32
+      ],
+      "num_selected_layers": 3
+    }
+  },
+  "loss": {
+    "time_domain_weight": 1.0,
+    "stft_magnitude_weight": 1.0,
+    "stft_phase_weight": 0.1,
+    "phase_consistency_weight": 0.1,
+    "spectral_convergence_weight": 0.0,
+    "ell_p": 1,
+    "ell_p_lambda": 1.0,
+    "stft_lambda": 1.0,
+    "sc_lambda": 0.8,
+    "mag_lambda": 0.2,
+    "weight_waveform": 10.0,
+    "weight_spec": 5.0,
+    "weight_phase": 5.0,
+    "gamma_latent": 0.05
+  },
+  "optimizer": {
+    "type": "adamw",
+    "learning_rate": 5e-05,
+    "weight_decay": 1e-05,
+    "betas": [
+      0.9,
+      0.999
+    ],
+    "eps": 1e-08
+  },
+  "scheduler": {
+    "type": "cosine",
+    "warmup_steps": 10,
+    "total_steps": null,
+    "num_cycles": 0.5
+  },
+  "data": {
+    "data_dir": "/home/fred/Projetos/DATASETS/VoiceBank-DEMAND-16k/",
+    "train_list_path": "filelists/train.csv",
+    "val_list_path": "filelists/test.csv",
+    "val_split": null,
+    "batch_size": 16,
+    "num_workers": 2,
+    "persistent_workers": false,
+    "segment_size": 32000,
+    "sampling_rate": 16000,
+    "augmentations": null,
+    "use_preextracted_embeddings": false,
+    "quick_test": false,
+    "quick_test_samples": 30
+  },
+  "trainer": {
+    "max_epochs": 300,
+    "accelerator": "auto",
+    "devices": 1,
+    "precision": "16-mixed",
+    "gradient_clip_val": 5.0,
+    "accumulate_grad_batches": 1,
+    "log_every_n_steps": 10,
+    "val_check_interval": 1.0,
+    "num_sanity_val_steps": 0,
+    "enable_progress_bar": true
+  },
+  "logging": {
+    "save_dir": "./experiments/stage1",
+    "log_model": false,
+    "log_frequency": 10,
+    "save_checkpoints": true,
+    "checkpoint_monitor": "val_loss",
+    "checkpoint_mode": "min"
+  },
+  "callbacks": {
+    "model_checkpoint": {
+      "_target_": "pytorch_lightning.callbacks.ModelCheckpoint",
+      "dirpath": "./experiments/checkpoints/stage1",
+      "filename": "cleanunet-stage1-{epoch:03d}-{val_loss:.4f}",
+      "monitor": "val_loss",
+      "mode": "min",
+      "save_top_k": 3,
+      "save_last": true
+    },
+    "early_stopping": {
+      "_target_": "pytorch_lightning.callbacks.EarlyStopping",
+      "monitor": "val_loss",
+      "mode": "min",
+      "patience": 15,
+      "verbose": false
+    }
+  },
+  "logger": {
+    "choice": "both",
+    "tensorboard": {
+      "_target_": "pytorch_lightning.loggers.TensorBoardLogger",
+      "save_dir": "./experiments/whisper_plus/stage1",
+      "name": "whisper_plus-stage1",
+      "version": "v1"
+    },
+    "wandb": {
+      "_target_": "pytorch_lightning.loggers.WandbLogger",
+      "project": "CleanUNet2-SSL",
+      "name": "whisper_plus-stage1",
+      "save_dir": "./experiments/whisper_plus/stage1"
+    }
+  },
+  "pipeline": {
+    "stage": 1,
+    "resume_from_checkpoint": null,
+    "seed": 42,
+    "log_all_config": false
+  },
+  "stage1": {
+    "pipeline": {
+      "stage": 1
+    },
+    "logging": {
+      "save_dir": "./experiments/whisper_plus/stage1"
+    },
+    "callbacks": {
+      "model_checkpoint": {
+        "_target_": "pytorch_lightning.callbacks.ModelCheckpoint",
+        "dirpath": "./experiments/whisper_plus/checkpoints/stage1",
+        "filename": "cleanunet-stage1-{epoch:03d}-{val_loss:.4f}",
+        "monitor": "val_loss",
+        "mode": "min",
+        "save_top_k": 3,
+        "save_last": true
+      },
+      "early_stopping": {
+        "_target_": "pytorch_lightning.callbacks.EarlyStopping",
+        "monitor": "val_loss",
+        "mode": "min",
+        "patience": 15,
+        "verbose": false
+      }
+    },
+    "logger": {
+      "choice": "both",
+      "tensorboard": {
+        "_target_": "pytorch_lightning.loggers.TensorBoardLogger",
+        "save_dir": "./experiments/whisper_plus/stage1",
+        "name": "whisper_plus-stage1",
+        "version": "v1"
+      },
+      "wandb": {
+        "_target_": "pytorch_lightning.loggers.WandbLogger",
+        "project": "CleanUNet2-SSL",
+        "name": "whisper_plus-stage1",
+        "save_dir": "./experiments/whisper_plus/stage1"
+      }
+    }
+  },
+  "stage2": {
+    "pipeline": {
+      "stage": 2,
+      "stage1_checkpoint": "./experiments/whisper_plus/checkpoints/stage1/cleanunet-stage1-last.ckpt"
+    },
+    "logging": {
+      "save_dir": "./experiments/whisper_plus/stage2"
+    },
+    "callbacks": {
+      "model_checkpoint": {
+        "_target_": "pytorch_lightning.callbacks.ModelCheckpoint",
+        "dirpath": "./experiments/whisper_plus/checkpoints/stage2",
+        "filename": "cleanunet-stage2-{epoch:03d}-{val_loss:.4f}",
+        "monitor": "val_loss",
+        "mode": "min",
+        "save_top_k": 3,
+        "save_last": true
+      },
+      "early_stopping": {
+        "_target_": "pytorch_lightning.callbacks.EarlyStopping",
+        "monitor": "val_loss",
+        "mode": "min",
+        "patience": 15,
+        "verbose": false
+      }
+    },
+    "logger": {
+      "choice": "both",
+      "tensorboard": {
+        "_target_": "pytorch_lightning.loggers.TensorBoardLogger",
+        "save_dir": "./experiments/whisper_plus/stage2",
+        "name": "whisper_plus-stage2",
+        "version": "v1"
+      },
+      "wandb": {
+        "_target_": "pytorch_lightning.loggers.WandbLogger",
+        "project": "CleanUNet2-SSL",
+        "name": "whisper_plus-stage2",
+        "save_dir": "./experiments/whisper_plus/stage2"
+      }
+    },
+    "train_latents_dir": "./experiments/whisper_plus/train_latents",
+    "data": {
+      "deterministic_crop": true,
+      "return_audio_paths": true
+    }
+  }
+}

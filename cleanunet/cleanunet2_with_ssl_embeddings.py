@@ -1,11 +1,11 @@
 """
-CleanUNet2 with Self-Supervised Speech Embeddings (Wav2Vec2) for Two-Stage Training
+CleanUNet2 with Self-Supervised Speech Embeddings (multi-backbone) for Two-Stage Training
 
 Architecture:
-    - Stage 1: Train with SSL embeddings (Wav2Vec2) injected into latent space
+    - Stage 1: Train with SSL embeddings injected into latent space
     - Stage 2: Train to replicate latent vectors without embedding extractor
 
-Two-stage training using self-supervised speech embeddings (Wav2Vec2-XLS-R-2B).
+Two-stage training using self-supervised speech embeddings (wav2vec2 / hubert / wavlm / w2v-bert / whisper).
 The model benefits from speaker information during training while maintaining fast
 inference speed (Stage 2 doesn't use embedding extractor).
 """
@@ -18,14 +18,14 @@ from .cleanunet2 import CleanUNet2, SpecUpsampler, Conditioner
 from .cleanunet import CleanUNet
 from .cleanspecnet import CleanSpecNet
 from .integration_block import SequenceIntegrationBlock
-from .wav2vec2_extractor import Wav2Vec2Extractor
+from .ssl_extractor_factory import build_ssl_extractor
 
 
 class CleanUNet2WithSSLEmbeddings(nn.Module):
     """
-    CleanUNet2 model with SSL Embeddings (Wav2Vec2) for two-stage training.
+    CleanUNet2 model with SSL Embeddings (multi-backbone) for two-stage training.
 
-    Stage 1: Uses Wav2Vec2 extractor to inject SSL embeddings into latent space
+    Stage 1: Uses the SSL extractor to inject embeddings into latent space
     Stage 2: Replicates latent vectors without SSL embedding extractor
 
     This approach allows the model to benefit from speaker information during training
@@ -38,53 +38,60 @@ class CleanUNet2WithSSLEmbeddings(nn.Module):
         conditioning_type='addition',
         cleanunet_params=None,
         cleanspecnet_params=None,
-        # Wav2Vec2 SSL Embeddings parameters
-        wav2vec2_model='facebook/wav2vec2-xls-r-2b',
-        wav2vec2_layer=24,
-        wav2vec2_cache_dir=None,
+        # SSL embedding parameters (backbone family selected by ssl_type)
+        ssl_type='wav2vec2',
+        ssl_model='facebook/wav2vec2-xls-r-2b',
+        ssl_layer=24,
+        ssl_cache_dir=None,
         use_preextracted_embeddings=False,
-        wav2vec2_pooling_method='self_attention',
-        wav2vec2_attention_heads=8,
-        wav2vec2_use_weighted_layers=True
+        ssl_pooling_method='mean',
+        ssl_attention_heads=8,
+        ssl_use_weighted_layers=True,
+        # Layer-fusion strategy: list of indices ('+') or the string 'all' ('++').
+        ssl_selected_layers=None,
+        ssl_num_selected_layers=3,
     ):
         """
-        Initialize CleanUNet2 with SSL embeddings (Wav2Vec2) integration.
+        Initialize CleanUNet2 with SSL embeddings integration.
 
         Args:
             stage (str): Training stage ('stage1' or 'stage2')
             conditioning_type (str): Conditioning method (addition, concatenation, film)
             cleanunet_params (dict): Parameters for CleanUNet
             cleanspecnet_params (dict): Parameters for CleanSpecNet
-            wav2vec2_model (str): Wav2Vec2 model name (default: facebook/wav2vec2-xls-r-2b)
-            wav2vec2_layer (int): Which layer to extract from Wav2Vec2 (default: 24)
-            wav2vec2_cache_dir (str): Directory with pre-extracted wav2vec2 embeddings
+            ssl_type (str): SSL family (wav2vec2|hubert|wavlm|w2v-bert|whisper)
+            ssl_model (str): HuggingFace model id for that family
+            ssl_cache_dir (str): Directory with pre-extracted SSL embeddings
             use_preextracted_embeddings (bool): Whether to use pre-extracted embeddings
-            wav2vec2_pooling_method (str): Pooling method - 'mean' or 'self_attention' (default: 'self_attention')
-            wav2vec2_attention_heads (int): Number of attention heads for self-attention pooling (default: 8)
+            ssl_pooling_method (str): Pooling method - 'mean' or 'self_attention' (default: 'self_attention')
+            ssl_attention_heads (int): Number of attention heads for self-attention pooling (default: 8)
         """
         super().__init__()
 
         self.stage = stage
         self.use_preextracted_embeddings = use_preextracted_embeddings
-        self.use_weighted_layers = wav2vec2_use_weighted_layers
-        self.embedding_type = 'ssl_embeddings'  # Always using SSL embeddings (Wav2Vec2)
-        self.embedding_dim = 1920  # Default for wav2vec2-xls-r-2b
+        self.use_weighted_layers = ssl_use_weighted_layers
+        self.embedding_type = 'ssl_embeddings'  # Always using SSL embeddings
+        self.embedding_dim = 1024  # Overwritten from the extractor / cache below
 
         if cleanunet_params is None:
             cleanunet_params = {}
         if cleanspecnet_params is None:
             cleanspecnet_params = {}
 
+        strategy = 'all_layers (++)' if ssl_selected_layers == 'all' else \
+                   (f'selected {ssl_selected_layers} (+)' if ssl_selected_layers else
+                    f'{ssl_num_selected_layers} evenly-spaced (+)')
         print(f"[CleanUNet2WithSSLEmbeddings] Initializing model...")
         print(f"  - Stage: {stage}")
-        print(f"  - Embedding Type: SSL Embeddings (Wav2Vec2)")
-        print(f"  - Wav2Vec2 Model: {wav2vec2_model}")
-        print(f"  - Wav2Vec2 Layer: {wav2vec2_layer}")
+        print(f"  - SSL Type: {ssl_type}")
+        print(f"  - SSL Model: {ssl_model}")
+        print(f"  - Layer fusion: {strategy}")
         print(f"  - Use Pre-extracted: {use_preextracted_embeddings}")
         if not use_preextracted_embeddings:
-            print(f"  - Pooling Method: {wav2vec2_pooling_method}")
-            if wav2vec2_pooling_method == 'self_attention':
-                print(f"  - Attention Heads: {wav2vec2_attention_heads}")
+            print(f"  - Pooling Method: {ssl_pooling_method}")
+            if ssl_pooling_method == 'self_attention':
+                print(f"  - Attention Heads: {ssl_attention_heads}")
         print(f"  - Conditioning: {conditioning_type}")
 
         # Calculate latent dimension from CleanUNet params
@@ -121,7 +128,7 @@ class CleanUNet2WithSSLEmbeddings(nn.Module):
             cond_channels=1
         )
 
-        # ============ SSL Embedding Components (Wav2Vec2) ============
+        # ============ SSL Embedding Components ============
 
         self.embedding_extractor = None
         self.embedding_cache = None
@@ -129,14 +136,14 @@ class CleanUNet2WithSSLEmbeddings(nn.Module):
         if stage == 'stage1':
             if use_preextracted_embeddings:
                 print("[CleanUNet2WithSSLEmbeddings] Using pre-extracted SSL embeddings...")
-                if wav2vec2_cache_dir:
-                    from .wav2vec2_cache import Wav2Vec2Cache
-                    self.embedding_cache = Wav2Vec2Cache(
-                        cache_dir=wav2vec2_cache_dir,
+                if ssl_cache_dir:
+                    from .ssl_cache import SSLEmbeddingCache
+                    self.embedding_cache = SSLEmbeddingCache(
+                        cache_dir=ssl_cache_dir,
                         enabled=True
                     )
                     # Update embedding_dim from cache metadata or first cached file
-                    metadata_file = Path(wav2vec2_cache_dir) / 'metadata.yaml'
+                    metadata_file = Path(ssl_cache_dir) / 'metadata.yaml'
                     num_layers = None
                     if metadata_file.exists():
                         import yaml
@@ -146,7 +153,7 @@ class CleanUNet2WithSSLEmbeddings(nn.Module):
                         num_layers = metadata.get('num_layers', None)
                     else:
                         # Load first cached file to get embedding dimension
-                        cache_files = list(Path(wav2vec2_cache_dir).glob("*.pt"))
+                        cache_files = list(Path(ssl_cache_dir).glob("*.pt"))
                         if cache_files:
                             first_file = torch.load(cache_files[0], map_location='cpu')
                             if isinstance(first_file, dict) and 'embedding' in first_file:
@@ -159,43 +166,48 @@ class CleanUNet2WithSSLEmbeddings(nn.Module):
 
                     # Learnable softmax over the cached all-layer stacks (mirrors the
                     # on-the-fly weighted-sum, but reuses the disk cache for speed).
-                    if wav2vec2_use_weighted_layers:
+                    if ssl_use_weighted_layers:
                         if num_layers is None:
                             raise ValueError(
-                                "wav2vec2_use_weighted_layers=True with pre-extracted embeddings requires an "
+                                "ssl_use_weighted_layers=True with pre-extracted embeddings requires an "
                                 "all-layer cache of shape (num_layers, time, dim). Re-run "
-                                "extract_wav2vec2_embeddings.py to regenerate the cache."
+                                "extract_ssl_embeddings.py to regenerate the cache."
                             )
                         self.cached_layer_weights = nn.Parameter(torch.ones(num_layers) / num_layers)
                         print(f"[CleanUNet2WithSSLEmbeddings] Cached weighted-sum over {num_layers} layers "
                               f"enabled (learnable softmax)")
                 else:
-                    raise ValueError("wav2vec2_cache_dir must be specified when use_preextracted_embeddings=True")
+                    raise ValueError("ssl_cache_dir must be specified when use_preextracted_embeddings=True")
             else:
-                # Extract Wav2Vec2 on-the-fly (slower)
-                print("[CleanUNet2WithSSLEmbeddings] Loading Wav2Vec2 extractor...")
-                self.embedding_extractor = Wav2Vec2Extractor(
-                    model_name=wav2vec2_model,
+                # Extract SSL embeddings on-the-fly (slower). Required when the layer
+                # weights are learnable (both '+' and '++'), since the softmax must
+                # receive gradients each step.
+                print(f"[CleanUNet2WithSSLEmbeddings] Loading {ssl_type} extractor...")
+                self.embedding_extractor = build_ssl_extractor(
+                    ssl_type=ssl_type,
+                    model_name=ssl_model,
                     device='cpu',
-                    layer=wav2vec2_layer,
-                    pooling_method=wav2vec2_pooling_method,
-                    num_attention_heads=wav2vec2_attention_heads,
-                    use_weighted_layers=wav2vec2_use_weighted_layers
+                    layer=ssl_layer,
+                    pooling_method=ssl_pooling_method,
+                    num_attention_heads=ssl_attention_heads,
+                    selected_layers=ssl_selected_layers,
+                    num_selected_layers=ssl_num_selected_layers,
+                    use_weighted_layers=ssl_use_weighted_layers,
                 )
                 self.embedding_dim = self.embedding_extractor.get_embedding_dim()
 
-                # Freeze Wav2Vec2 model (keep attention pooling trainable)
+                # Freeze SSL backbone (keep attention pooling trainable)
                 for param in self.embedding_extractor.model.parameters():
                     param.requires_grad = False
                 self.embedding_extractor.model.eval()
 
                 # The all-layer softmax weights are NOT part of the frozen backbone -> trainable.
-                if wav2vec2_use_weighted_layers:
-                    print("[CleanUNet2WithSSLEmbeddings] Weighted-sum over ALL Wav2Vec2 layers "
+                if ssl_use_weighted_layers:
+                    print("[CleanUNet2WithSSLEmbeddings] Weighted-sum over the selected SSL layers "
                           "enabled — layer weights will be trained!")
                     self.embedding_extractor.layer_weights.requires_grad = True
 
-                if wav2vec2_pooling_method == 'self_attention':
+                if ssl_pooling_method == 'self_attention':
                     print("[CleanUNet2WithSSLEmbeddings] Self-Attention Pooling will be trained!")
                     for param in self.embedding_extractor.attention_pooling.parameters():
                         param.requires_grad = True
@@ -209,7 +221,7 @@ class CleanUNet2WithSSLEmbeddings(nn.Module):
         self.integration_block = SequenceIntegrationBlock(
             latent_channels=self.latent_dim,
             embedding_dim=self.embedding_dim,
-            num_heads=wav2vec2_attention_heads,
+            num_heads=ssl_attention_heads,
             dropout=0.1
         )
 
@@ -333,7 +345,7 @@ class CleanUNet2WithSSLEmbeddings(nn.Module):
             batch_size = clean_audio.shape[0]
 
             if self.use_preextracted_embeddings:
-                # Load pre-extracted Wav2Vec2 embeddings from cache.
+                # Load pre-extracted SSL embeddings from cache.
                 # Each cached item is either:
                 #   (num_layers, time, dim)  -> all-layer cache, or
                 #   (time, dim)              -> legacy single-layer cache.
@@ -347,7 +359,7 @@ class CleanUNet2WithSSLEmbeddings(nn.Module):
                         if cached_data is None:
                             raise RuntimeError(
                                 f"Pre-extracted embedding not found for: {audio_path}\n"
-                                f"Please run extract_wav2vec2_embeddings.py first!"
+                                f"Please run extract_ssl_embeddings.py first!"
                             )
 
                         if isinstance(cached_data, dict) and 'embedding' in cached_data:
@@ -379,7 +391,7 @@ class CleanUNet2WithSSLEmbeddings(nn.Module):
                 # embedding shape: (batch, seq_len, embedding_dim)
 
             else:
-                # Extract Wav2Vec2 on-the-fly. The frozen backbone runs under no_grad inside
+                # Extract SSL embeddings on-the-fly. The frozen backbone runs under no_grad inside
                 # the extractor; the softmax over ALL layers stays differentiable.
                 embedding = self.embedding_extractor.extract_embeddings(
                     clean_audio.squeeze(1),

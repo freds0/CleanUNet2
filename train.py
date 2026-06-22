@@ -1,6 +1,6 @@
 # train.py
 """
-Training entrypoint for CleanUNet2 with Wav2Vec2 embeddings (Wav2Vec2 ONLY).
+Training entrypoint for CleanUNet2 with SSL embeddings (multi-backbone: wav2vec2 / hubert / wavlm / w2v-bert / whisper).
 Supports TensorBoard and WandB logging, and quick test mode for sanity checks.
 
 Usage:
@@ -21,7 +21,7 @@ from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
 from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger
 
-# SSL-embeddings (Wav2Vec2) stage modules are imported lazily in train() per stage.
+# SSL-embeddings stage modules are imported lazily in train() per stage.
 from lightning_modules.data_module import CleanUNetDataModule
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
@@ -128,7 +128,7 @@ def _safe_instantiate_logger(logger_config: dict):
 
 def train(config: dict, quick_test: bool = False, quick_test_samples: int = 30, quick_test_epochs: int = 1, stage: int = None):
     """
-    Main training function with Wav2Vec2 embeddings support.
+    Main training function with SSL embeddings support (backbone selected by model.ssl.type).
 
     Args:
         config: configuration dictionary (loaded from YAML).
@@ -184,20 +184,23 @@ def train(config: dict, quick_test: bool = False, quick_test_samples: int = 30, 
         # Multi-dataset support
         "datasets": data_cfg.get("datasets"),
         "noise_dir": data_cfg.get("noise_dir"),
+        # Stage-2 latent-distillation support
+        "return_audio_paths": data_cfg.get("return_audio_paths", False),
+        "deterministic_crop": data_cfg.get("deterministic_crop", False),
     }
 
     # Instantiate DataModule and LightningModule
-    logger.info("Instantiating data module (Wav2Vec2 embeddings pipeline).")
+    logger.info("Instantiating data module (SSL embeddings pipeline).")
     data_module = CleanUNetDataModule(**data_module_kwargs)
 
-    # Select the SSL-embeddings (Wav2Vec2) Lightning module based on the training stage.
+    # Select the SSL-embeddings Lightning module based on the training stage.
     current_stage = stage if stage is not None else config.get("pipeline", {}).get("stage", 1)
     if current_stage == 2:
         logger.info("Instantiating CleanUNet2SSLEmbeddingsStage2Module (replicate latents, no extractor).")
         from lightning_modules.cleanunet_ssl_embeddings_stage2_module import CleanUNet2SSLEmbeddingsStage2Module
         model = CleanUNet2SSLEmbeddingsStage2Module(config)
     else:
-        logger.info("Instantiating CleanUNet2SSLEmbeddingsStage1Module (Wav2Vec2 embeddings, all-layer softmax).")
+        logger.info("Instantiating CleanUNet2SSLEmbeddingsStage1Module (SSL embeddings, learnable layer softmax).")
         from lightning_modules.cleanunet_ssl_embeddings_stage1_module import CleanUNet2SSLEmbeddingsStage1Module
         model = CleanUNet2SSLEmbeddingsStage1Module(config)
 
@@ -223,7 +226,7 @@ def train(config: dict, quick_test: bool = False, quick_test_samples: int = 30, 
         logger.info("Resuming training from checkpoint: %s", ckpt_path)
 
     # Start training
-    logger.info("Starting training run (Wav2Vec2 ONLY - XVector removed).")
+    logger.info("Starting training run (SSL embeddings, multi-backbone).")
     trainer.fit(model, datamodule=data_module, ckpt_path=ckpt_path)
 
     if quick_test:
@@ -231,9 +234,36 @@ def train(config: dict, quick_test: bool = False, quick_test_samples: int = 30, 
     else:
         logger.info("Training finished.")
 
+def _deep_merge(base: dict, override: dict) -> dict:
+    """Recursively merge `override` into a copy of `base` (override wins on leaves)."""
+    out = copy.deepcopy(base)
+    for k, v in (override or {}).items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = _deep_merge(out[k], v)
+        else:
+            out[k] = copy.deepcopy(v)
+    return out
+
+
+def apply_stage_overrides(config: dict, stage: int) -> dict:
+    """
+    Collapse a single-file-per-variant config into a flat config for `stage`.
+
+    The config carries shared sections (model/loss/data/...) plus optional
+    `stage1` and `stage2` sub-sections holding per-stage overrides. Both are
+    popped so they never leak into the trainer, and the selected one is
+    deep-merged onto the shared base.
+    """
+    config = copy.deepcopy(config)
+    stage1_over = config.pop('stage1', {})
+    stage2_over = config.pop('stage2', {})
+    overrides = stage1_over if stage == 1 else stage2_over
+    return _deep_merge(config, overrides)
+
+
 def parse_args():
-    parser = argparse.ArgumentParser(description="Train CleanUNet2 with Wav2Vec2 embeddings (Wav2Vec2 ONLY).")
-    parser.add_argument("--config", type=str, required=True, help="Path to YAML config file.")
+    parser = argparse.ArgumentParser(description="Train CleanUNet2 with SSL embeddings (multi-backbone; +/++ layer fusion).")
+    parser.add_argument("--config", type=str, required=True, help="Path to config file (JSON or YAML).")
     parser.add_argument("--stage", type=int, choices=[1, 2], default=1, help="Training stage (1 or 2).")
     parser.add_argument("--quick-test", action="store_true", help="Run quick sanity check (1 epoch, 30 samples).")
     parser.add_argument("--quick-test-samples", type=int, default=30, help="Number of samples for quick test.")
@@ -243,20 +273,23 @@ def parse_args():
 if __name__ == "__main__":
     args = parse_args()
 
-    # Load and validate config using new unified config system
+    # Load config. yaml.safe_load parses both YAML and JSON (JSON is a subset),
+    # so the per-variant config_<model>_{plus,plusplus}.json files load directly.
     try:
         with open(args.config, "r") as fh:
             config_dict = yaml.safe_load(fh)
-
-        # For now, we'll keep the dict-based approach for backward compatibility
-        # In the future, could use: from configs import load_train_config
         config = config_dict
     except FileNotFoundError:
         logger.error(f"Config file not found: {args.config}")
         exit(1)
     except yaml.YAMLError as e:
-        logger.error(f"Failed to parse config YAML: {e}")
+        logger.error(f"Failed to parse config (YAML/JSON): {e}")
         exit(1)
+
+    # Determine stage (explicit pipeline.stage overrides the CLI flag), then collapse
+    # the stage1/stage2 override sub-sections onto the shared base for that stage.
+    stage = config.get('pipeline', {}).get('stage', args.stage)
+    config = apply_stage_overrides(config, stage)
 
     # Set precision hint for tensor cores if available (optional)
     if hasattr(torch, "set_float32_matmul_precision"):
@@ -268,7 +301,7 @@ if __name__ == "__main__":
 
     # Log pipeline info
     logger.info("=" * 70)
-    logger.info("CleanUNet2 Training Pipeline (Wav2Vec2 ONLY - XVector removed)")
+    logger.info("CleanUNet2 Training Pipeline (SSL embeddings, multi-backbone)")
     logger.info("=" * 70)
 
     # Get stage and checkpoint info

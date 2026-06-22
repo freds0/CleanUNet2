@@ -1,12 +1,21 @@
 """
-Wav2Vec2 Embedding Extractor Module
-Uses facebook/wav2vec2-xls-r-300m for self-supervised speech embeddings
+W2V-BERT Embedding Extractor Module (multi-layer / 3 selected layers)
+Uses facebook/w2v-bert-2.0 for self-supervised speech embeddings.
+
+Unlike WavLM / wav2vec2 (which ingest raw waveform), Wav2Vec2-BERT expects
+pre-computed log-mel filterbank features: the SeamlessM4T feature extractor turns
+16kHz audio into 80-bin mel features with consecutive frames stacked (stride 2 ->
+160-dim input_features). The conformer encoder then produces a (batch, frames,
+1024) hidden-state sequence per layer.
+
+This variant combines N selected layers (initial / middle / final by default)
+with a learnable softmax-weighted sum, instead of using a single fixed layer.
 """
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers import Wav2Vec2Model
+from transformers import Wav2Vec2BertModel, AutoFeatureExtractor
 import warnings
 
 # Suppress transformers warnings
@@ -17,10 +26,9 @@ def select_layer_indices(num_selected, total_states):
     """
     Pick `num_selected` layer indices evenly spaced over [0, total_states - 1]
     (endpoints included). For a 24-layer model there are 25 hidden states
-    (embedding output + 24 transformer layers), so:
+    (embedding output + 24 conformer layers), so:
         num_selected=3 -> [0, 12, 24]  (initial, middle, final)
         num_selected=5 -> [0, 6, 12, 18, 24]
-    For a 48-layer model (49 states): num_selected=3 -> [0, 24, 48].
 
     Args:
         num_selected (int): how many layers to select (N).
@@ -109,22 +117,23 @@ class SelfAttentionPooling(nn.Module):
         return pooled
 
 
-class Wav2Vec2Extractor(nn.Module):
+class W2VBertExtractor(nn.Module):
     """
-    Wav2Vec2 embedding extractor using facebook/wav2vec2-xls-r-300m.
-    Extracts self-supervised speech representations for speech enhancement.
+    W2V-BERT embedding extractor using facebook/w2v-bert-2.0.
+    Combines N selected layers (initial / middle / final by default) with a
+    learnable softmax-weighted sum for speech enhancement conditioning.
     """
 
-    def __init__(self, model_name="facebook/wav2vec2-xls-r-300m", device='cpu', layer=24,
+    def __init__(self, model_name="facebook/w2v-bert-2.0", device='cpu', layer=12,
                  pooling_method='self_attention', num_attention_heads=8,
                  num_selected_layers=3, selected_layers=None, use_weighted_layers=True):
         """
-        Initialize the Wav2Vec2 extractor.
+        Initialize the W2V-BERT extractor.
 
         Args:
-            model_name (str): HuggingFace model name (default: facebook/wav2vec2-xls-r-300m)
+            model_name (str): HuggingFace model name (default: facebook/w2v-bert-2.0)
             device (str): Device to run the model on
-            layer (int): Single layer to use when use_weighted_layers=False (default: 24, -1 = last)
+            layer (int): Single layer to use when use_weighted_layers=False (default: 12, -1 = last)
             pooling_method (str): Pooling method - 'mean' or 'self_attention' (default: 'self_attention')
             num_attention_heads (int): Number of attention heads for self-attention pooling (default: 8)
             num_selected_layers (int): Number N of layers to use when use_weighted_layers=True and
@@ -143,69 +152,49 @@ class Wav2Vec2Extractor(nn.Module):
         self._num_selected_layers = num_selected_layers
         self._selected_layers_override = selected_layers
 
-        print(f"[Wav2Vec2Extractor] Loading model: {model_name}")
-        print(f"[Wav2Vec2Extractor] Device: {device}")
-        print(f"[Wav2Vec2Extractor] Layer: {layer}")
-        print(f"[Wav2Vec2Extractor] Pooling method: {pooling_method}")
+        print(f"[W2VBertExtractor] Loading model: {model_name}")
+        print(f"[W2VBertExtractor] Device: {device}")
+        print(f"[W2VBertExtractor] Layer: {layer}")
+        print(f"[W2VBertExtractor] Pooling method: {pooling_method}")
 
         try:
-            # Load pre-trained model
-            # Note: We don't need Wav2Vec2Processor because:
-            # 1. Wav2Vec2 models don't use tokenizers (they process audio directly)
-            # 2. We normalize audio manually in extract_embeddings()
-
-            # Use safetensors format for security (required by newer transformers)
-            # This avoids the torch.load vulnerability issue (CVE-2025-32434)
-            print("[Wav2Vec2Extractor] Using safetensors format for secure loading...")
-            self.model = Wav2Vec2Model.from_pretrained(
+            # Use safetensors format for security (required by newer transformers).
+            # This avoids the torch.load vulnerability issue (CVE-2025-32434).
+            print("[W2VBertExtractor] Using safetensors format for secure loading...")
+            self.model = Wav2Vec2BertModel.from_pretrained(
                 model_name,
-                cache_dir="pretrained_models/wav2vec2",
+                cache_dir="pretrained_models/w2v-bert",
                 use_safetensors=True  # Force safetensors format (secure)
             )
 
-            print(f"[Wav2Vec2Extractor] Model loaded successfully!")
-            print(f"[Wav2Vec2Extractor] Model cached at: pretrained_models/wav2vec2")
+            # The feature extractor turns raw audio into the 160-dim stacked log-mel
+            # features the conformer encoder expects (it also normalizes per-utterance
+            # and builds the attention mask).
+            self.feature_extractor = AutoFeatureExtractor.from_pretrained(
+                model_name,
+                cache_dir="pretrained_models/w2v-bert"
+            )
+
+            print(f"[W2VBertExtractor] Model loaded successfully!")
+            print(f"[W2VBertExtractor] Model cached at: pretrained_models/w2v-bert")
 
         except Exception as e:
             print("\n" + "=" * 80)
-            print("[ERROR] Failed to load Wav2Vec2 model from HuggingFace!")
+            print("[ERROR] Failed to load W2V-BERT model from HuggingFace!")
             print("=" * 80)
             print(f"Error: {type(e).__name__}: {str(e)[:200]}\n")
-
-            error_msg = str(e).lower()
-            if "safetensors" in error_msg or "torch.load" in error_msg:
-                print("SOLUTION 1: Install safetensors (recommended)")
-                print("-" * 80)
-                print("This error occurs due to security requirements in newer transformers.")
-                print("Install safetensors to fix:")
-                print("")
-                print("  pip install safetensors")
-                print("")
-                print("Then run the extraction again.")
-                print("")
-                print("SOLUTION 2: Download with safetensors format")
-                print("-" * 80)
-                print("On a machine with internet:")
-                print("")
-                print("  pip install safetensors")
-                print("  from transformers import Wav2Vec2Model")
-                print(f"  model = Wav2Vec2Model.from_pretrained('{model_name}', ")
-                print(f"      cache_dir='pretrained_models/wav2vec2', use_safetensors=True)")
-                print("")
-                print("Then copy 'pretrained_models/wav2vec2' to this machine.")
-            else:
-                print("SOLUTION: Download the model manually")
-                print("-" * 80)
-                print("Run this Python code on a machine with internet:")
-                print("")
-                print("  pip install safetensors")
-                print("  from transformers import Wav2Vec2Model")
-                print(f"  model = Wav2Vec2Model.from_pretrained('{model_name}', ")
-                print(f"      cache_dir='pretrained_models/wav2vec2', use_safetensors=True)")
-                print("")
-                print("Then copy 'pretrained_models/wav2vec2' to this machine.")
+            print("SOLUTION: Download the model on a machine with internet:")
+            print("-" * 80)
+            print("  pip install safetensors")
+            print("  from transformers import Wav2Vec2BertModel, AutoFeatureExtractor")
+            print(f"  Wav2Vec2BertModel.from_pretrained('{model_name}',")
+            print(f"      cache_dir='pretrained_models/w2v-bert', use_safetensors=True)")
+            print(f"  AutoFeatureExtractor.from_pretrained('{model_name}',")
+            print(f"      cache_dir='pretrained_models/w2v-bert')")
+            print("")
+            print("Then copy 'pretrained_models/w2v-bert' to this machine.")
             print("=" * 80 + "\n")
-            raise RuntimeError("Wav2Vec2 model loading failed. See instructions above.") from e
+            raise RuntimeError("W2V-BERT model loading failed. See instructions above.") from e
 
         # Move model to device
         self.model = self.model.to(device)
@@ -219,7 +208,7 @@ class Wav2Vec2Extractor(nn.Module):
 
         # Get embedding dimension
         self.embedding_dim = self.model.config.hidden_size
-        print(f"[Wav2Vec2Extractor] Embedding dimension: {self.embedding_dim}")
+        print(f"[W2VBertExtractor] Embedding dimension: {self.embedding_dim}")
 
         # ===== Multi-layer selection (N layers: initial / middle / final by default) =====
         self.total_states = self.model.config.num_hidden_layers + 1  # embedding output + each layer
@@ -230,46 +219,81 @@ class Wav2Vec2Extractor(nn.Module):
             self.selected_layers = list(self._selected_layers_override)
         else:
             self.selected_layers = select_layer_indices(self._num_selected_layers, self.total_states)
-        print(f"[Wav2Vec2Extractor] Selected layers (of {self.total_states}): {self.selected_layers}")
+        print(f"[W2VBertExtractor] Selected layers (of {self.total_states}): {self.selected_layers}")
 
         # Learnable softmax weights over the N selected layers (NOT part of the frozen backbone).
         if self.use_weighted_layers:
             self.layer_weights = nn.Parameter(
                 torch.ones(len(self.selected_layers)) / len(self.selected_layers)
             )
-            print(f"[Wav2Vec2Extractor] Weighted-sum over {len(self.selected_layers)} selected layers "
+            print(f"[W2VBertExtractor] Weighted-sum over {len(self.selected_layers)} selected layers "
                   f"enabled (learnable softmax)")
 
         # Initialize pooling layer
         if self.pooling_method == 'self_attention':
-            print(f"[Wav2Vec2Extractor] Initializing Self-Attention Pooling (heads={num_attention_heads})...")
+            print(f"[W2VBertExtractor] Initializing Self-Attention Pooling (heads={num_attention_heads})...")
             self.attention_pooling = SelfAttentionPooling(
                 embedding_dim=self.embedding_dim,
                 num_heads=num_attention_heads,
                 dropout=0.1
             )
             self.attention_pooling = self.attention_pooling.to(device)
-            print(f"[Wav2Vec2Extractor] Self-Attention Pooling initialized!")
+            print(f"[W2VBertExtractor] Self-Attention Pooling initialized!")
         elif self.pooling_method == 'mean':
             self.attention_pooling = None
-            print(f"[Wav2Vec2Extractor] Using mean pooling (no learnable parameters)")
+            print(f"[W2VBertExtractor] Using mean pooling (no learnable parameters)")
         else:
             raise ValueError(f"Unknown pooling method: {self.pooling_method}. Use 'mean' or 'self_attention'")
 
-        print(f"[Wav2Vec2Extractor] Model ready!")
+        print(f"[W2VBertExtractor] Model ready!")
+
+    def _waveform_to_features(self, waveform, sample_rate, model_device, model_dtype):
+        """
+        Convert a batch of raw waveforms into W2V-BERT input features.
+
+        Args:
+            waveform (torch.Tensor): (batch, samples) at `sample_rate`.
+            sample_rate (int): input sample rate (W2V-BERT expects 16kHz).
+            model_device, model_dtype: device/dtype to place the features on.
+
+        Returns:
+            (input_features, attention_mask): input_features of shape
+            (batch, frames, 160); attention_mask of shape (batch, frames) or None.
+        """
+        # Resample to 16kHz if needed (W2V-BERT is trained at 16kHz)
+        if sample_rate != 16000:
+            print(f"[W2VBertExtractor] Warning: Input sample rate is {sample_rate}Hz, "
+                  f"but W2V-BERT expects 16kHz. Resampling...")
+            import torchaudio
+            resampler = torchaudio.transforms.Resample(
+                orig_freq=sample_rate, new_freq=16000
+            ).to(waveform.device)
+            waveform = resampler(waveform)
+
+        # The HF feature extractor runs on CPU numpy. This is fine: the backbone is
+        # frozen and runs under no_grad.
+        wav_list = [w.detach().cpu().float().numpy() for w in waveform]
+        feats = self.feature_extractor(
+            wav_list, sampling_rate=16000, return_tensors="pt"
+        )
+        input_features = feats['input_features'].to(device=model_device, dtype=model_dtype)
+        attention_mask = feats.get('attention_mask', None)
+        if attention_mask is not None:
+            attention_mask = attention_mask.to(device=model_device)
+        return input_features, attention_mask
 
     def extract_embeddings(self, waveform, sample_rate=16000, return_mean=True):
         """
-        Extract Wav2Vec2 embeddings from audio waveform.
+        Extract W2V-BERT embeddings from audio waveform.
 
         Args:
             waveform (torch.Tensor): Audio tensor of shape (batch, samples) or (batch, 1, samples)
-            sample_rate (int): Sample rate of the audio (wav2vec2 expects 16kHz)
-            return_mean (bool): If True, return mean pooled embeddings (batch, dim)
+            sample_rate (int): Sample rate of the audio (W2V-BERT expects 16kHz)
+            return_mean (bool): If True, return pooled embeddings (batch, dim)
                               If False, return full sequence (batch, time_steps, dim)
 
         Returns:
-            embeddings (torch.Tensor): Wav2Vec2 embeddings
+            embeddings (torch.Tensor): W2V-BERT embeddings
                 - If return_mean=True: shape (batch, embedding_dim) [e.g., (batch, 1024)]
                 - If return_mean=False: shape (batch, time_steps, embedding_dim)
         """
@@ -280,29 +304,22 @@ class Wav2Vec2Extractor(nn.Module):
         if waveform.dim() == 3:
             waveform = waveform.squeeze(1)
 
-        # Move to model device
-        waveform = waveform.to(self.device)
+        # Derive the actual device/dtype from the model parameters. self.device is
+        # stale after Lightning moves the module to GPU and/or casts it to fp16, so
+        # relying on it would mismatch the input against the (cuda/half) weights.
+        param = next(self.model.parameters())
+        model_device, model_dtype = param.device, param.dtype
 
-        # Normalize audio to [-1, 1] range (wav2vec2 expects this)
-        max_val = waveform.abs().max(dim=-1, keepdim=True)[0]
-        max_val = torch.clamp(max_val, min=1e-8)  # Avoid division by zero
-        waveform = waveform / max_val
+        # Build the 160-dim stacked log-mel input features (+ attention mask)
+        input_features, attention_mask = self._waveform_to_features(
+            waveform, sample_rate, model_device, model_dtype
+        )
 
-        # Resample if needed (wav2vec2 expects 16kHz)
-        if sample_rate != 16000:
-            print(f"[Wav2Vec2Extractor] Warning: Input sample rate is {sample_rate}Hz, "
-                  f"but wav2vec2 expects 16kHz. Resampling...")
-            import torchaudio
-            resampler = torchaudio.transforms.Resample(
-                orig_freq=sample_rate,
-                new_freq=16000
-            ).to(self.device)
-            waveform = resampler(waveform)
-
-        # Run the frozen wav2vec2 backbone under no_grad.
+        # Run the frozen W2V-BERT backbone under no_grad.
         with torch.no_grad():
             outputs = self.model(
-                waveform,
+                input_features,
+                attention_mask=attention_mask,
                 output_hidden_states=True,
                 return_dict=True
             )
@@ -343,7 +360,7 @@ class Wav2Vec2Extractor(nn.Module):
         Extract ONLY the N selected layers (initial/middle/final by default), stacked.
 
         Used to pre-extract embeddings to disk: a learnable softmax over these N layers
-        can then be applied cheaply at training time (without re-running wav2vec2).
+        can then be applied cheaply at training time (without re-running W2V-BERT).
 
         Returns:
             embeddings (torch.Tensor): shape (batch, N, time_steps, embedding_dim),
@@ -353,22 +370,20 @@ class Wav2Vec2Extractor(nn.Module):
 
         if waveform.dim() == 3:
             waveform = waveform.squeeze(1)
-        waveform = waveform.to(self.device)
 
-        max_val = waveform.abs().max(dim=-1, keepdim=True)[0]
-        max_val = torch.clamp(max_val, min=1e-8)
-        waveform = waveform / max_val
+        param = next(self.model.parameters())
+        model_device, model_dtype = param.device, param.dtype
 
-        if sample_rate != 16000:
-            print(f"[Wav2Vec2Extractor] Warning: Input sample rate is {sample_rate}Hz, "
-                  f"but wav2vec2 expects 16kHz. Resampling...")
-            import torchaudio
-            resampler = torchaudio.transforms.Resample(
-                orig_freq=sample_rate, new_freq=16000
-            ).to(self.device)
-            waveform = resampler(waveform)
+        input_features, attention_mask = self._waveform_to_features(
+            waveform, sample_rate, model_device, model_dtype
+        )
 
-        outputs = self.model(waveform, output_hidden_states=True, return_dict=True)
+        outputs = self.model(
+            input_features,
+            attention_mask=attention_mask,
+            output_hidden_states=True,
+            return_dict=True
+        )
         selected = [outputs.hidden_states[i] for i in self.selected_layers]
         # list of N tensors (batch, time, dim) -> (batch, N, time, dim)
         stacked = torch.stack(selected, dim=1)
@@ -378,7 +393,7 @@ class Wav2Vec2Extractor(nn.Module):
     @torch.no_grad()
     def extract_and_interpolate(self, waveform, target_length, sample_rate=16000):
         """
-        Extract Wav2Vec2 embeddings and interpolate to match target temporal length.
+        Extract W2V-BERT embeddings and interpolate to match target temporal length.
         This is useful for integrating embeddings with encoder features.
 
         Args:

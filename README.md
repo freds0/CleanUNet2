@@ -1,447 +1,265 @@
-# 🎵 CleanUNet2: Hybrid Speech Denoising with Wav2Vec2 Embeddings
+# 🎵 CleanUNet2-SSL: Speech Denoising with Self-Supervised Embeddings
 
-**Version**: 2.0 (Wav2Vec2 ONLY - XVector removed)  
-**Status**: ✅ Production Ready  
+**Version**: 3.0 (consolidated multi-backbone) 
+**Status**: ✅ Active 
 **License**: MIT
 
 ---
 
 ## 📢 Overview
 
-**CleanUNet2** is a deep-learning architecture for **speech enhancement** that combines:
+**CleanUNet2-SSL** is a speech-enhancement architecture that conditions a hybrid
+waveform/spectrogram denoiser on **self-supervised (SSL) speech embeddings**. It combines:
 
-- **🎤 Spectrogram Refinement**: CleanSpecNet (frequency domain transformer)
-- **🌊 Waveform Denoising**: CleanUNet (multi-scale encoder-decoder)
-- **🧠 Wav2Vec2 Embeddings**: 1024-D self-supervised representations (facebook/wav2vec2-xls-r-2b)
-- **🔗 Hybrid Conditioning**: FiLM-based fusion of spectrogram and waveform features
+- **🎤 Spectrogram refinement** — CleanSpecNet (frequency-domain transformer)
+- **🌊 Waveform denoising** — CleanUNet (multi-scale encoder-decoder)
+- **🧠 SSL embeddings** — representations from one of five interchangeable backbones
+- **🔗 Hybrid conditioning** — FiLM-based fusion of spectrogram and waveform features
 
-This is a **refactored, production-ready version** with:
-- ✅ Wav2Vec2-exclusive pipeline (XVector completely removed)
-- ✅ Unified configuration system
-- ✅ Professional directory structure
-- ✅ Type-safe parameters
-- ✅ Comprehensive documentation
+This repo **consolidates all SSL backbones behind one CleanUNet2 base**. The SSL family
+is selected purely by config (`model.ssl.type`); the base architecture, both Lightning
+modules, and the training entry point are family-agnostic.
 
 ---
 
-## 🚀 Quick Start
+## 🧩 SSL backbones and the `+` / `++` variants
 
-### 1. Installation
+A single base, two layer-fusion variants. The only difference between `+` and `++` is
+which hidden states feed the learnable softmax fusion (`model.ssl.selected_layers`):
+
+| Variant | `selected_layers` | Meaning |
+|---|---|---|
+| `+`  (plus)     | `[first, mid, last]` | learnable softmax over **3 selected** hidden states |
+| `++` (plusplus) | `"all"`              | learnable softmax over **all** hidden states |
+
+Supported families (`model.ssl.type` → backbone):
+
+| `type` | Backbone | Feature path |
+|---|---|---|
+| `wav2vec2` | `facebook/wav2vec2-xls-r-2b` | raw waveform |
+| `hubert`   | `facebook/hubert-large-ll60k` | raw waveform |
+| `wavlm`    | `microsoft/wavlm-large` | raw waveform |
+| `w2v-bert` | `facebook/w2v-bert-2.0` | log-mel + attention mask |
+| `whisper`  | `openai/whisper-large-v3` | mel features |
+
+Dispatch lives in `cleanunet/ssl_extractor_factory.py`. Each family has its own extractor
+module (`cleanunet/<family>_extractor.py`) sharing an identical constructor signature, so
+the rest of the pipeline never branches on backbone type.
+
+---
+
+## 🚀 Quick start
+
+### 1. Install
 
 ```bash
-# Clone repository
-git clone <repository-url>
-cd CleanUNet2-wav2vec-src
-
-# Install dependencies (Wav2Vec2 ONLY)
 pip install -r requirements.txt
-
-# Verify installation
-python scripts/validate_config.py --config configs/train.yaml
 ```
 
-### 2. Quick Test (1 epoch, 30 samples)
+### 2. Quick test (1 epoch, 30 samples)
 
 ```bash
-# Run sanity check
-python scripts/train.py --config configs/train.yaml --quick-test
-
-# Expected output:
-# [INFO] Stage: 1
-# [INFO] Quick Test Mode: True
-# ... training loop ...
-# ✅ Quick test completed successfully!
+python train.py --config configs/config_wavlm_plusplus.json --stage 1 --quick-test
 ```
 
-### 3. Train Stage 1
+### 3. Train
+
+Two-stage pipeline. **Stage 1** trains the SSL layer-softmax + the denoiser (SSL embeddings
+injected into the latent space). **Stage 2** trains a latent predictor to reproduce the
+Stage-1 latents *without* the SSL extractor at inference time.
 
 ```bash
-# Stage 1 training (baseline, no augmentation)
-python scripts/train.py --config configs/train.yaml --stage 1
+# Stage 1, then Stage 2 (any family/variant):
+python train.py --config configs/config_wavlm_plusplus.json --stage 1
+python train.py --config configs/config_wavlm_plusplus.json --stage 2
 
-# Stage 1 with augmentation (enable in configs/train.yaml)
-# Edit: augmentation.enabled: true
-python scripts/train.py --config configs/train.yaml --stage 1
+# e.g. whisper '+':
+python train.py --config configs/config_whisper_plus.json --stage 1
 ```
 
-### 4. Train Stage 2
+`--stage` selects which `stage1` / `stage2` override block is deep-merged onto the shared
+config (checkpoint paths, logger run names, save dirs). The Stage-2 override sets
+`pipeline.stage1_checkpoint`, which must point at a trained Stage-1 checkpoint.
+
+> Configs default to **on-the-fly** SSL extraction (`model.ssl.use_preextracted: false`),
+> which is required for the learnable layer-softmax to receive gradients.
+
+#### Generating Stage-1 latents for Stage 2
+
+Stage 2 trains by replicating the **fused latents** that Stage 1 writes (one
+`val_batch_*.pt` per validation batch, in `latents_dir`, default `stored_latents_stage1/`).
+Those files are produced inside the Stage-1 **validation loop**, so by default they reflect
+whatever the model looked like at each validation pass — including the barely-trained
+epoch-1 snapshot, accumulated across epochs.
+
+To get a single, clean set of latents from a **fully-trained** Stage-1 checkpoint without
+retraining, run one validation pass with `generate_latents.py`:
 
 ```bash
-# Edit configs/train.yaml:
-# pipeline.stage: 2
-# stage1_checkpoint: "path/to/stage1/best-checkpoint.ckpt"
-
-python scripts/train.py --config configs/train.yaml --stage 2
+python generate_latents.py \
+  --config configs/config_wavlm_plusplus.json \
+  --checkpoint experiments/wavlm_plusplus/checkpoints/stage1/cleanunet-stage1-last.ckpt
+# optional: --latents-dir stored_latents_stage1   --device auto|cpu|cuda
 ```
 
-### 5. Run Inference
+This loads the trained weights and reuses the Stage-1 `validation_step` (no optimizer
+step), writing `val_batch_000000.pt …` over a single pass. Then train Stage 2 normally;
+it reads the same `latents_dir` (default `stored_latents_stage1/`).
+
+### 4. Inference
 
 ```bash
-# Edit configs/inference.yaml:
-# checkpoint_path: "path/to/best-checkpoint.ckpt"
-# input_output.input_dir: "path/to/noisy/audio/"
-# input_output.output_dir: "denoised_output/"
-
-python scripts/inference.py --config configs/inference.yaml
+# Edit configs/inference.yaml: checkpoint_path, input_dir, output_dir
+python inference.py --config configs/inference.yaml
 ```
+
+Inference runs the **denoiser only** — no SSL extractor is loaded — so any trained
+checkpoint (Stage 1 or Stage 2) works.
 
 ---
 
-## 📁 Directory Structure (New)
+## 📁 Directory structure
 
 ```
-CleanUNet2-wav2vec-src/
+CleanUNet2-SSL_Embeddings/
 │
-├── src/cleanunet/                     # Core model code
-│   ├── models/                        # Model architectures
-│   │   ├── cleanunet.py              # Waveform UNet
-│   │   ├── cleanspecnet.py           # Spectrogram network
-│   │   ├── cleanunet2.py             # Hybrid model
-│   │   └── conditioner.py            # Spec↔waveform fusion
-│   ├── embeddings/                    # Wav2Vec2 extraction
-│   │   ├── wav2vec2_extractor.py
-│   │   └── wav2vec2_cache.py
-│   ├── loss.py                        # Multi-resolution STFT, phase losses
-│   ├── metrics.py                     # PESQ, STOI, SI-SDR
-│   └── util.py                        # Utilities
+├── train.py                          # Training entry point (JSON/YAML config, --stage)
+├── generate_latents.py               # Stage-1 latents from a trained ckpt (no retraining)
+├── inference.py                      # Sliding-window denoising inference
+├── losses.py                         # Multi-resolution STFT, phase, magnitude losses
+├── metrics.py                        # PESQ, STOI, SI-SDR
+├── spec_dataset.py                   # Audio-pair dataset (+ spectrograms)
+├── augmentation.py                   # On-the-fly audio augmentation
+├── extract_wav2vec2_embeddings.py    # (legacy) wav2vec2-only pre-extraction
 │
-├── data/                              # Data loading & augmentation
-│   ├── dataset.py                     # MelDataset for audio pairs
-│   └── augmentation.py                # On-the-fly augmentation
+├── cleanunet/
+│   ├── cleanunet.py                  # Waveform UNet
+│   ├── cleanspecnet.py               # Spectrogram network
+│   ├── cleanunet2.py                 # Hybrid base model
+│   ├── cleanunet2_with_ssl_embeddings.py   # Family-agnostic SSL-conditioned model
+│   ├── ssl_extractor_factory.py      # ssl_type -> extractor dispatch + config mapping
+│   ├── {wav2vec2,hubert,wavlm,w2vbert,whisper}_extractor.py
+│   ├── ssl_cache.py                  # On-disk embedding cache (SSLEmbeddingCache)
+│   ├── integration_block.py          # SSL ↔ latent fusion block
+│   ├── util.py / logger.py
 │
-├── training/                          # PyTorch Lightning training
-│   ├── lightning_module.py            # CleanUNetLightningModule
-│   └── data_module.py                 # DataModule for dataset handling
+├── lightning_modules/
+│   ├── cleanunet_ssl_embeddings_stage1_module.py
+│   ├── cleanunet_ssl_embeddings_stage2_module.py
+│   ├── cleanunet_module.py           # Vanilla denoiser module (inference)
+│   └── data_module.py
 │
-├── scripts/                           # Executable scripts
-│   ├── train.py                       # Main training entry point
-│   ├── inference.py                   # Inference pipeline
-│   ├── extract_embeddings.py          # Wav2Vec2 pre-extraction
-│   ├── validate_config.py             # Config validation
-│   └── ...                            # Other utilities
+├── configs/
+│   ├── config_<family>_plus.json     # '+'  variant (3 selected layers)
+│   ├── config_<family>_plusplus.json # '++' variant (all layers)
+│   ├── config.py                     # Optional strict dataclass schema/validator
+│   └── inference.yaml
 │
-├── configs/                           # Unified configuration
-│   ├── config.py                      # Type-safe schema
-│   ├── train.yaml                     # Training (Stage 1 & 2)
-│   └── inference.yaml                 # Inference config
-│
-├── tests/                             # Test suite
-│   ├── test_models.py                 # Model architecture tests
-│   ├── test_embeddings.py             # Wav2Vec2 tests
-│   ├── test_dataset.py                # Dataset loading tests
-│   └── conftest.py                    # Pytest fixtures
-│
-└── filelists/                         # Dataset pointers
-    ├── train.csv                      # Training file pairs
-    └── test.csv                       # Test file pairs
+├── scripts/                          # Pre-extraction / launch helpers
+└── filelists/                        # train.csv / test.csv (clean|noisy pairs)
 ```
 
----
-
-## 🎯 Key Features
-
-### 1. **Wav2Vec2-Exclusive Pipeline**
-- ✅ 1024-D embeddings from facebook/wav2vec2-xls-r-2b (layer 24)
-- ✅ Pre-extraction with caching OR on-the-fly extraction
-- ✅ No XVector dependencies (removed SpeechBrain)
-- ✅ Lighter footprint (~100MB lighter than before)
-
-### 2. **Unified Configuration**
-- ✅ Single `train.yaml` for both Stage 1 & Stage 2
-- ✅ Type-safe validation via Pydantic dataclasses
-- ✅ Stage switching: just change `pipeline.stage: 1|2`
-- ✅ Optional data augmentation (Stage 1 specific)
-- ✅ See `CONFIGURATION_GUIDE.md` for details
-
-### 3. **Quick Test Mode**
-- ✅ Run 1 epoch on 30 samples for rapid iteration
-- ✅ Command: `python scripts/train.py --config configs/train.yaml --quick-test`
-- ✅ Completes in < 5 minutes
-- ✅ Validates end-to-end pipeline
-
-### 4. **Professional Repository**
-- ✅ Clear separation: models, data, training, scripts, tests
-- ✅ Organized imports and module structure
-- ✅ Comprehensive documentation (README, SETUP, CONFIGURATION_GUIDE, MIGRATION)
-- ✅ Type hints and docstrings throughout
-
-### 5. **Multi-Resolution Losses**
-- ✅ Waveform L1 loss
-- ✅ Multi-resolution STFT loss (3 resolutions)
-- ✅ Phase consistency loss
-- ✅ Spectrogram magnitude loss
-
-### 6. **Flexible Training**
-- ✅ TensorBoard logging (built-in)
-- ✅ Weights & Biases integration (optional)
-- ✅ Checkpointing (best + periodic)
-- ✅ Early stopping
-- ✅ Gradient clipping
-- ✅ Mixed precision training (16-mixed)
-
----
-
-## 📊 Model Architecture
-
-### Stage 1: Wav2Vec2-Conditioned Denoising
-
-```
-Input: (Noisy Audio, Noisy Spectrogram, Wav2Vec2 Embeddings)
-         ↓
-CleanSpecNet: Refine spectrogram using self-attention
-         ↓
-SpecUpsampler: Expand spectrogram to waveform length
-         ↓
-Conditioner (FiLM): Fuse spectrogram features with waveform
-         ↓
-CleanUNet: Multi-scale encoder-decoder with transformer bottleneck
-         ↓
-Output: Enhanced Waveform
-```
-
-### Stage 2: Latent Replication (Optional)
-
-Train CleanUNet to replicate Stage 1 outputs without embeddings:
-```
-Input: (Noisy Audio, Noisy Spectrogram)  [No embeddings needed!]
-         ↓
-(same architecture as Stage 1)
-         ↓
-Output: Enhanced Waveform (mimics Stage 1)
-```
+`<family>` ∈ `{wav2vec2, hubert, wavlm, w2vbert, whisper}` → 10 configs total.
 
 ---
 
 ## 📋 Configuration
 
-### Essential Parameters
+Each config is a single JSON file with shared sections plus `stage1` / `stage2` override
+blocks. The SSL-specific block:
 
-Edit `configs/train.yaml`:
-
-```yaml
-pipeline:
-  stage: 1                              # 1 or 2
-
-data:
-  data_dir: "/path/to/VoiceBank-DEMAND/"
-  train_list_path: "filelists/train.csv"
-  val_list_path: "filelists/test.csv"
+```jsonc
+"model": {
+  "cleanunet": { ... },              // shared denoiser base (identical across families)
+  "ssl": {
+    "type": "wavlm",                 // wav2vec2 | hubert | wavlm | w2v-bert | whisper
+    "model_name": "microsoft/wavlm-large",
+    "embedding_dim": 1024,
+    "use_weighted_layers": true,     // learnable softmax over layers
+    "selected_layers": "all",        // [i,j,k] -> '+'  |  "all" -> '++'
+    "layer_strategy": "all_layers",  // "selected" ('+') | "all_layers" ('++')
+    "use_preextracted": false        // on-the-fly extraction (default)
+  }
+}
 ```
 
-### Optional Parameters
+Common knobs:
 
-```yaml
-# Data augmentation (Stage 1 only)
-augmentation:
-  enabled: true                         # Enable augmentation
-  # techniques: [..., see CONFIGURATION_GUIDE.md]
-
-# Hyperparameters
-trainer:
-  max_epochs: 300
-data:
-  batch_size: 32
-optimizer:
-  lr: 5.0e-05
+```jsonc
+"data":    { "data_dir": "/path/to/VoiceBank-DEMAND-16k/", "batch_size": 16, "segment_size": 32000 },
+"trainer": { "max_epochs": 300, "precision": "16-mixed", "gradient_clip_val": 5.0 },
+"optimizer": { "type": "adamw", "learning_rate": 5e-05 }
 ```
 
-For comprehensive guide, see **`CONFIGURATION_GUIDE.md`**.
+`train.py` parses configs with `yaml.safe_load` (JSON ⊂ YAML), so both `.json` and `.yaml`
+configs work.
 
 ---
 
-## 📊 Dataset Format
+## 📊 Logging
 
-### Expected CSV Format
+Both **TensorBoard and Wandb** are enabled simultaneously via `logger.choice: "both"`.
+Each config carries `logger.tensorboard` and `logger.wandb` blocks (with per-stage run
+names). Set `choice` to `"tensorboard"` or `"wandb"` to use only one.
 
-**`filelists/train.csv`**:
+- TensorBoard: `./experiments/<family>_<variant>/<stage>/`
+- Wandb project: `CleanUNet2-SSL`
+
+Tracked metrics: **PESQ**, **STOI**, **SI-SDR**.
+
+---
+
+## 📊 Dataset format
+
+`filelists/train.csv` / `filelists/test.csv`, one `clean|noisy` pair per line
+(`,` separator also accepted):
+
 ```
 clean/p226_001.wav|noisy/p226_001.wav
 clean/p226_002.wav|noisy/p226_002.wav
-clean/p226_003.wav|noisy/p226_003.wav
-...
 ```
 
-### Supported Datasets
-
-- **VoiceBank-DEMAND** (16 kHz) - primary
-- **LJSpeech** (22 kHz, auto-resampled)
-- **Custom datasets** (must provide filelists)
+Paths are relative to `data.data_dir` (absolute paths starting with `/` are used as-is).
+Primary dataset: **VoiceBank-DEMAND** (16 kHz).
 
 ---
 
-## 🧪 Testing
+## 🧠 Architecture
 
-### Quick Test
-
-```bash
-# Sanity check: 1 epoch, 30 samples, < 5 min
-python scripts/train.py --config configs/train.yaml --quick-test
-
-# Custom quick test
-python scripts/train.py \
-  --config configs/train.yaml \
-  --quick-test \
-  --quick-test-samples 50 \
-  --quick-test-epochs 1
-```
-
-### Unit Tests
-
-```bash
-# Run all tests
-pytest tests/
-
-# Run specific test
-pytest tests/test_embeddings.py -v
-
-# With coverage
-pytest tests/ --cov=src/
-```
-
-### Validation
-
-```bash
-# Validate training config
-python scripts/validate_config.py --config configs/train.yaml
-
-# Validate inference config
-python scripts/validate_config.py --config configs/inference.yaml --type inference
-```
-
----
-
-## 📚 Documentation
-
-- **`README.md`** (this file) - Overview & quick start
-- **`SETUP.md`** (NEW) - Detailed installation & environment setup
-- **`CONFIGURATION_GUIDE.md`** - All config parameters explained
-- **`MIGRATION.md`** (NEW) - Migration from old structure, file organization
-- **`STEP5_REORGANIZATION_PLAN.md`** - Reorganization details (for reference)
-
----
-
-## 🔧 Common Tasks
-
-### Extract Wav2Vec2 Embeddings (Pre-extraction)
-
-```bash
-# Pre-extract embeddings for faster training
-python scripts/extract_embeddings.py --config configs/train.yaml
-
-# Specify cache directory
-python scripts/extract_embeddings.py \
-  --config configs/train.yaml \
-  --cache-dir cached_embeddings/wav2vec2
-```
-
-### Create Filelists
-
-```bash
-# Create filelists from two directories (clean + noisy)
-python scripts/create_filelists.py \
-  --clean-dir /path/to/clean/ \
-  --noisy-dir /path/to/noisy/ \
-  --output filelists/custom_train.csv
-```
-
-### Validate Dataset
-
-```bash
-# Check dataset integrity
-python scripts/validate_data.py --filelist filelists/train.csv
-```
-
----
-
-## 📈 Training Results
-
-### Metrics During Training
-
-- **PESQ**: Perceptual Evaluation of Speech Quality
-- **STOI**: Short-Time Objective Intelligibility
-- **SI-SDR**: Scale-Invariant Signal-to-Distortion Ratio
-
-Logged to:
-- TensorBoard: `experiments/*/tensorboard/`
-- Weights & Biases: `cleanunet2_wav2vec2` project
-
-### Checkpoints Saved
+### Stage 1 — SSL-conditioned denoising
 
 ```
-experiments/
-└── stage1_wav2vec2_baseline/
-    └── checkpoints/
-        ├── best-epoch-XX-val_loss-Y.YYY.ckpt
-        ├── epoch-0000.ckpt
-        ├── epoch-0010.ckpt
-        └── last.ckpt
+Input: (Noisy waveform, Noisy spectrogram, SSL embeddings)
+  → CleanSpecNet        : refine spectrogram (self-attention)
+  → SpecUpsampler       : expand spectrogram to waveform length
+  → Conditioner (FiLM)  : fuse spectrogram + SSL features into the waveform path
+  → CleanUNet           : multi-scale encoder-decoder w/ transformer bottleneck
+Output: Enhanced waveform   (Stage-1 latents are saved for Stage 2)
+```
+
+### Stage 2 — latent replication (no SSL at inference)
+
+```
+Input: (Noisy waveform, Noisy spectrogram)     # no SSL embeddings
+  → latent predictor trained to reproduce Stage-1 latents
+Output: Enhanced waveform
 ```
 
 ---
 
 ## 🚨 Troubleshooting
 
-### "CUDA out of memory"
-Reduce `batch_size` or `segment_size` in `configs/train.yaml`:
-```yaml
-data:
-  batch_size: 16          # Was 32
-  segment_size: 16000     # Was 32000
-```
-
-### "Embeddings cache not found"
-Pre-extract embeddings:
-```bash
-python scripts/extract_embeddings.py --config configs/train.yaml
-```
-
-### "Stage 2 requires stage1_checkpoint"
-Set in `configs/train.yaml`:
-```yaml
-stage1_checkpoint: "experiments/stage1_baseline/checkpoints/best-epoch-XX-val_loss-Y.YYY.ckpt"
-```
-
-### "Module not found" (import errors)
-Ensure you're in the project root:
-```bash
-cd CleanUNet2-wav2vec-src/
-python scripts/train.py --config configs/train.yaml --quick-test
-```
-
----
-
-## 🤝 Citation
-
-If you use this work, please cite:
-
-```bibtex
-@software{cleanunet2_wav2vec2,
-  title={CleanUNet2: Hybrid Speech Denoising with Wav2Vec2 Embeddings},
-  author={Your Name},
-  year={2026},
-  url={https://github.com/your-repo}
-}
-```
+- **CUDA out of memory** — lower `data.batch_size` or `data.segment_size`.
+- **`float`/`Half` dtype mismatch in an extractor** — the extractors derive device/dtype
+  from `next(self.model.parameters())`; ensure you're on a version that includes that fix
+  (needed under `precision: "16-mixed"`).
+- **Stage 2 can't find a checkpoint** — set `pipeline.stage1_checkpoint` in the config's
+  `stage2` block to a real Stage-1 checkpoint.
+- **`ssl_type` unknown** — must be one of `wav2vec2 | hubert | wavlm | w2v-bert | whisper`
+  (see `cleanunet/ssl_extractor_factory.py`).
 
 ---
 
 ## 📄 License
 
-This project is licensed under the **MIT License** - see LICENSE file for details.
-
----
-
-## ✅ Checklist for New Users
-
-- [ ] Install dependencies: `pip install -r requirements.txt`
-- [ ] Validate config: `python scripts/validate_config.py --config configs/train.yaml`
-- [ ] Run quick test: `python scripts/train.py --config configs/train.yaml --quick-test`
-- [ ] Edit `configs/train.yaml` with your dataset path
-- [ ] Extract embeddings: `python scripts/extract_embeddings.py --config configs/train.yaml`
-- [ ] Start training: `python scripts/train.py --config configs/train.yaml --stage 1`
-
----
-
-**Status**: ✅ Production Ready | **Version**: 2.0 (Wav2Vec2 ONLY) | **Updated**: 2026-05-19
-
-For questions or issues, refer to the documentation or open an issue on GitHub.
+MIT — see LICENSE.

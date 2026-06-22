@@ -1,12 +1,21 @@
 """
-Wav2Vec2 Embedding Extractor Module
-Uses facebook/wav2vec2-xls-r-300m for self-supervised speech embeddings
+Whisper Embedding Extractor Module
+Uses openai/whisper-large-v3 (encoder only) for speech embeddings.
+
+Whisper is an encoder-decoder ASR model; here we use ONLY the frozen audio
+encoder as a self-supervised feature extractor. Audio is converted to a log-mel
+spectrogram (padded/truncated to 30 s) by the Whisper feature extractor, then the
+encoder produces a FIXED 1500-frame hidden-state sequence per layer. We combine a
+few selected layers (initial / middle / final) with a learnable softmax-weighted sum.
+
+Note: because Whisper pads every clip to 30 s, the encoder output length is always
+1500 frames regardless of the input duration (the integration block pools it anyway).
 """
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers import Wav2Vec2Model
+from transformers import WhisperModel, WhisperFeatureExtractor
 import warnings
 
 # Suppress transformers warnings
@@ -16,11 +25,10 @@ warnings.filterwarnings('ignore', category=UserWarning, module='transformers')
 def select_layer_indices(num_selected, total_states):
     """
     Pick `num_selected` layer indices evenly spaced over [0, total_states - 1]
-    (endpoints included). For a 24-layer model there are 25 hidden states
-    (embedding output + 24 transformer layers), so:
-        num_selected=3 -> [0, 12, 24]  (initial, middle, final)
-        num_selected=5 -> [0, 6, 12, 18, 24]
-    For a 48-layer model (49 states): num_selected=3 -> [0, 24, 48].
+    (endpoints included). For whisper-large-v3 there are 33 hidden states
+    (conv/embedding output + 32 encoder layers), so:
+        num_selected=3 -> [0, 16, 32]  (initial, middle, final)
+        num_selected=5 -> [0, 8, 16, 24, 32]
 
     Args:
         num_selected (int): how many layers to select (N).
@@ -109,22 +117,22 @@ class SelfAttentionPooling(nn.Module):
         return pooled
 
 
-class Wav2Vec2Extractor(nn.Module):
+class WhisperExtractor(nn.Module):
     """
-    Wav2Vec2 embedding extractor using facebook/wav2vec2-xls-r-300m.
-    Extracts self-supervised speech representations for speech enhancement.
+    Whisper embedding extractor using the (frozen) openai/whisper-large-v3 encoder.
+    Extracts speech representations for speech enhancement.
     """
 
-    def __init__(self, model_name="facebook/wav2vec2-xls-r-300m", device='cpu', layer=24,
+    def __init__(self, model_name="openai/whisper-large-v3", device='cpu', layer=12,
                  pooling_method='self_attention', num_attention_heads=8,
                  num_selected_layers=3, selected_layers=None, use_weighted_layers=True):
         """
-        Initialize the Wav2Vec2 extractor.
+        Initialize the Whisper extractor.
 
         Args:
-            model_name (str): HuggingFace model name (default: facebook/wav2vec2-xls-r-300m)
+            model_name (str): HuggingFace model name (default: openai/whisper-large-v3)
             device (str): Device to run the model on
-            layer (int): Single layer to use when use_weighted_layers=False (default: 24, -1 = last)
+            layer (int): Single layer to use when use_weighted_layers=False (default: 12, -1 = last)
             pooling_method (str): Pooling method - 'mean' or 'self_attention' (default: 'self_attention')
             num_attention_heads (int): Number of attention heads for self-attention pooling (default: 8)
             num_selected_layers (int): Number N of layers to use when use_weighted_layers=True and
@@ -143,69 +151,52 @@ class Wav2Vec2Extractor(nn.Module):
         self._num_selected_layers = num_selected_layers
         self._selected_layers_override = selected_layers
 
-        print(f"[Wav2Vec2Extractor] Loading model: {model_name}")
-        print(f"[Wav2Vec2Extractor] Device: {device}")
-        print(f"[Wav2Vec2Extractor] Layer: {layer}")
-        print(f"[Wav2Vec2Extractor] Pooling method: {pooling_method}")
+        print(f"[WhisperExtractor] Loading model: {model_name}")
+        print(f"[WhisperExtractor] Device: {device}")
+        print(f"[WhisperExtractor] Layer: {layer}")
+        print(f"[WhisperExtractor] Pooling method: {pooling_method}")
 
         try:
-            # Load pre-trained model
-            # Note: We don't need Wav2Vec2Processor because:
-            # 1. Wav2Vec2 models don't use tokenizers (they process audio directly)
-            # 2. We normalize audio manually in extract_embeddings()
-
-            # Use safetensors format for security (required by newer transformers)
-            # This avoids the torch.load vulnerability issue (CVE-2025-32434)
-            print("[Wav2Vec2Extractor] Using safetensors format for secure loading...")
-            self.model = Wav2Vec2Model.from_pretrained(
+            # Load the pre-trained Whisper model and keep ONLY the audio encoder.
+            # The decoder is not needed for feature extraction, so we drop it to
+            # save memory. Use safetensors for secure loading (CVE-2025-32434).
+            print("[WhisperExtractor] Using safetensors format for secure loading...")
+            full_model = WhisperModel.from_pretrained(
                 model_name,
-                cache_dir="pretrained_models/wav2vec2",
-                use_safetensors=True  # Force safetensors format (secure)
+                cache_dir="pretrained_models/whisper",
+                use_safetensors=True
+            )
+            self.model = full_model.encoder
+            del full_model  # free the (unused) decoder
+
+            # Feature extractor turns raw audio into the log-mel spectrogram the
+            # encoder expects (it also pads/truncates to 30 s and picks the right
+            # number of mel bins, e.g. 128 for large-v3).
+            self.feature_extractor = WhisperFeatureExtractor.from_pretrained(
+                model_name,
+                cache_dir="pretrained_models/whisper"
             )
 
-            print(f"[Wav2Vec2Extractor] Model loaded successfully!")
-            print(f"[Wav2Vec2Extractor] Model cached at: pretrained_models/wav2vec2")
+            print(f"[WhisperExtractor] Model loaded successfully!")
+            print(f"[WhisperExtractor] Model cached at: pretrained_models/whisper")
 
         except Exception as e:
             print("\n" + "=" * 80)
-            print("[ERROR] Failed to load Wav2Vec2 model from HuggingFace!")
+            print("[ERROR] Failed to load Whisper model from HuggingFace!")
             print("=" * 80)
             print(f"Error: {type(e).__name__}: {str(e)[:200]}\n")
-
-            error_msg = str(e).lower()
-            if "safetensors" in error_msg or "torch.load" in error_msg:
-                print("SOLUTION 1: Install safetensors (recommended)")
-                print("-" * 80)
-                print("This error occurs due to security requirements in newer transformers.")
-                print("Install safetensors to fix:")
-                print("")
-                print("  pip install safetensors")
-                print("")
-                print("Then run the extraction again.")
-                print("")
-                print("SOLUTION 2: Download with safetensors format")
-                print("-" * 80)
-                print("On a machine with internet:")
-                print("")
-                print("  pip install safetensors")
-                print("  from transformers import Wav2Vec2Model")
-                print(f"  model = Wav2Vec2Model.from_pretrained('{model_name}', ")
-                print(f"      cache_dir='pretrained_models/wav2vec2', use_safetensors=True)")
-                print("")
-                print("Then copy 'pretrained_models/wav2vec2' to this machine.")
-            else:
-                print("SOLUTION: Download the model manually")
-                print("-" * 80)
-                print("Run this Python code on a machine with internet:")
-                print("")
-                print("  pip install safetensors")
-                print("  from transformers import Wav2Vec2Model")
-                print(f"  model = Wav2Vec2Model.from_pretrained('{model_name}', ")
-                print(f"      cache_dir='pretrained_models/wav2vec2', use_safetensors=True)")
-                print("")
-                print("Then copy 'pretrained_models/wav2vec2' to this machine.")
+            print("SOLUTION: Download the model on a machine with internet:")
+            print("-" * 80)
+            print("  pip install safetensors")
+            print("  from transformers import WhisperModel, WhisperFeatureExtractor")
+            print(f"  WhisperModel.from_pretrained('{model_name}',")
+            print(f"      cache_dir='pretrained_models/whisper', use_safetensors=True)")
+            print(f"  WhisperFeatureExtractor.from_pretrained('{model_name}',")
+            print(f"      cache_dir='pretrained_models/whisper')")
+            print("")
+            print("Then copy 'pretrained_models/whisper' to this machine.")
             print("=" * 80 + "\n")
-            raise RuntimeError("Wav2Vec2 model loading failed. See instructions above.") from e
+            raise RuntimeError("Whisper model loading failed. See instructions above.") from e
 
         # Move model to device
         self.model = self.model.to(device)
@@ -217,12 +208,12 @@ class Wav2Vec2Extractor(nn.Module):
         # Set to evaluation mode
         self.model.eval()
 
-        # Get embedding dimension
-        self.embedding_dim = self.model.config.hidden_size
-        print(f"[Wav2Vec2Extractor] Embedding dimension: {self.embedding_dim}")
+        # Get embedding dimension (Whisper encoder hidden size = d_model)
+        self.embedding_dim = self.model.config.d_model
+        print(f"[WhisperExtractor] Embedding dimension: {self.embedding_dim}")
 
         # ===== Multi-layer selection (N layers: initial / middle / final by default) =====
-        self.total_states = self.model.config.num_hidden_layers + 1  # embedding output + each layer
+        self.total_states = self.model.config.encoder_layers + 1  # conv/embedding output + each layer
         if self._selected_layers_override == 'all':
             # '++' mode: learnable softmax over ALL hidden states (every layer).
             self.selected_layers = list(range(self.total_states))
@@ -230,48 +221,77 @@ class Wav2Vec2Extractor(nn.Module):
             self.selected_layers = list(self._selected_layers_override)
         else:
             self.selected_layers = select_layer_indices(self._num_selected_layers, self.total_states)
-        print(f"[Wav2Vec2Extractor] Selected layers (of {self.total_states}): {self.selected_layers}")
+        print(f"[WhisperExtractor] Selected layers (of {self.total_states}): {self.selected_layers}")
 
         # Learnable softmax weights over the N selected layers (NOT part of the frozen backbone).
         if self.use_weighted_layers:
             self.layer_weights = nn.Parameter(
                 torch.ones(len(self.selected_layers)) / len(self.selected_layers)
             )
-            print(f"[Wav2Vec2Extractor] Weighted-sum over {len(self.selected_layers)} selected layers "
+            print(f"[WhisperExtractor] Weighted-sum over {len(self.selected_layers)} selected layers "
                   f"enabled (learnable softmax)")
 
         # Initialize pooling layer
         if self.pooling_method == 'self_attention':
-            print(f"[Wav2Vec2Extractor] Initializing Self-Attention Pooling (heads={num_attention_heads})...")
+            print(f"[WhisperExtractor] Initializing Self-Attention Pooling (heads={num_attention_heads})...")
             self.attention_pooling = SelfAttentionPooling(
                 embedding_dim=self.embedding_dim,
                 num_heads=num_attention_heads,
                 dropout=0.1
             )
             self.attention_pooling = self.attention_pooling.to(device)
-            print(f"[Wav2Vec2Extractor] Self-Attention Pooling initialized!")
+            print(f"[WhisperExtractor] Self-Attention Pooling initialized!")
         elif self.pooling_method == 'mean':
             self.attention_pooling = None
-            print(f"[Wav2Vec2Extractor] Using mean pooling (no learnable parameters)")
+            print(f"[WhisperExtractor] Using mean pooling (no learnable parameters)")
         else:
             raise ValueError(f"Unknown pooling method: {self.pooling_method}. Use 'mean' or 'self_attention'")
 
-        print(f"[Wav2Vec2Extractor] Model ready!")
+        print(f"[WhisperExtractor] Model ready!")
+
+    def _waveform_to_features(self, waveform, sample_rate):
+        """
+        Convert a batch of raw waveforms into Whisper log-mel input features.
+
+        Args:
+            waveform (torch.Tensor): (batch, samples) at `sample_rate`.
+            sample_rate (int): input sample rate (Whisper expects 16kHz).
+
+        Returns:
+            torch.Tensor: input_features of shape (batch, num_mel_bins, 3000) on CPU.
+        """
+        # Resample to 16kHz if needed (Whisper is trained at 16kHz)
+        if sample_rate != 16000:
+            print(f"[WhisperExtractor] Warning: Input sample rate is {sample_rate}Hz, "
+                  f"but Whisper expects 16kHz. Resampling...")
+            import torchaudio
+            resampler = torchaudio.transforms.Resample(
+                orig_freq=sample_rate, new_freq=16000
+            ).to(waveform.device)
+            waveform = resampler(waveform)
+
+        # The HF feature extractor runs on CPU numpy. This is fine: the backbone is
+        # frozen and runs under no_grad, so no gradient needs to flow through the mel.
+        wav_list = [w.detach().cpu().float().numpy() for w in waveform]
+        features = self.feature_extractor(
+            wav_list, sampling_rate=16000, return_tensors="pt"
+        ).input_features  # (batch, num_mel_bins, 3000)
+        return features
 
     def extract_embeddings(self, waveform, sample_rate=16000, return_mean=True):
         """
-        Extract Wav2Vec2 embeddings from audio waveform.
+        Extract Whisper embeddings from audio waveform.
 
         Args:
             waveform (torch.Tensor): Audio tensor of shape (batch, samples) or (batch, 1, samples)
-            sample_rate (int): Sample rate of the audio (wav2vec2 expects 16kHz)
-            return_mean (bool): If True, return mean pooled embeddings (batch, dim)
+            sample_rate (int): Sample rate of the audio (Whisper expects 16kHz)
+            return_mean (bool): If True, return pooled embeddings (batch, dim)
                               If False, return full sequence (batch, time_steps, dim)
 
         Returns:
-            embeddings (torch.Tensor): Wav2Vec2 embeddings
-                - If return_mean=True: shape (batch, embedding_dim) [e.g., (batch, 1024)]
-                - If return_mean=False: shape (batch, time_steps, embedding_dim)
+            embeddings (torch.Tensor): Whisper embeddings
+                - If return_mean=True: shape (batch, embedding_dim) [e.g., (batch, 1280)]
+                - If return_mean=False: shape (batch, time_steps, embedding_dim) [time_steps=1500]
         """
         # Save original device
         original_device = waveform.device
@@ -280,29 +300,20 @@ class Wav2Vec2Extractor(nn.Module):
         if waveform.dim() == 3:
             waveform = waveform.squeeze(1)
 
-        # Move to model device
-        waveform = waveform.to(self.device)
+        # Derive the actual device/dtype from the model parameters. self.device is
+        # stale after Lightning moves the module to GPU and/or casts it to fp16, so
+        # relying on it would mismatch the input against the (cuda/half) weights.
+        param = next(self.model.parameters())
+        model_device, model_dtype = param.device, param.dtype
 
-        # Normalize audio to [-1, 1] range (wav2vec2 expects this)
-        max_val = waveform.abs().max(dim=-1, keepdim=True)[0]
-        max_val = torch.clamp(max_val, min=1e-8)  # Avoid division by zero
-        waveform = waveform / max_val
+        # Build log-mel input features and match the model device/dtype
+        input_features = self._waveform_to_features(waveform, sample_rate)
+        input_features = input_features.to(device=model_device, dtype=model_dtype)
 
-        # Resample if needed (wav2vec2 expects 16kHz)
-        if sample_rate != 16000:
-            print(f"[Wav2Vec2Extractor] Warning: Input sample rate is {sample_rate}Hz, "
-                  f"but wav2vec2 expects 16kHz. Resampling...")
-            import torchaudio
-            resampler = torchaudio.transforms.Resample(
-                orig_freq=sample_rate,
-                new_freq=16000
-            ).to(self.device)
-            waveform = resampler(waveform)
-
-        # Run the frozen wav2vec2 backbone under no_grad.
+        # Run the frozen Whisper encoder under no_grad.
         with torch.no_grad():
             outputs = self.model(
-                waveform,
+                input_features,
                 output_hidden_states=True,
                 return_dict=True
             )
@@ -343,7 +354,7 @@ class Wav2Vec2Extractor(nn.Module):
         Extract ONLY the N selected layers (initial/middle/final by default), stacked.
 
         Used to pre-extract embeddings to disk: a learnable softmax over these N layers
-        can then be applied cheaply at training time (without re-running wav2vec2).
+        can then be applied cheaply at training time (without re-running Whisper).
 
         Returns:
             embeddings (torch.Tensor): shape (batch, N, time_steps, embedding_dim),
@@ -353,22 +364,16 @@ class Wav2Vec2Extractor(nn.Module):
 
         if waveform.dim() == 3:
             waveform = waveform.squeeze(1)
-        waveform = waveform.to(self.device)
 
-        max_val = waveform.abs().max(dim=-1, keepdim=True)[0]
-        max_val = torch.clamp(max_val, min=1e-8)
-        waveform = waveform / max_val
+        # Derive the actual device/dtype from the model parameters (self.device is
+        # stale once Lightning moves/casts the module).
+        param = next(self.model.parameters())
+        model_device, model_dtype = param.device, param.dtype
 
-        if sample_rate != 16000:
-            print(f"[Wav2Vec2Extractor] Warning: Input sample rate is {sample_rate}Hz, "
-                  f"but wav2vec2 expects 16kHz. Resampling...")
-            import torchaudio
-            resampler = torchaudio.transforms.Resample(
-                orig_freq=sample_rate, new_freq=16000
-            ).to(self.device)
-            waveform = resampler(waveform)
+        input_features = self._waveform_to_features(waveform, sample_rate)
+        input_features = input_features.to(device=model_device, dtype=model_dtype)
 
-        outputs = self.model(waveform, output_hidden_states=True, return_dict=True)
+        outputs = self.model(input_features, output_hidden_states=True, return_dict=True)
         selected = [outputs.hidden_states[i] for i in self.selected_layers]
         # list of N tensors (batch, time, dim) -> (batch, N, time, dim)
         stacked = torch.stack(selected, dim=1)
@@ -378,7 +383,7 @@ class Wav2Vec2Extractor(nn.Module):
     @torch.no_grad()
     def extract_and_interpolate(self, waveform, target_length, sample_rate=16000):
         """
-        Extract Wav2Vec2 embeddings and interpolate to match target temporal length.
+        Extract Whisper embeddings and interpolate to match target temporal length.
         This is useful for integrating embeddings with encoder features.
 
         Args:

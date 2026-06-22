@@ -1,16 +1,20 @@
 # ============================================================================
-# CleanUNet2-wav2vec2: Requirements (Wav2Vec2 ONLY - XVector removed)
+# CleanUNet2-SSL_Embeddings: Requirements (consolidated multi-backbone)
 # ============================================================================
-# This project uses ONLY Wav2Vec2 embeddings (facebook/wav2vec2-xls-r-2b):
-#   - 1024-dimensional embeddings from layer 24
-#   - Extracted via HuggingFace transformers
-#   - Supports both pre-extracted caching and on-the-fly extraction
+# Supports five SSL backbones via HuggingFace transformers, each in two
+# layer-fusion variants ('+' = 3 selected layers, '++' = all layers):
+#   - wav2vec2  (facebook/wav2vec2-xls-r-2b)   -> Wav2Vec2Model
+#   - hubert    (facebook/hubert-large-ll60k)  -> HubertModel
+#   - wavlm     (microsoft/wavlm-large)        -> WavLMModel
+#   - w2v-bert  (facebook/w2v-bert-2.0)        -> Wav2Vec2BertModel + AutoFeatureExtractor
+#   - whisper   (openai/whisper-large-v3)      -> WhisperModel + WhisperFeatureExtractor
+# Embeddings are extracted on-the-fly (default) or pre-extracted/cached to disk.
 #
 # Installation:
 #   pip install -r requirements.txt
 #
 # Quick test:
-#   python scripts/train.py --config configs/train.yaml --quick-test
+#   python train.py --config configs/config_wavlm_plusplus.json --stage 1 --quick-test
 # ============================================================================
 
 # --- Core Deep Learning (PyTorch Stack) ---
@@ -43,14 +47,14 @@ matplotlib>=3.6.0
 # --- Tensor Operations & Model Utilities ---
 einops>=0.7.0
 
-# --- Wav2Vec2 Embeddings (Required) ---
-transformers>=4.30.0          # Wav2Vec2 models from HuggingFace Hub
+# --- SSL Backbones (Required) ---
+# transformers >=4.40 is required for Wav2Vec2-BERT (facebook/w2v-bert-2.0);
+# the other four backbones work on older versions, but pin to be safe.
+transformers>=4.40.0          # wav2vec2 / hubert / wavlm / w2v-bert / whisper
 huggingface_hub>=0.20.0       # Download pretrained models
-safetensors>=0.4.0            # Secure model loading
+safetensors>=0.4.0            # Secure model loading (use_safetensors=True)
+sentencepiece>=0.1.99         # Tokenizer backend pulled in by some processors
 
 # --- Data Augmentation ---
 torch-audiomentations>=0.11.0  # On-the-fly audio augmentation
-
-# --- Optional but Recommended ---
-# sentencepiece>=0.1.99        # For some tokenizer requirements (optional)
 

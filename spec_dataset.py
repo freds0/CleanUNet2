@@ -1,3 +1,4 @@
+import hashlib
 import math
 import os
 import random
@@ -17,6 +18,13 @@ import torch.multiprocessing as mp
 #mp.set_start_method("spawn", force=True)
 
 MAX_WAV_VALUE = 32768.0  # legacy constant (if needed)
+
+
+def latent_cache_key(path: str) -> str:
+    """MD5 of an absolute clean-audio path; used to key per-file latent caches
+    and to seed the deterministic crop so the same file always yields the same
+    segment (required to align Stage-2 train latents with their cached targets)."""
+    return hashlib.md5(str(path).encode("utf-8")).hexdigest()
 
 # Caches for mel basis and hann window per device/fmax to avoid recomputing
 _mel_basis_cache = {}
@@ -317,12 +325,17 @@ class MelDataset(torch.utils.data.Dataset):
         fmax_loss: Optional[int] = None,
         noise_addition: bool = False,
         augmentations = None,
-        return_audio_paths: bool = False
+        return_audio_paths: bool = False,
+        deterministic_crop: bool = False
     ):
         super().__init__()
         self.data_dir = data_dir
         self.audio_files = get_dataset_filelist(data_files)  # list[(clean_rel, noisy_rel)]
         self.return_audio_paths = return_audio_paths
+        # When True, the crop offset is a deterministic function of the file path
+        # (instead of a fresh random draw), so a given file always maps to the same
+        # segment. Needed to align Stage-2 train latents with their cached targets.
+        self.deterministic_crop = deterministic_crop
 
         # Deterministic shuffling seed for reproducibility
         random.seed(1234)
@@ -405,7 +418,11 @@ class MelDataset(torch.utils.data.Dataset):
             # Ensure we have shape (channels, samples)
             if clean_audio.size(1) >= self.segment_size:
                 max_audio_start = clean_audio.size(1) - self.segment_size
-                audio_start = random.randint(0, max_audio_start)
+                if self.deterministic_crop:
+                    seed = int(latent_cache_key(clean_path)[:8], 16)
+                    audio_start = random.Random(seed).randint(0, max_audio_start)
+                else:
+                    audio_start = random.randint(0, max_audio_start)
                 # keep even start index (original code enforced even start)
                 if audio_start % 2 != 0:
                     audio_start = audio_start - 1 if audio_start > 0 else 0

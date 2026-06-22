@@ -1,6 +1,6 @@
 """
 Integration Blocks for fusing embeddings with latent features.
-Supports both pooled embeddings (X-Vectors) and sequence embeddings (raw Wav2Vec2).
+Supports both pooled embeddings and sequence embeddings (SSL hidden states).
 """
 
 import torch
@@ -157,7 +157,7 @@ class SpecIntegrationBlock(nn.Module):
 
 class SequenceIntegrationBlock(nn.Module):
     """
-    Integration block for fusing sequence embeddings (raw Wav2Vec2) with latent features.
+    Integration block for fusing sequence SSL embeddings with latent features.
     Uses self-attention to process sequence embeddings before fusion.
 
     This handles embeddings with temporal dimension: (batch, seq_len, embedding_dim)
@@ -169,7 +169,7 @@ class SequenceIntegrationBlock(nn.Module):
 
         Args:
             latent_channels (int): Number of channels in latent features
-            embedding_dim (int): Dimension of sequence embeddings (e.g., 1920 for wav2vec2-xls-r-2b)
+            embedding_dim (int): Dimension of sequence embeddings (e.g., 1024 for wavlm-large, 1920 for wav2vec2-xls-r-2b)
             num_heads (int): Number of attention heads (default: 8)
             dropout (float): Dropout rate (default: 0.1)
         """

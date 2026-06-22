@@ -1,12 +1,12 @@
 """
-Wav2Vec2 Embedding Extractor Module
-Uses facebook/wav2vec2-xls-r-300m for self-supervised speech embeddings
+HuBERT Embedding Extractor Module
+Uses facebook/hubert-large-ll60k for self-supervised speech embeddings
 """
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers import Wav2Vec2Model
+from transformers import HubertModel
 import warnings
 
 # Suppress transformers warnings
@@ -109,20 +109,20 @@ class SelfAttentionPooling(nn.Module):
         return pooled
 
 
-class Wav2Vec2Extractor(nn.Module):
+class HubertExtractor(nn.Module):
     """
-    Wav2Vec2 embedding extractor using facebook/wav2vec2-xls-r-300m.
+    HuBERT embedding extractor using facebook/hubert-large-ll60k.
     Extracts self-supervised speech representations for speech enhancement.
     """
 
-    def __init__(self, model_name="facebook/wav2vec2-xls-r-300m", device='cpu', layer=24,
+    def __init__(self, model_name="facebook/hubert-large-ll60k", device='cpu', layer=24,
                  pooling_method='self_attention', num_attention_heads=8,
                  num_selected_layers=3, selected_layers=None, use_weighted_layers=True):
         """
-        Initialize the Wav2Vec2 extractor.
+        Initialize the HuBERT extractor.
 
         Args:
-            model_name (str): HuggingFace model name (default: facebook/wav2vec2-xls-r-300m)
+            model_name (str): HuggingFace model name (default: facebook/hubert-large-ll60k)
             device (str): Device to run the model on
             layer (int): Single layer to use when use_weighted_layers=False (default: 24, -1 = last)
             pooling_method (str): Pooling method - 'mean' or 'self_attention' (default: 'self_attention')
@@ -143,32 +143,32 @@ class Wav2Vec2Extractor(nn.Module):
         self._num_selected_layers = num_selected_layers
         self._selected_layers_override = selected_layers
 
-        print(f"[Wav2Vec2Extractor] Loading model: {model_name}")
-        print(f"[Wav2Vec2Extractor] Device: {device}")
-        print(f"[Wav2Vec2Extractor] Layer: {layer}")
-        print(f"[Wav2Vec2Extractor] Pooling method: {pooling_method}")
+        print(f"[HubertExtractor] Loading model: {model_name}")
+        print(f"[HubertExtractor] Device: {device}")
+        print(f"[HubertExtractor] Layer: {layer}")
+        print(f"[HubertExtractor] Pooling method: {pooling_method}")
 
         try:
             # Load pre-trained model
             # Note: We don't need Wav2Vec2Processor because:
-            # 1. Wav2Vec2 models don't use tokenizers (they process audio directly)
+            # 1. HuBERT models don't use tokenizers (they process audio directly)
             # 2. We normalize audio manually in extract_embeddings()
 
             # Use safetensors format for security (required by newer transformers)
             # This avoids the torch.load vulnerability issue (CVE-2025-32434)
-            print("[Wav2Vec2Extractor] Using safetensors format for secure loading...")
-            self.model = Wav2Vec2Model.from_pretrained(
+            print("[HubertExtractor] Using safetensors format for secure loading...")
+            self.model = HubertModel.from_pretrained(
                 model_name,
-                cache_dir="pretrained_models/wav2vec2",
+                cache_dir="pretrained_models/hubert",
                 use_safetensors=True  # Force safetensors format (secure)
             )
 
-            print(f"[Wav2Vec2Extractor] Model loaded successfully!")
-            print(f"[Wav2Vec2Extractor] Model cached at: pretrained_models/wav2vec2")
+            print(f"[HubertExtractor] Model loaded successfully!")
+            print(f"[HubertExtractor] Model cached at: pretrained_models/hubert")
 
         except Exception as e:
             print("\n" + "=" * 80)
-            print("[ERROR] Failed to load Wav2Vec2 model from HuggingFace!")
+            print("[ERROR] Failed to load HuBERT model from HuggingFace!")
             print("=" * 80)
             print(f"Error: {type(e).__name__}: {str(e)[:200]}\n")
 
@@ -188,24 +188,24 @@ class Wav2Vec2Extractor(nn.Module):
                 print("On a machine with internet:")
                 print("")
                 print("  pip install safetensors")
-                print("  from transformers import Wav2Vec2Model")
-                print(f"  model = Wav2Vec2Model.from_pretrained('{model_name}', ")
-                print(f"      cache_dir='pretrained_models/wav2vec2', use_safetensors=True)")
+                print("  from transformers import HubertModel")
+                print(f"  model = HubertModel.from_pretrained('{model_name}', ")
+                print(f"      cache_dir='pretrained_models/hubert', use_safetensors=True)")
                 print("")
-                print("Then copy 'pretrained_models/wav2vec2' to this machine.")
+                print("Then copy 'pretrained_models/hubert' to this machine.")
             else:
                 print("SOLUTION: Download the model manually")
                 print("-" * 80)
                 print("Run this Python code on a machine with internet:")
                 print("")
                 print("  pip install safetensors")
-                print("  from transformers import Wav2Vec2Model")
-                print(f"  model = Wav2Vec2Model.from_pretrained('{model_name}', ")
-                print(f"      cache_dir='pretrained_models/wav2vec2', use_safetensors=True)")
+                print("  from transformers import HubertModel")
+                print(f"  model = HubertModel.from_pretrained('{model_name}', ")
+                print(f"      cache_dir='pretrained_models/hubert', use_safetensors=True)")
                 print("")
-                print("Then copy 'pretrained_models/wav2vec2' to this machine.")
+                print("Then copy 'pretrained_models/hubert' to this machine.")
             print("=" * 80 + "\n")
-            raise RuntimeError("Wav2Vec2 model loading failed. See instructions above.") from e
+            raise RuntimeError("HuBERT model loading failed. See instructions above.") from e
 
         # Move model to device
         self.model = self.model.to(device)
@@ -219,7 +219,7 @@ class Wav2Vec2Extractor(nn.Module):
 
         # Get embedding dimension
         self.embedding_dim = self.model.config.hidden_size
-        print(f"[Wav2Vec2Extractor] Embedding dimension: {self.embedding_dim}")
+        print(f"[HubertExtractor] Embedding dimension: {self.embedding_dim}")
 
         # ===== Multi-layer selection (N layers: initial / middle / final by default) =====
         self.total_states = self.model.config.num_hidden_layers + 1  # embedding output + each layer
@@ -230,46 +230,46 @@ class Wav2Vec2Extractor(nn.Module):
             self.selected_layers = list(self._selected_layers_override)
         else:
             self.selected_layers = select_layer_indices(self._num_selected_layers, self.total_states)
-        print(f"[Wav2Vec2Extractor] Selected layers (of {self.total_states}): {self.selected_layers}")
+        print(f"[HubertExtractor] Selected layers (of {self.total_states}): {self.selected_layers}")
 
         # Learnable softmax weights over the N selected layers (NOT part of the frozen backbone).
         if self.use_weighted_layers:
             self.layer_weights = nn.Parameter(
                 torch.ones(len(self.selected_layers)) / len(self.selected_layers)
             )
-            print(f"[Wav2Vec2Extractor] Weighted-sum over {len(self.selected_layers)} selected layers "
+            print(f"[HubertExtractor] Weighted-sum over {len(self.selected_layers)} selected layers "
                   f"enabled (learnable softmax)")
 
         # Initialize pooling layer
         if self.pooling_method == 'self_attention':
-            print(f"[Wav2Vec2Extractor] Initializing Self-Attention Pooling (heads={num_attention_heads})...")
+            print(f"[HubertExtractor] Initializing Self-Attention Pooling (heads={num_attention_heads})...")
             self.attention_pooling = SelfAttentionPooling(
                 embedding_dim=self.embedding_dim,
                 num_heads=num_attention_heads,
                 dropout=0.1
             )
             self.attention_pooling = self.attention_pooling.to(device)
-            print(f"[Wav2Vec2Extractor] Self-Attention Pooling initialized!")
+            print(f"[HubertExtractor] Self-Attention Pooling initialized!")
         elif self.pooling_method == 'mean':
             self.attention_pooling = None
-            print(f"[Wav2Vec2Extractor] Using mean pooling (no learnable parameters)")
+            print(f"[HubertExtractor] Using mean pooling (no learnable parameters)")
         else:
             raise ValueError(f"Unknown pooling method: {self.pooling_method}. Use 'mean' or 'self_attention'")
 
-        print(f"[Wav2Vec2Extractor] Model ready!")
+        print(f"[HubertExtractor] Model ready!")
 
     def extract_embeddings(self, waveform, sample_rate=16000, return_mean=True):
         """
-        Extract Wav2Vec2 embeddings from audio waveform.
+        Extract HuBERT embeddings from audio waveform.
 
         Args:
             waveform (torch.Tensor): Audio tensor of shape (batch, samples) or (batch, 1, samples)
-            sample_rate (int): Sample rate of the audio (wav2vec2 expects 16kHz)
+            sample_rate (int): Sample rate of the audio (HuBERT expects 16kHz)
             return_mean (bool): If True, return mean pooled embeddings (batch, dim)
                               If False, return full sequence (batch, time_steps, dim)
 
         Returns:
-            embeddings (torch.Tensor): Wav2Vec2 embeddings
+            embeddings (torch.Tensor): HuBERT embeddings
                 - If return_mean=True: shape (batch, embedding_dim) [e.g., (batch, 1024)]
                 - If return_mean=False: shape (batch, time_steps, embedding_dim)
         """
@@ -283,15 +283,15 @@ class Wav2Vec2Extractor(nn.Module):
         # Move to model device
         waveform = waveform.to(self.device)
 
-        # Normalize audio to [-1, 1] range (wav2vec2 expects this)
+        # Normalize audio to [-1, 1] range (HuBERT expects this)
         max_val = waveform.abs().max(dim=-1, keepdim=True)[0]
         max_val = torch.clamp(max_val, min=1e-8)  # Avoid division by zero
         waveform = waveform / max_val
 
-        # Resample if needed (wav2vec2 expects 16kHz)
+        # Resample if needed (HuBERT expects 16kHz)
         if sample_rate != 16000:
-            print(f"[Wav2Vec2Extractor] Warning: Input sample rate is {sample_rate}Hz, "
-                  f"but wav2vec2 expects 16kHz. Resampling...")
+            print(f"[HubertExtractor] Warning: Input sample rate is {sample_rate}Hz, "
+                  f"but HuBERT expects 16kHz. Resampling...")
             import torchaudio
             resampler = torchaudio.transforms.Resample(
                 orig_freq=sample_rate,
@@ -299,7 +299,7 @@ class Wav2Vec2Extractor(nn.Module):
             ).to(self.device)
             waveform = resampler(waveform)
 
-        # Run the frozen wav2vec2 backbone under no_grad.
+        # Run the frozen HuBERT backbone under no_grad.
         with torch.no_grad():
             outputs = self.model(
                 waveform,
@@ -360,8 +360,8 @@ class Wav2Vec2Extractor(nn.Module):
         waveform = waveform / max_val
 
         if sample_rate != 16000:
-            print(f"[Wav2Vec2Extractor] Warning: Input sample rate is {sample_rate}Hz, "
-                  f"but wav2vec2 expects 16kHz. Resampling...")
+            print(f"[HubertExtractor] Warning: Input sample rate is {sample_rate}Hz, "
+                  f"but HuBERT expects 16kHz. Resampling...")
             import torchaudio
             resampler = torchaudio.transforms.Resample(
                 orig_freq=sample_rate, new_freq=16000
@@ -378,7 +378,7 @@ class Wav2Vec2Extractor(nn.Module):
     @torch.no_grad()
     def extract_and_interpolate(self, waveform, target_length, sample_rate=16000):
         """
-        Extract Wav2Vec2 embeddings and interpolate to match target temporal length.
+        Extract HuBERT embeddings and interpolate to match target temporal length.
         This is useful for integrating embeddings with encoder features.
 
         Args:
