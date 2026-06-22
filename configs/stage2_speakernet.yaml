@@ -19,6 +19,7 @@ seed: 1234
 checkpoint_dir: experiments/exp_speakernet_stage2/checkpoints
 logging_dir: experiments/exp_speakernet_stage2
 latents_dir: experiments/exp_speakernet_stage1/stored_latents_stage1
+train_latents_dir: experiments/exp_speakernet_stage1/train_latents  # per-file TRAIN latents (training-time latent loss); see generate_train_latents.py
 
 audio:
   sample_rate: 16000
@@ -54,6 +55,7 @@ model:
     dropout: 0.1
 
 losses:
+  gamma_latent: 0.05     # weight of the training-time latent-replication loss
   weight_waveform: 10.0
   weight_spec: 5.0
   weight_phase: 5.0
@@ -72,6 +74,8 @@ optimizer:
   betas: [0.9, 0.999]
 
 data:
+  deterministic_crop: true    # fixed per-file crop so each sample matches its cached target
+  return_audio_paths: true    # expose clean paths so training can look up cached latents
   data_dir: /raid/user_fredoliveira/DATASETS/VoiceBank-DEMAND-16k/
   train_list_path: filelists/train.csv
   val_list_path: filelists/test.csv

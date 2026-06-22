@@ -43,6 +43,7 @@ seed: 1234
 checkpoint_dir: experiments/exp_xvector_optimized_stage2/checkpoints
 logging_dir: experiments/exp_xvector_optimized_stage2
 latents_dir: experiments/exp_xvector_optimized_stage1/stored_latents_stage1  # Load from Stage-1
+train_latents_dir: experiments/exp_xvector_optimized_stage1/train_latents  # per-file TRAIN latents (training-time latent loss); see generate_train_latents.py
 
 # ----------------------
 # Audio configuration
@@ -127,6 +128,8 @@ optimizer:
 # Data configuration
 # ----------------------
 data:
+  deterministic_crop: true    # fixed per-file crop so each sample matches its cached target
+  return_audio_paths: true    # expose clean paths so training can look up cached latents
   data_dir: /raid/user_fredoliveira/DATASETS/VoiceBank-DEMAND-16k/
   train_list_path: filelists/train.csv
   val_list_path: filelists/test.csv
