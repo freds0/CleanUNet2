@@ -81,7 +81,9 @@
     "augmentations": null,
     "use_preextracted_embeddings": false,
     "quick_test": false,
-    "quick_test_samples": 30
+    "quick_test_samples": 30,
+    "deterministic_crop": true,
+    "return_audio_paths": true
   },
   "trainer": {
     "max_epochs": 300,
@@ -96,7 +98,7 @@
     "enable_progress_bar": true
   },
   "logging": {
-    "save_dir": "./experiments/stage1",
+    "save_dir": "./experiments/wavlm_plus/stage2",
     "log_model": false,
     "log_frequency": 10,
     "save_checkpoints": true,
@@ -106,8 +108,8 @@
   "callbacks": {
     "model_checkpoint": {
       "_target_": "pytorch_lightning.callbacks.ModelCheckpoint",
-      "dirpath": "./experiments/checkpoints/stage1",
-      "filename": "cleanunet-stage1-{epoch:03d}-{val_loss:.4f}",
+      "dirpath": "./experiments/wavlm_plus/checkpoints/stage2",
+      "filename": "cleanunet-stage2-{epoch:03d}-{val_loss:.4f}",
       "monitor": "val_loss",
       "mode": "min",
       "save_top_k": 3,
@@ -125,109 +127,23 @@
     "choice": "both",
     "tensorboard": {
       "_target_": "pytorch_lightning.loggers.TensorBoardLogger",
-      "save_dir": "./experiments/wavlm_plus/stage1",
-      "name": "wavlm_plus-stage1",
+      "save_dir": "./experiments/wavlm_plus/stage2",
+      "name": "wavlm_plus-stage2",
       "version": "v1"
     },
     "wandb": {
       "_target_": "pytorch_lightning.loggers.WandbLogger",
       "project": "CleanUNet2-SSL",
-      "name": "wavlm_plus-stage1",
-      "save_dir": "./experiments/wavlm_plus/stage1"
+      "name": "wavlm_plus-stage2",
+      "save_dir": "./experiments/wavlm_plus/stage2"
     }
   },
   "pipeline": {
-    "stage": 1,
+    "stage": 2,
     "resume_from_checkpoint": null,
     "seed": 42,
-    "log_all_config": false
+    "log_all_config": false,
+    "stage1_checkpoint": "./experiments/wavlm_plus/checkpoints/stage1/cleanunet-stage1-last.ckpt"
   },
-  "stage1": {
-    "pipeline": {
-      "stage": 1
-    },
-    "logging": {
-      "save_dir": "./experiments/wavlm_plus/stage1"
-    },
-    "callbacks": {
-      "model_checkpoint": {
-        "_target_": "pytorch_lightning.callbacks.ModelCheckpoint",
-        "dirpath": "./experiments/wavlm_plus/checkpoints/stage1",
-        "filename": "cleanunet-stage1-{epoch:03d}-{val_loss:.4f}",
-        "monitor": "val_loss",
-        "mode": "min",
-        "save_top_k": 3,
-        "save_last": true
-      },
-      "early_stopping": {
-        "_target_": "pytorch_lightning.callbacks.EarlyStopping",
-        "monitor": "val_loss",
-        "mode": "min",
-        "patience": 15,
-        "verbose": false
-      }
-    },
-    "logger": {
-      "choice": "both",
-      "tensorboard": {
-        "_target_": "pytorch_lightning.loggers.TensorBoardLogger",
-        "save_dir": "./experiments/wavlm_plus/stage1",
-        "name": "wavlm_plus-stage1",
-        "version": "v1"
-      },
-      "wandb": {
-        "_target_": "pytorch_lightning.loggers.WandbLogger",
-        "project": "CleanUNet2-SSL",
-        "name": "wavlm_plus-stage1",
-        "save_dir": "./experiments/wavlm_plus/stage1"
-      }
-    }
-  },
-  "stage2": {
-    "pipeline": {
-      "stage": 2,
-      "stage1_checkpoint": "./experiments/wavlm_plus/checkpoints/stage1/cleanunet-stage1-last.ckpt"
-    },
-    "logging": {
-      "save_dir": "./experiments/wavlm_plus/stage2"
-    },
-    "callbacks": {
-      "model_checkpoint": {
-        "_target_": "pytorch_lightning.callbacks.ModelCheckpoint",
-        "dirpath": "./experiments/wavlm_plus/checkpoints/stage2",
-        "filename": "cleanunet-stage2-{epoch:03d}-{val_loss:.4f}",
-        "monitor": "val_loss",
-        "mode": "min",
-        "save_top_k": 3,
-        "save_last": true
-      },
-      "early_stopping": {
-        "_target_": "pytorch_lightning.callbacks.EarlyStopping",
-        "monitor": "val_loss",
-        "mode": "min",
-        "patience": 15,
-        "verbose": false
-      }
-    },
-    "logger": {
-      "choice": "both",
-      "tensorboard": {
-        "_target_": "pytorch_lightning.loggers.TensorBoardLogger",
-        "save_dir": "./experiments/wavlm_plus/stage2",
-        "name": "wavlm_plus-stage2",
-        "version": "v1"
-      },
-      "wandb": {
-        "_target_": "pytorch_lightning.loggers.WandbLogger",
-        "project": "CleanUNet2-SSL",
-        "name": "wavlm_plus-stage2",
-        "save_dir": "./experiments/wavlm_plus/stage2"
-      }
-    },
-    "train_latents_dir": "./experiments/wavlm_plus/train_latents",
-    "data": {
-      "deterministic_crop": true,
-      "return_audio_paths": true
-    }
-  }
+  "train_latents_dir": "./experiments/wavlm_plus/train_latents"
 }

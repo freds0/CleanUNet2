@@ -59,52 +59,50 @@ pip install -r requirements.txt
 ### 2. Quick test (1 epoch, 30 samples)
 
 ```bash
-python train.py --config configs/config_wavlm_plusplus.json --stage 1 --quick-test
+python train.py --config configs/config_wavlm_plusplus_stage1.json --quick-test
 ```
 
 ### 3. Train
 
-Two-stage pipeline. **Stage 1** trains the SSL layer-softmax + the denoiser (SSL embeddings
-injected into the latent space). **Stage 2** trains a latent predictor to reproduce the
-Stage-1 latents *without* the SSL extractor at inference time.
+Two-stage pipeline with **one config file per stage** (`config_<family>_<variant>_stage1.json`
+and `_stage2.json`), each self-contained with its own checkpoint/log folders. The stage is
+read from `pipeline.stage` in the config, so `--stage` is optional.
+
+**Stage 1** trains the SSL layer-softmax + the denoiser (SSL embeddings injected into the
+latent space). **Stage 2** trains a latent predictor to reproduce the Stage-1 latents
+*without* the SSL extractor at inference time — a **distillation** step that requires the
+Stage-1 train latents as targets.
 
 ```bash
-# Stage 1, then Stage 2 (any family/variant):
-python train.py --config configs/config_wavlm_plusplus.json --stage 1
-python train.py --config configs/config_wavlm_plusplus.json --stage 2
+# 1) Stage 1
+python train.py --config configs/config_wavlm_plusplus_stage1.json
 
-# e.g. whisper '+':
-python train.py --config configs/config_whisper_plus.json --stage 1
+# 2) Generate the Stage-1 TRAIN latents (distillation targets) — REQUIRED before Stage 2
+python generate_train_latents.py \
+  --config configs/config_wavlm_plusplus_stage1.json \
+  --checkpoint experiments/wavlm_plusplus/checkpoints/stage1/cleanunet-stage1-last.ckpt \
+  --output-dir experiments/wavlm_plusplus/train_latents
+
+# 3) Stage 2 (reads train_latents_dir from the config)
+python train.py --config configs/config_wavlm_plusplus_stage2.json
 ```
 
-`--stage` selects which `stage1` / `stage2` override block is deep-merged onto the shared
-config (checkpoint paths, logger run names, save dirs). The Stage-2 override sets
-`pipeline.stage1_checkpoint`, which must point at a trained Stage-1 checkpoint.
+The Stage-2 config carries `pipeline.stage1_checkpoint`, `train_latents_dir`, and
+`data.deterministic_crop`/`data.return_audio_paths` (needed to align each sample with its
+cached latent target). **Stage 2 will not start unless the train latents exist** — it
+raises a clear error pointing you at `generate_train_latents.py`.
 
 > Configs default to **on-the-fly** SSL extraction (`model.ssl.use_preextracted: false`),
 > which is required for the learnable layer-softmax to receive gradients.
 
-#### Generating Stage-1 latents for Stage 2
+#### Why the train latents (and not the val ones)?
 
-Stage 2 trains by replicating the **fused latents** that Stage 1 writes (one
-`val_batch_*.pt` per validation batch, in `latents_dir`, default `stored_latents_stage1/`).
-Those files are produced inside the Stage-1 **validation loop**, so by default they reflect
-whatever the model looked like at each validation pass — including the barely-trained
-epoch-1 snapshot, accumulated across epochs.
-
-To get a single, clean set of latents from a **fully-trained** Stage-1 checkpoint without
-retraining, run one validation pass with `generate_latents.py`:
-
-```bash
-python generate_latents.py \
-  --config configs/config_wavlm_plusplus.json \
-  --checkpoint experiments/wavlm_plusplus/checkpoints/stage1/cleanunet-stage1-last.ckpt
-# optional: --latents-dir stored_latents_stage1   --device auto|cpu|cuda
-```
-
-This loads the trained weights and reuses the Stage-1 `validation_step` (no optimizer
-step), writing `val_batch_000000.pt …` over a single pass. Then train Stage 2 normally;
-it reads the same `latents_dir` (default `stored_latents_stage1/`).
+The Stage-2 latent-replication loss is a distillation objective: the predicted latent must
+match the Stage-1 **fused** latent for the *same* training sample. `generate_train_latents.py`
+loads a fully-trained Stage-1 checkpoint and writes one target per train file, keyed by the
+clean-audio path (`<md5>.pt`), using a **deterministic per-file crop** so the cached target
+matches the segment Stage-2 training sees. (The older `generate_latents.py` dumps per-batch
+*validation* latents by index — a metric only, not a training signal.)
 
 ### 4. Inference
 
@@ -124,7 +122,8 @@ checkpoint (Stage 1 or Stage 2) works.
 CleanUNet2-SSL_Embeddings/
 │
 ├── train.py                          # Training entry point (JSON/YAML config, --stage)
-├── generate_latents.py               # Stage-1 latents from a trained ckpt (no retraining)
+├── generate_train_latents.py         # Per-file Stage-1 TRAIN latents (Stage-2 distillation targets)
+├── generate_latents.py               # Per-batch Stage-1 VAL latents (validation metric only)
 ├── inference.py                      # Sliding-window denoising inference
 ├── losses.py                         # Multi-resolution STFT, phase, magnitude losses
 ├── metrics.py                        # PESQ, STOI, SI-SDR
@@ -150,8 +149,10 @@ CleanUNet2-SSL_Embeddings/
 │   └── data_module.py
 │
 ├── configs/
-│   ├── config_<family>_plus.json     # '+'  variant (3 selected layers)
-│   ├── config_<family>_plusplus.json # '++' variant (all layers)
+│   ├── config_<family>_plus_stage1.json      # '+'  variant, Stage 1
+│   ├── config_<family>_plus_stage2.json      # '+'  variant, Stage 2
+│   ├── config_<family>_plusplus_stage1.json  # '++' variant, Stage 1
+│   ├── config_<family>_plusplus_stage2.json  # '++' variant, Stage 2
 │   ├── config.py                     # Optional strict dataclass schema/validator
 │   └── inference.yaml
 │
@@ -159,14 +160,18 @@ CleanUNet2-SSL_Embeddings/
 └── filelists/                        # train.csv / test.csv (clean|noisy pairs)
 ```
 
-`<family>` ∈ `{wav2vec2, hubert, wavlm, w2vbert, whisper}` → 10 configs total.
+`<family>` ∈ `{wav2vec2, hubert, wavlm, w2vbert, whisper}` × `{plus, plusplus}` × `{stage1, stage2}`
+→ 20 configs total (one per family · variant · stage).
 
 ---
 
 ## 📋 Configuration
 
-Each config is a single JSON file with shared sections plus `stage1` / `stage2` override
-blocks. The SSL-specific block:
+There is one self-contained JSON config per family · variant · **stage**. Stage-1 and
+Stage-2 configs share the model/loss/data sections; the Stage-2 config additionally sets
+`pipeline.stage1_checkpoint`, `train_latents_dir`, and `data.deterministic_crop` /
+`data.return_audio_paths`. Each config points at its own `./experiments/<variant>/...`
+checkpoint and log folders. The SSL-specific block:
 
 ```jsonc
 "model": {
@@ -253,8 +258,11 @@ Output: Enhanced waveform
 - **`float`/`Half` dtype mismatch in an extractor** — the extractors derive device/dtype
   from `next(self.model.parameters())`; ensure you're on a version that includes that fix
   (needed under `precision: "16-mixed"`).
-- **Stage 2 can't find a checkpoint** — set `pipeline.stage1_checkpoint` in the config's
-  `stage2` block to a real Stage-1 checkpoint.
+- **Stage 2 can't find a checkpoint** — set `pipeline.stage1_checkpoint` in the
+  `_stage2.json` config to a real Stage-1 checkpoint.
+- **Stage 2 aborts: "No train latents found"** — Stage 2 trains only if the distillation
+  targets exist. Run `generate_train_latents.py` (see step 2 above) and make sure its
+  `--output-dir` matches `train_latents_dir` in the `_stage2.json` config.
 - **`ssl_type` unknown** — must be one of `wav2vec2 | hubert | wavlm | w2v-bert | whisper`
   (see `cleanunet/ssl_extractor_factory.py`).
 
