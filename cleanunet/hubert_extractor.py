@@ -280,8 +280,14 @@ class HubertExtractor(nn.Module):
         if waveform.dim() == 3:
             waveform = waveform.squeeze(1)
 
-        # Move to model device
-        waveform = waveform.to(self.device)
+        # Derive device/dtype from the model's own parameters. self.device is a plain
+        # attribute set at construction and goes stale once the module is moved to GPU
+        # (and/or cast to fp16), so relying on it would mismatch input vs. weights.
+        param = next(self.model.parameters())
+        model_device, model_dtype = param.device, param.dtype
+
+        # Move to model device and match its dtype (e.g. fp16 under mixed precision)
+        waveform = waveform.to(device=model_device, dtype=model_dtype)
 
         # Normalize audio to [-1, 1] range (HuBERT expects this)
         max_val = waveform.abs().max(dim=-1, keepdim=True)[0]
@@ -296,7 +302,7 @@ class HubertExtractor(nn.Module):
             resampler = torchaudio.transforms.Resample(
                 orig_freq=sample_rate,
                 new_freq=16000
-            ).to(self.device)
+            ).to(model_device)
             waveform = resampler(waveform)
 
         # Run the frozen HuBERT backbone under no_grad.
@@ -353,7 +359,9 @@ class HubertExtractor(nn.Module):
 
         if waveform.dim() == 3:
             waveform = waveform.squeeze(1)
-        waveform = waveform.to(self.device)
+        param = next(self.model.parameters())
+        model_device, model_dtype = param.device, param.dtype
+        waveform = waveform.to(device=model_device, dtype=model_dtype)
 
         max_val = waveform.abs().max(dim=-1, keepdim=True)[0]
         max_val = torch.clamp(max_val, min=1e-8)
@@ -365,7 +373,7 @@ class HubertExtractor(nn.Module):
             import torchaudio
             resampler = torchaudio.transforms.Resample(
                 orig_freq=sample_rate, new_freq=16000
-            ).to(self.device)
+            ).to(model_device)
             waveform = resampler(waveform)
 
         outputs = self.model(waveform, output_hidden_states=True, return_dict=True)
