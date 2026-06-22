@@ -50,6 +50,9 @@ class CleanUNet2WithSSLEmbeddings(nn.Module):
         # Layer-fusion strategy: list of indices ('+') or the string 'all' ('++').
         ssl_selected_layers=None,
         ssl_num_selected_layers=3,
+        # Backbone embedding dim. Authoritative for Stage 2 (no extractor/cache to infer
+        # it from); in Stage 1 it is overwritten by the extractor/cache.
+        ssl_embedding_dim=None,
     ):
         """
         Initialize CleanUNet2 with SSL embeddings integration.
@@ -72,7 +75,10 @@ class CleanUNet2WithSSLEmbeddings(nn.Module):
         self.use_preextracted_embeddings = use_preextracted_embeddings
         self.use_weighted_layers = ssl_use_weighted_layers
         self.embedding_type = 'ssl_embeddings'  # Always using SSL embeddings
-        self.embedding_dim = 1024  # Overwritten from the extractor / cache below
+        # Stage 2 uses this config-provided dim (no extractor/cache to infer from); it
+        # must match what Stage 1 trained so the integration_block shapes line up with
+        # the checkpoint. Stage 1 overwrites it from the extractor/cache below.
+        self.embedding_dim = ssl_embedding_dim if ssl_embedding_dim is not None else 1024
 
         if cleanunet_params is None:
             cleanunet_params = {}

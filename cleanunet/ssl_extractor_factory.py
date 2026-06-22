@@ -92,4 +92,5 @@ def ssl_args_from_config(model_config):
         'ssl_use_weighted_layers': ssl.get('use_weighted_layers', legacy.get('use_weighted_layers', True)),
         'ssl_selected_layers': ssl.get('selected_layers'),   # list ('+'), 'all' ('++'), or None
         'ssl_num_selected_layers': ssl.get('num_selected_layers', 3),
+        'ssl_embedding_dim': ssl.get('embedding_dim'),       # required by Stage 2 (no extractor)
     }
