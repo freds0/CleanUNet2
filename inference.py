@@ -279,6 +279,10 @@ def run_inference(cfg):
 def parse_args():
     p = argparse.ArgumentParser(description="CleanUNet2 inference script")
     p.add_argument("--config", required=True, help="YAML configuration path")
+    p.add_argument("--checkpoint", default=None,
+                   help="Checkpoint path (overrides inference.checkpoint_path in the config).")
+    p.add_argument("--output-dir", default=None,
+                   help="Output directory (overrides inference.output_dir in the config).")
     return p.parse_args()
 
 
@@ -287,6 +291,12 @@ if __name__ == "__main__":
 
     with open(args.config, "r") as f:
         cfg = yaml.safe_load(f)
+
+    # CLI overrides take precedence over the config file.
+    if args.checkpoint is not None:
+        cfg["inference"]["checkpoint_path"] = args.checkpoint
+    if args.output_dir is not None:
+        cfg["inference"]["output_dir"] = args.output_dir
 
     torch.backends.cudnn.benchmark = True
     run_inference(cfg)
