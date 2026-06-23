@@ -140,5 +140,6 @@
     "log_all_config": false,
     "stage1_checkpoint": "./experiments/whisper_plusplus/checkpoints/stage1/cleanunet-stage1-last.ckpt"
   },
-  "train_latents_dir": "./experiments/whisper_plusplus/train_latents"
+  "train_latents_dir": "./experiments/whisper_plusplus/train_latents",
+  "val_latents_dir": "./experiments/whisper_plusplus/val_latents"
 }

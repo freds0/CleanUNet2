@@ -49,9 +49,15 @@ def parse_args():
     p.add_argument("--config", required=True, help="Stage-1 config (JSON or YAML).")
     p.add_argument("--checkpoint", required=True, help="Trained Stage-1 checkpoint (.ckpt).")
     p.add_argument(
+        "--split", default="train", choices=["train", "val"],
+        help="Which split to generate latents for (default: train). "
+             "train -> distillation targets; val -> validation latent metric.",
+    )
+    p.add_argument(
         "--output-dir",
         default=None,
-        help="Where to write <md5>.pt files (default: config 'train_latents_dir' or 'train_latents_stage1').",
+        help="Where to write <md5>.pt files (default: config 'train_latents_dir' for "
+             "--split train, 'val_latents_dir' for --split val).",
     )
     p.add_argument("--device", default="cuda", choices=["cuda", "cpu"], help="Device (default: cuda).")
     p.add_argument("--force", action="store_true", help="Re-extract even if a latent file already exists.")
@@ -66,7 +72,15 @@ def main():
     # Collapse the stage-1 override block (same path train.py --stage 1 uses).
     config = apply_stage_overrides(config, stage=1)
 
-    out_dir = Path(args.output_dir or config.get("train_latents_dir", "train_latents_stage1"))
+    data_cfg = config.get("data", {})
+    if args.split == "train":
+        list_path = data_cfg.get("train_list_path")
+        default_dir = config.get("train_latents_dir", "train_latents_stage1")
+    else:
+        list_path = data_cfg.get("val_list_path")
+        default_dir = config.get("val_latents_dir", "val_latents_stage1")
+
+    out_dir = Path(args.output_dir or default_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     device = args.device if (args.device == "cpu" or torch.cuda.is_available()) else "cpu"
@@ -80,12 +94,11 @@ def main():
     module.load_state_dict(state_dict, strict=False)
     model = module.model.to(device).eval()
 
-    # Train dataset with the SAME deterministic crop Stage-2 training will use, real
-    # paired noisy audio (no augmentation), and clean paths for keying.
-    data_cfg = config.get("data", {})
+    # Dataset for the chosen split, with the SAME deterministic crop Stage-2 uses (train
+    # AND val), real paired noisy audio (no augmentation), and clean paths for keying.
     dataset = MelDataset(
         data_dir=data_cfg.get("data_dir", "."),
-        data_files=data_cfg.get("train_list_path"),
+        data_files=list_path,
         segment_size=data_cfg.get("segment_size", 32000),
         sampling_rate=data_cfg.get("sampling_rate", 16000),
         return_audio_paths=True,
@@ -99,10 +112,10 @@ def main():
         collate_fn=custom_collate_fn,
     )
 
-    logger.info("Generating train latents for %d samples -> %s", len(dataset), out_dir)
+    logger.info("Generating %s latents for %d samples -> %s", args.split, len(dataset), out_dir)
     extracted, skipped = 0, 0
     with torch.no_grad():
-        for batch in tqdm(loader, desc="Train latents"):
+        for batch in tqdm(loader, desc=f"{args.split} latents"):
             noisy_wav, noisy_spec, clean_wav, clean_spec, clean_paths = batch
 
             pending = [p for p in clean_paths
@@ -133,8 +146,9 @@ def main():
 
     logger.info("Done. Extracted: %d, skipped(existing): %d. Cache dir: %s",
                 extracted, skipped, out_dir)
-    logger.info("Set the Stage-2 config: train_latents_dir + data.deterministic_crop: true "
-                "+ data.return_audio_paths: true")
+    cfg_key = "train_latents_dir" if args.split == "train" else "val_latents_dir"
+    logger.info("Set the Stage-2 config: %s=%s + data.deterministic_crop: true "
+                "+ data.return_audio_paths: true", cfg_key, out_dir)
 
 
 if __name__ == "__main__":

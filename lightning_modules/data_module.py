@@ -215,14 +215,14 @@ class CleanUNetDataModule(pl.LightningDataModule):
             ds_kwargs["sampling_rate"] = self.sampling_rate
         if self.use_preextracted_embeddings or self.return_audio_paths:
             ds_kwargs["return_audio_paths"] = True
+        # Deterministic crop on BOTH train and val: each sample maps to a fixed segment so
+        # it lines up with its cached Stage-1 latent target (train loss + val metric).
+        if self.deterministic_crop:
+            ds_kwargs["deterministic_crop"] = True
 
         if self.val_list_path is not None:
             # Separate val file
             train_kwargs = ds_kwargs.copy()
-            # Deterministic crop only on the train set: aligns each train sample with
-            # its cached Stage-1 latent target (val keeps its existing behavior).
-            if self.deterministic_crop:
-                train_kwargs["deterministic_crop"] = True
             if self.augmentations:
                 train_kwargs["augmentations"] = self.augmentations
 
