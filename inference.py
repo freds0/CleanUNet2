@@ -1,21 +1,27 @@
 #!/usr/bin/env python3
 """
-CleanUNet2 – Inference Script (Config-aware Version)
-----------------------------------------------------
-Loads inference settings from a YAML file containing:
+CleanUNet2 – Stage-2 SSL Inference Script
+-----------------------------------------
+Runs a trained Stage-2 SSL-embeddings checkpoint over a set of noisy files.
 
-  inference:
-  model:
-  audio:
-  output:
-  runtime:
+It reads the SAME per-stage training config used to produce the checkpoint
+(e.g. configs/config_hubert_plusplus_stage2.json), so the model architecture
+(CleanUNet + SSL integration/latent-predictor dims) matches the weights. The
+SSL extractor is NOT loaded — Stage-2 runs the latent_predictor only.
 
-This version is fully compatible with CleanUNetLightningModule,
-which requires: forward(waveform, spectrogram).
+The checkpoint and output directory are passed on the CLI:
+
+    python inference.py \
+        --config configs/config_hubert_plusplus_stage2.json \
+        --checkpoint experiments/hubert_plusplus/checkpoints/stage2/<ckpt>.ckpt \
+        --output-dir results_hubert++
+
+Input files default to the noisy column of the config's data.val_list_path
+(resolved against data.data_dir); pass --input-dir to denoise a raw folder of
+*.wav instead.
 """
 
 import os
-import json
 from pathlib import Path
 from glob import glob
 import argparse
@@ -24,13 +30,10 @@ import yaml
 import torch
 import torchaudio
 from tqdm import tqdm
-from argparse import Namespace
 
-# Lightning Module Wrapper
-try:
-    from lightning_modules.cleanunet_module import CleanUNetLightningModule
-except:
-    from cleanunet.cleanunet2 import CleanUNet2 as CleanUNetLightningModule
+from cleanunet.cleanunet2_with_ssl_embeddings import CleanUNet2WithSSLEmbeddings
+from cleanunet.ssl_extractor_factory import ssl_args_from_config
+from spec_dataset import get_dataset_filelist
 
 
 # -------------------------------------------------------
@@ -42,6 +45,58 @@ def load_checkpoint(path, device):
         raise FileNotFoundError(path)
     ckpt = torch.load(path, map_location=device)
     return ckpt
+
+
+def build_stage2_model(cfg, checkpoint_path, device, verbose=True):
+    """Build the Stage-2 SSL model and load a Lightning checkpoint into it.
+
+    Mirrors how CleanUNet2SSLEmbeddingsStage2Module builds the model, so the
+    architecture matches the trained weights. The SSL extractor is never built
+    in Stage 2, so no backbone is downloaded here.
+    """
+    model_config = cfg.get("model", {})
+    model_args = {
+        "stage": "stage2",
+        "conditioning_type": model_config.get("conditioning_type", "addition"),
+        "cleanunet_params": model_config.get("cleanunet_params", {}),
+        "cleanspecnet_params": model_config.get("cleanspecnet_params", {}),
+        **ssl_args_from_config(model_config),
+    }
+    model = CleanUNet2WithSSLEmbeddings(**model_args).to(device).eval()
+
+    if verbose:
+        print(f"[INFO] Loading checkpoint: {checkpoint_path}")
+    ckpt = load_checkpoint(checkpoint_path, device)
+    state_dict = ckpt["state_dict"] if "state_dict" in ckpt else ckpt
+    # Strip the LightningModule 'model.' prefix to match the bare nn.Module.
+    stripped = {
+        (k[len("model."):] if k.startswith("model.") else k): v
+        for k, v in state_dict.items()
+    }
+    missing, unexpected = model.load_state_dict(stripped, strict=False)
+    if verbose:
+        print(f"[INFO] Loaded weights (missing={len(missing)}, unexpected={len(unexpected)}).")
+    return model
+
+
+def collect_input_files(cfg, input_dir, pattern):
+    """Return the list of noisy files to denoise.
+
+    --input-dir overrides; otherwise use the noisy column of the config's
+    data.val_list_path, resolved against data.data_dir.
+    """
+    if input_dir:
+        return sorted(glob(os.path.join(input_dir, pattern)))
+
+    data_cfg = cfg.get("data", {})
+    list_path = data_cfg.get("val_list_path")
+    data_dir = data_cfg.get("data_dir", ".")
+    if not list_path:
+        raise ValueError(
+            "No --input-dir given and config has no data.val_list_path to fall back on."
+        )
+    pairs = get_dataset_filelist(list_path)  # [(clean_rel, noisy_rel), ...]
+    return [os.path.join(data_dir, noisy_rel) for _clean_rel, noisy_rel in pairs]
 
 
 def mono_and_resample(wav, orig_sr, target_sr, device):
@@ -100,58 +155,37 @@ def overlap_add(out_buf, seg_out, start, end, window):
 # Main Inference Logic
 # -------------------------------------------------------
 
-def run_inference(cfg):
-    inf = cfg["inference"]
-    model_cfg = cfg["model"]
-    audio_cfg = cfg["audio"]
-    output_cfg = cfg["output"]
-    runtime_cfg = cfg["runtime"]
-
-    verbose = runtime_cfg.get("verbose", True)
+def run_inference(cfg, checkpoint_path, output_dir, input_dir=None,
+                  device_str="cuda", input_pattern="*.wav", use_amp=True, verbose=True):
+    output_cfg = cfg.get("output", {})
 
     # -----------------------------
     # Device setup
     # -----------------------------
     device = torch.device(
-        "cpu" if inf.get("force_cpu", False) else
-        ("cuda" if torch.cuda.is_available() else "cpu")
+        device_str if (device_str == "cpu" or torch.cuda.is_available()) else "cpu"
     )
+    if device_str == "cuda" and device.type == "cpu":
+        print("[WARN] CUDA not available; falling back to CPU.")
     if verbose:
         print(f"[INFO] Using device: {device}")
 
     # -----------------------------
-    # Instantiate model
+    # Instantiate model + load checkpoint
     # -----------------------------
     if verbose:
-        print("[INFO] Instantiating CleanUNetLightningModule...")
-
-    model = CleanUNetLightningModule(Namespace(**model_cfg))
-    model.to(device)
-    model.eval()
-
-    # -----------------------------
-    # Load checkpoint
-    # -----------------------------
-    ckpt_path = inf["checkpoint_path"]
-    if verbose:
-        print(f"[INFO] Loading checkpoint: {ckpt_path}")
-
-    ckpt = load_checkpoint(ckpt_path, device)
-    state_dict = ckpt["state_dict"] if "state_dict" in ckpt else ckpt
-    model.load_state_dict(state_dict, strict=False)
+        print("[INFO] Building Stage-2 SSL model...")
+    model = build_stage2_model(cfg, checkpoint_path, device, verbose=verbose)
 
     # -----------------------------
     # Collect files
     # -----------------------------
-    input_dir = inf["input_dir"]
-    pattern = inf.get("input_pattern", "*.wav")
-
-    files = sorted(glob(os.path.join(input_dir, pattern)))
+    files = collect_input_files(cfg, input_dir, input_pattern)
     if len(files) == 0:
         print("[WARN] No input WAV files found.")
         return
 
-    out_dir = inf.get("output_dir", "denoised_results")
+    out_dir = output_dir
     os.makedirs(out_dir, exist_ok=True)
 
     if verbose:
@@ -160,8 +194,8 @@ def run_inference(cfg):
     # -----------------------------
     # Audio params
     # -----------------------------
-    target_sr = audio_cfg["target_sample_rate"]
-    normalize_flag = audio_cfg.get("normalize", True)
+    target_sr = cfg.get("data", {}).get("sampling_rate", 16000)
+    normalize_flag = True
 
     segment_size = 16384
     hop_size = segment_size // 2
@@ -174,12 +208,7 @@ def run_inference(cfg):
 
     window_ola = torch.hann_window(segment_size).to(device)
 
-    # Metrics report
-    save_metrics = runtime_cfg.get("save_metrics_report", False)
-    metrics_output = {}
-
     # AMP context
-    use_amp = inf.get("use_amp", True)
     amp_dtype = torch.bfloat16 if device.type == "cpu" else torch.float16
 
     # -----------------------------
@@ -245,29 +274,10 @@ def run_inference(cfg):
 
             # Save file
             out_path = os.path.join(out_dir, Path(wav_path).stem + "." + output_cfg.get("format", "wav"))
-
-            if not inf.get("overwrite", False) and os.path.exists(out_path):
-                print(f"[WARN] File exists, skipping: {out_path}")
-                continue
-
             torchaudio.save(out_path, enhanced.unsqueeze(0), orig_sr)
-
-            # Save metrics?
-            metrics_output[Path(wav_path).name] = {
-                "length": int(T),
-                "peak_before": float(raw_peak),
-                "peak_after": float(enhanced.abs().max()),
-            }
 
         except Exception as e:
             print(f"[ERROR] Failed processing {wav_path}: {e}")
-
-    # Metrics JSON
-    if save_metrics:
-        json_path = runtime_cfg.get("metrics_report_path", "inference_metrics.json")
-        with open(json_path, "w") as f:
-            json.dump(metrics_output, f, indent=2)
-        print(f"[INFO] Metrics report saved to: {json_path}")
 
     print(f"[INFO] Inference complete. Output stored in: {out_dir}")
 
@@ -277,12 +287,17 @@ def run_inference(cfg):
 # -------------------------------------------------------
 
 def parse_args():
-    p = argparse.ArgumentParser(description="CleanUNet2 inference script")
-    p.add_argument("--config", required=True, help="YAML configuration path")
-    p.add_argument("--checkpoint", default=None,
-                   help="Checkpoint path (overrides inference.checkpoint_path in the config).")
-    p.add_argument("--output-dir", default=None,
-                   help="Output directory (overrides inference.output_dir in the config).")
+    p = argparse.ArgumentParser(description="CleanUNet2 Stage-2 SSL inference script")
+    p.add_argument("--config", required=True,
+                   help="Per-stage training config (JSON/YAML) used to build the model.")
+    p.add_argument("--checkpoint", required=True, help="Trained Stage-2 checkpoint (.ckpt).")
+    p.add_argument("--output-dir", required=True, help="Directory to write denoised audio.")
+    p.add_argument("--input-dir", default=None,
+                   help="Folder of noisy *.wav to denoise. Default: noisy files from the "
+                        "config's data.val_list_path (resolved against data.data_dir).")
+    p.add_argument("--input-pattern", default="*.wav", help="Glob pattern for --input-dir.")
+    p.add_argument("--device", default="cuda", choices=["cuda", "cpu"], help="Device (default: cuda).")
+    p.add_argument("--no-amp", action="store_true", help="Disable mixed-precision inference.")
     return p.parse_args()
 
 
@@ -292,11 +307,13 @@ if __name__ == "__main__":
     with open(args.config, "r") as f:
         cfg = yaml.safe_load(f)
 
-    # CLI overrides take precedence over the config file.
-    if args.checkpoint is not None:
-        cfg["inference"]["checkpoint_path"] = args.checkpoint
-    if args.output_dir is not None:
-        cfg["inference"]["output_dir"] = args.output_dir
-
     torch.backends.cudnn.benchmark = True
-    run_inference(cfg)
+    run_inference(
+        cfg,
+        checkpoint_path=args.checkpoint,
+        output_dir=args.output_dir,
+        input_dir=args.input_dir,
+        device_str=args.device,
+        input_pattern=args.input_pattern,
+        use_amp=not args.no_amp,
+    )
