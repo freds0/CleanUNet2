@@ -206,13 +206,13 @@ class CleanUNet2SpeakerEmbeddingsStage2Module(pl.LightningModule):
 
     def _assert_latents_aligned(self, config, list_key, latents_dir, keys,
                                 required, min_ratio=0.9):
-        """Verify the cache keys align with a split's file paths (md5(os.path.join(
-        data_dir, rel))). Abort if `required` and misaligned; otherwise warn. Skips
-        pathless configs (can't reconstruct the same keys here)."""
-        import os
+        """Verify the cache keys align with a split's file paths. The cache is keyed by
+        latent_cache_key(clean_rel) -- the SAME relative path MelDataset returns (see
+        spec_dataset.MelDataset.__getitem__) and generate_train_latents.py keys by -- so
+        align on that exact string. Abort if `required` and misaligned; otherwise warn.
+        Skips pathless configs."""
         data_cfg = config.get('data', {})
         list_path = data_cfg.get(list_key)
-        data_dir = data_cfg.get('data_dir', '.')
 
         if not list_path:
             print(f"[Stage-2] Skipping latent-alignment check for {list_key} "
@@ -228,7 +228,7 @@ class CleanUNet2SpeakerEmbeddingsStage2Module(pl.LightningModule):
         if not pairs:
             return
 
-        hit = sum(latent_cache_key(os.path.join(data_dir, c)) in keys for c, _ in pairs)
+        hit = sum(latent_cache_key(c) in keys for c, _ in pairs)
         ratio = hit / len(pairs)
         if ratio < min_ratio:
             msg = (f"[Stage-2] Latents MISALIGNED with {list_key}: only {hit}/{len(pairs)} "
