@@ -1,10 +1,10 @@
 # train.py
 """
-Training entrypoint for CleanUNet2 with safer callback/logger instantiation.
-Supports TensorBoard and WandB.
+Training entrypoint for the CleanUNet2 BASELINE (single stage, no SSL / no speaker
+embeddings). Safer callback/logger instantiation. Supports TensorBoard and WandB.
 
 Usage:
-    python train.py --config configs/train.yaml
+    python train.py --config configs/config.yaml
 """
 
 import yaml
@@ -18,7 +18,7 @@ from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger
 
 # Make sure these imports point to the correct modules in your repo
 from lightning_modules.data_module import CleanUNetDataModule
-# The SSL-embeddings (WavLM) stage modules are imported lazily in train() per stage.
+from lightning_modules.cleanunet_module import CleanUNetLightningModule
 
 # Configure a simple logger for console output (INFO level)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
@@ -124,7 +124,7 @@ def _safe_instantiate_logger(logger_config: dict):
     return None
 
 def train(config: dict, quick_test: bool = False, quick_test_samples: int = 30,
-          quick_test_epochs: int = 1, stage: int = None):
+          quick_test_epochs: int = 1):
     """
     Main training function.
 
@@ -133,7 +133,6 @@ def train(config: dict, quick_test: bool = False, quick_test_samples: int = 30,
         quick_test: Run quick test mode (1 epoch, N samples)
         quick_test_samples: Number of samples for quick test
         quick_test_epochs: Number of epochs for quick test
-        stage: Override training stage from config (1 or 2)
     """
     # Validate minimal config structure
     if "data" not in config:
@@ -142,10 +141,7 @@ def train(config: dict, quick_test: bool = False, quick_test_samples: int = 30,
         raise KeyError("Missing 'trainer' section in config.")
 
     # Log run information
-    pipeline_cfg = config.get("pipeline", {})
-    current_stage = stage if stage else pipeline_cfg.get("stage", 1)
-    logger.info(f"[INFO] Stage: {current_stage}")
-    logger.info(f"[INFO] Model: WavLM (microsoft/wavlm-large, 768-D)")
+    logger.info(f"[INFO] Model: CleanUNet2 baseline (no SSL / no speaker embeddings)")
 
     if quick_test:
         logger.info(f"[INFO] Quick Test Mode: True ({quick_test_epochs} epoch, {quick_test_samples} samples)")
@@ -162,15 +158,9 @@ def train(config: dict, quick_test: bool = False, quick_test_samples: int = 30,
         data_cfg_copy["batch_size"] = min(data_cfg_copy.get("batch_size", 32), quick_test_samples)
     data_module = CleanUNetDataModule(**data_cfg_copy)
 
-    # Select the SSL-embeddings (WavLM) Lightning module based on the training stage.
-    if current_stage == 2:
-        logger.info("Instantiating CleanUNet2SSLEmbeddingsStage2Module (replicate latents, no extractor).")
-        from lightning_modules.cleanunet_ssl_embeddings_stage2_module import CleanUNet2SSLEmbeddingsStage2Module
-        model = CleanUNet2SSLEmbeddingsStage2Module(config)
-    else:
-        logger.info("Instantiating CleanUNet2SSLEmbeddingsStage1Module (WavLM embeddings, softmax over all layers).")
-        from lightning_modules.cleanunet_ssl_embeddings_stage1_module import CleanUNet2SSLEmbeddingsStage1Module
-        model = CleanUNet2SSLEmbeddingsStage1Module(config)
+    # Baseline: single Lightning module, plain CleanUNet2 (no SSL / no speaker embeddings).
+    logger.info("Instantiating CleanUNetLightningModule (baseline, single stage).")
+    model = CleanUNetLightningModule(config)
 
     # Instantiate callbacks safely
     callbacks = _safe_instantiate_callbacks(config.get("callbacks", {}))
@@ -203,12 +193,11 @@ def train(config: dict, quick_test: bool = False, quick_test_samples: int = 30,
     logger.info("Training finished.")
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Train CleanUNet2 (WavLM-only) using a YAML configuration.")
+    parser = argparse.ArgumentParser(description="Train the CleanUNet2 baseline using a YAML configuration.")
     parser.add_argument("--config", type=str, required=True, help="Path to YAML config file.")
     parser.add_argument("--quick-test", action="store_true", help="Run quick test: 1 epoch on 30 samples (<5 min).")
     parser.add_argument("--quick-test-samples", type=int, default=30, help="Number of samples for quick test (default: 30).")
     parser.add_argument("--quick-test-epochs", type=int, default=1, help="Number of epochs for quick test (default: 1).")
-    parser.add_argument("--stage", type=int, choices=[1, 2], help="Training stage: 1 or 2 (overrides config).")
     return parser.parse_args()
 
 if __name__ == "__main__":
@@ -226,45 +215,15 @@ if __name__ == "__main__":
         except Exception as e:
             logger.warning("Could not set float32 matmul precision: %s", str(e))
 
-    # Get stage and checkpoint info
-    pipeline_cfg = config.get('pipeline', {})
-    stage = pipeline_cfg.get('stage', args.stage) if args.stage is None else args.stage
-    resume_ckpt = pipeline_cfg.get('resume_from_checkpoint')
-    stage1_ckpt = pipeline_cfg.get('stage1_checkpoint')
-
     logger.info("=" * 70)
-    logger.info("CleanUNet2 Training Pipeline (WavLM)")
+    logger.info("CleanUNet2 Baseline Training (single stage, no SSL / no speaker embeddings)")
     logger.info("=" * 70)
-    logger.info(f"🎯 Training Stage: {stage}")
     logger.info(f"🧪 Quick Test Mode: {args.quick_test}")
-
-    # Checkpoint loading information
-    if stage == 1:
-        logger.info("=" * 70)
-        logger.info("STAGE 1: Training WITH pre-extracted SSL embeddings")
-        logger.info("=" * 70)
-        if resume_ckpt:
-            logger.info(f"📂 Will RESUME from existing checkpoint: {resume_ckpt}")
-        else:
-            logger.info("🆕 Starting fresh (no resume checkpoint)")
-        logger.info(f"📊 Will save checkpoints to: experiments/checkpoints/stage1/")
-        logger.info(f"💾 Latest checkpoint will be: cleanunet-stage1-last.ckpt")
-    elif stage == 2:
-        logger.info("=" * 70)
-        logger.info("STAGE 2: Training WITHOUT pre-extracted embeddings")
-        logger.info("=" * 70)
-        if stage1_ckpt:
-            logger.info(f"✅ Will LOAD Stage 1 checkpoint: {stage1_ckpt}")
-            logger.info(f"   Stage 1 weights will initialize the model")
-            logger.info(f"   Model will then learn to replicate embeddings internally")
-        else:
-            logger.warning("⚠️  No Stage 1 checkpoint specified!")
-            logger.warning("⚠️  Starting with random initialization")
-        if resume_ckpt:
-            logger.info(f"📂 Will RESUME from existing Stage 2 checkpoint: {resume_ckpt}")
-        logger.info(f"📊 Will save checkpoints to: experiments/checkpoints/stage2/")
-        logger.info(f"💾 Latest checkpoint will be: cleanunet-stage2-last.ckpt")
-
+    resume_ckpt = config.get('resume_from_checkpoint')
+    if resume_ckpt:
+        logger.info(f"📂 Will RESUME from existing checkpoint: {resume_ckpt}")
+    else:
+        logger.info("🆕 Starting fresh (no resume checkpoint)")
     logger.info("=" * 70)
 
     # Run training
@@ -273,5 +232,4 @@ if __name__ == "__main__":
         quick_test=args.quick_test,
         quick_test_samples=args.quick_test_samples,
         quick_test_epochs=args.quick_test_epochs,
-        stage=args.stage
     )

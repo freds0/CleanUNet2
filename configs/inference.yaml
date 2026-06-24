@@ -1,25 +1,20 @@
 # ============================================================================
-# CleanUNet2 Inference Configuration (Wav2Vec2 ONLY)
+# CleanUNet2 BASELINE — inference configuration (no SSL / no speaker embeddings).
+# Consumed by inference.py. The `model` section is passed to CleanUNetLightningModule;
+# only `conditioning_type` matters and MUST match the value used at training time.
 # ============================================================================
 
 inference:
-  checkpoint_path: "/media/fred/FRED5TB/CleanUNet2-SSL-Experiments/experiments_wavlm/checkpoints/stage2/cleanunet-stage2-epoch=047-val_loss=5.8633.ckpt"
+  checkpoint_path: "./experiments/checkpoints/last.ckpt"
   input_dir: "/home/fred/Projetos/DATASETS/VoiceBank-DEMAND-16k/test/noisy"
   input_pattern: "*.wav"
   output_dir: "./denoised_voicebank/"
   force_cpu: false
   use_amp: true
+  overwrite: false
 
 model:
-  input_channels: 1
-  channels: 64
-  num_layers: 4
-  kernel_size: 3
-  skip_channels: 128
-  use_wav2vec: true
-  wav2vec_model: "facebook/wav2vec2-xls-r-2b"
-  wav2vec_layer: 24
-  wav2vec_dim: 1024
+  conditioning_type: addition   # must match training (configs/config.yaml)
 
 audio:
   target_sample_rate: 16000
@@ -27,33 +22,10 @@ audio:
 
 output:
   format: "wav"
-  overwrite: false
+  undo_normalize: true
 
 runtime:
   device: "auto"
   verbose: true
   save_metrics_report: false
   metrics_report_path: "inference_metrics.json"
-
-
-# ────────────────────────────────────────────────────────────────────────────
-# Notes
-# ────────────────────────────────────────────────────────────────────────────
-#
-# 1. Checkpoint Selection:
-#    - Use the best Stage 2 checkpoint for final inference
-#    - Use Stage 1 checkpoint if Stage 2 didn't improve results
-#
-# 2. Embedding Extraction:
-#    - If use_preextracted: true, embeddings must be cached in 'cache_dir'
-#    - Pre-extract embeddings with: python scripts/extract_embeddings.py
-#    - For on-the-fly extraction (slower), set use_preextracted: false
-#
-# 3. Device Selection:
-#    - "auto": automatically select GPU if available, otherwise CPU
-#    - "cuda": use GPU (fails if not available)
-#    - "cpu": use CPU only
-#
-# 4. Output Options:
-#    - Save denoised audio to 'output_dir'
-#    - Optionally generate metrics report for evaluation

@@ -1,0 +1,104 @@
+# ============================================================================
+# CleanUNet2 BASELINE — single-stage training, no SSL / no speaker embeddings.
+# Plain waveform + spectrogram denoiser (CleanUNet + CleanSpecNet + Conditioner).
+# Consumed by CleanUNetLightningModule, which reads model/loss/optimizer keys at
+# the config ROOT (flat) and CleanUNet2 uses its default sub-module architecture.
+# ============================================================================
+
+trainer:
+  accelerator: auto
+  devices: 1
+  max_epochs: 300
+  precision: 16-mixed
+  log_every_n_steps: 10
+  check_val_every_n_epoch: 1
+  gradient_clip_val: 5.0
+  deterministic: false
+  benchmark: true
+
+seed: 1234
+sample_rate: 16000
+
+# ----------------------
+# Model (read at root by CleanUNetLightningModule)
+# ----------------------
+conditioning_type: addition   # addition | concatenation | film
+freeze_cleanunet: false
+freeze_cleanspecnet: false
+
+# ----------------------
+# Losses
+# ----------------------
+# Final loss weights are read from the config ROOT.
+weight_waveform: 10.0
+weight_spec: 5.0
+weight_phase: 5.0
+
+loss_config:
+  ell_p: 1
+  ell_p_lambda: 1.0
+  stft_lambda: 1.0
+  sc_lambda: 0.8
+  mag_lambda: 0.2
+  stft_config:
+    fft_sizes: [512, 1024, 2048]
+    hop_sizes: [50, 120, 240]
+    win_lengths: [240, 600, 1200]
+
+# ----------------------
+# Optimizer
+# ----------------------
+lr: 5.0e-05
+
+# ----------------------
+# Data
+# ----------------------
+data:
+  data_dir: "/home/fred/Projetos/DATASETS/VoiceBank-DEMAND-16k/"
+  train_list_path: "filelists/train.csv"
+  val_list_path: "filelists/test.csv"
+  batch_size: 16
+  num_workers: 4
+  persistent_workers: true
+  segment_size: 32000
+  sampling_rate: 16000
+  use_preextracted_embeddings: false   # baseline: no embeddings, plain paired audio
+
+# ----------------------
+# Callbacks
+# ----------------------
+callbacks:
+  model_checkpoint:
+    _target_: pytorch_lightning.callbacks.ModelCheckpoint
+    monitor: val_loss
+    dirpath: "./experiments/checkpoints"
+    filename: cleanunet-baseline-{epoch:03d}-{val_loss:.4f}
+    save_top_k: 3
+    mode: min
+    save_last: true
+  early_stopping:
+    _target_: pytorch_lightning.callbacks.EarlyStopping
+    monitor: val_loss
+    patience: 15
+    mode: min
+    min_delta: 0.0001
+
+# ----------------------
+# Logger
+# ----------------------
+logger:
+  choice: both
+  tensorboard:
+    _target_: pytorch_lightning.loggers.TensorBoardLogger
+    save_dir: experiments
+    name: tb_logs
+    default_hp_metric: false
+  wandb:
+    _target_: pytorch_lightning.loggers.WandbLogger
+    project: "CleanUNet2_Baseline"
+    name: "baseline"
+    save_dir: experiments
+    offline: false
+    log_model: true
+
+resume_from_checkpoint: null
