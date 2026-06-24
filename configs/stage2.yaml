@@ -42,8 +42,7 @@ trainer:
 seed: 1234
 checkpoint_dir: experiments/exp_xvector_optimized_stage2/checkpoints
 logging_dir: experiments/exp_xvector_optimized_stage2
-latents_dir: experiments/exp_xvector_optimized_stage1/stored_latents_stage1  # Load from Stage-1
-train_latents_dir: experiments/exp_xvector_optimized_stage1/train_latents  # per-file TRAIN latents (training-time latent loss); see generate_train_latents.py
+latents_dir: experiments/exp_xvector_optimized_stage1/stored_latents_stage1  # per-file <md5>.pt cache (train+val); see generate_train_latents.py
 
 # ----------------------
 # Audio configuration

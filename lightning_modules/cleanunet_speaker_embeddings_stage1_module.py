@@ -9,7 +9,6 @@ Latent vectors are saved for Stage-2 training.
 import torch
 import torch.nn.functional as F
 import pytorch_lightning as pl
-from pathlib import Path
 import torchaudio
 
 from cleanunet.cleanunet2_with_speaker_embeddings import CleanUNet2WithSpeakerEmbeddings
@@ -128,14 +127,6 @@ class CleanUNet2SpeakerEmbeddingsStage1Module(pl.LightningModule):
         }
         self._pesq_resampler_cache = None
 
-        # ===== Latents Storage =====
-        self.latents_dir = Path(config.get('latents_dir', 'stored_latents_stage1'))
-        self.latents_dir.mkdir(parents=True, exist_ok=True)
-        print(f"[Stage-1] Latents will be saved to: {self.latents_dir}")
-
-        # Counter for unique batch identification
-        self.global_val_batch_idx = 0
-
         # Audio samples for logging (6 samples: noisy, clean, denoised)
         self.val_audio_samples = []
         self.max_audio_samples = 6
@@ -237,24 +228,10 @@ class CleanUNet2SpeakerEmbeddingsStage1Module(pl.LightningModule):
             clean_paths = None
 
         # Forward with speaker embeddings (with optional caching)
-        enhanced, enhanced_spec, latents = self.model(
+        enhanced, enhanced_spec = self.model(
             noisy_wav, noisy_spec, clean_wav,
             clean_audio_paths=clean_paths,
-            return_latents=True
         )
-
-        # ===== Save Latents for Stage-2 =====
-        latent_path = self.latents_dir / f"val_batch_{self.global_val_batch_idx:06d}.pt"
-        torch.save({
-            'fused_latent': latents['fused_latent'].cpu(),
-            'embedding': latents['embedding'].cpu(),
-            'latent': latents['latent'].cpu(),
-            'noisy_wav': noisy_wav.cpu(),
-            'clean_wav': clean_wav.cpu(),
-            'batch_idx': self.global_val_batch_idx
-        }, latent_path)
-
-        self.global_val_batch_idx += 1
 
         # ===== Compute Losses =====
         loss_waveform = self.criterion(clean_wav, enhanced)
@@ -334,9 +311,6 @@ class CleanUNet2SpeakerEmbeddingsStage1Module(pl.LightningModule):
 
     def on_validation_epoch_end(self):
         print(f"\n[Stage-1] Validation epoch ended")
-        print(f"[Stage-1] Latents saved to: {self.latents_dir}")
-        print(f"[Stage-1] Total latent files: {len(list(self.latents_dir.glob('*.pt')))}")
-        print(f"[Stage-1] Global val batch index: {self.global_val_batch_idx}")
 
         # ===== Log Audio Samples =====
         if len(self.val_audio_samples) > 0:

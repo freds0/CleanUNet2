@@ -19,7 +19,6 @@ seed: 1234
 checkpoint_dir: experiments/exp_speakernet_stage2/checkpoints
 logging_dir: experiments/exp_speakernet_stage2
 latents_dir: experiments/exp_speakernet_stage1/stored_latents_stage1
-train_latents_dir: experiments/exp_speakernet_stage1/train_latents  # per-file TRAIN latents (training-time latent loss); see generate_train_latents.py
 
 audio:
   sample_rate: 16000

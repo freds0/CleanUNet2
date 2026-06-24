@@ -1,24 +1,28 @@
 # generate_train_latents.py
 """
-Generate per-file Stage-1 fused latents for the TRAIN split, from a trained Stage-1
-checkpoint, for use as distillation targets in Stage-2 training.
+Generate per-file Stage-1 fused latents from a trained Stage-1 checkpoint, for use as
+distillation targets in Stage-2 training. Run once per split (train and val); both write
+into the SAME directory ('latents_dir').
 
-Unlike the per-batch val latents saved during Stage-1 validation (keyed by batch index),
-this writes ONE file per training sample, keyed by MD5 of the clean-audio path:
+It writes ONE file per sample, keyed by MD5 of the clean-audio path:
 
     <output-dir>/<md5(clean_path)>.pt   # CPU tensor, shape (C, T) = fused_latent
 
+Train and val clean paths are disjoint, so the keys never collide in the shared directory.
+
 Alignment requirement: the latent depends on the exact audio segment. This script crops
-deterministically (per file path), and Stage-2 training must do the same
+deterministically (per file path), and Stage-2 must do the same
 (`data.deterministic_crop: true` + `data.return_audio_paths: true`) so each sample matches
 its cached target. Run with the SAME Stage-1 config used to train the checkpoint (same
-speaker backbone).
+speaker backbone). Default output dir is the config's 'latents_dir'.
 
 Usage:
-    python generate_train_latents.py \
+    python generate_train_latents.py --split train \
         --config configs/stage1_xvector.yaml \
-        --checkpoint experiments/exp_xvector_stage1/checkpoints/cleanunet-stage1-last.ckpt \
-        --output-dir train_latents_stage1
+        --checkpoint experiments/exp_xvector_stage1/checkpoints/cleanunet-stage1-last.ckpt
+    python generate_train_latents.py --split val \
+        --config configs/stage1_xvector.yaml \
+        --checkpoint experiments/exp_xvector_stage1/checkpoints/cleanunet-stage1-last.ckpt
 """
 
 import argparse
@@ -53,8 +57,8 @@ def parse_args():
     p.add_argument(
         "--output-dir",
         default=None,
-        help="Where to write <md5>.pt files (default: config 'train_latents_dir' for "
-             "--split train, 'val_latents_dir' for --split val).",
+        help="Where to write <md5>.pt files (default: config 'latents_dir', shared by "
+             "both splits).",
     )
     p.add_argument("--device", default="cuda", choices=["cuda", "cpu"], help="Device (default: cuda).")
     p.add_argument("--force", action="store_true", help="Re-extract even if a latent file already exists.")
@@ -68,11 +72,11 @@ def main():
         config = yaml.safe_load(fh)
 
     data_cfg = config.get("data", {})
-    # Train and val latents share ONE directory (train_latents_dir): files are keyed by
+    # Train and val latents share ONE directory ('latents_dir'): files are keyed by
     # md5(clean_path) and the train/val splits are disjoint, so keys never collide.
     list_path = data_cfg.get("train_list_path") if args.split == "train" \
         else data_cfg.get("val_list_path")
-    default_dir = config.get("train_latents_dir", "train_latents_stage1")
+    default_dir = config.get("latents_dir", "stored_latents_stage1")
 
     out_dir = Path(args.output_dir or default_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -140,7 +144,7 @@ def main():
 
     logger.info("Done. Extracted: %d, skipped(existing): %d. Cache dir: %s",
                 extracted, skipped, out_dir)
-    logger.info("Set the Stage-2 config: train_latents_dir=%s (shared by train+val) "
+    logger.info("Set the Stage-2 config: latents_dir=%s (shared by train+val) "
                 "+ data.deterministic_crop: true + data.return_audio_paths: true", out_dir)
 
 

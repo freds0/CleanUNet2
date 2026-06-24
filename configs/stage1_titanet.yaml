@@ -26,7 +26,6 @@ checkpoint_dir: experiments/exp_titanet_stage1/checkpoints
 logging_dir: experiments/exp_titanet_stage1
 latents_dir: experiments/exp_titanet_stage1/stored_latents_stage1
 
-train_latents_dir: experiments/exp_titanet_stage1/train_latents  # default output of generate_train_latents.py (override with --output-dir)
 # ----------------------
 # Audio configuration
 # ----------------------
