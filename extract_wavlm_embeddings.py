@@ -275,8 +275,9 @@ def extract_and_save_embeddings(config, device='cuda', force_reextract=False):
                 # Store metadata about this sequence (time is dim 1 now)
                 time_steps_list.append(embedding.shape[1])
 
-                # Save to disk
-                torch.save(embedding, cache_file)
+                # Save to disk in fp16 to halve the all-layer cache size on disk.
+                # The training read path casts back to float before the weighted sum.
+                torch.save(embedding.half(), cache_file)
                 extracted += 1
 
             except Exception as e:

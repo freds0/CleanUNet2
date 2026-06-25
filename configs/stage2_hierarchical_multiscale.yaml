@@ -38,7 +38,7 @@ model:
   use_xvector: false
   use_wavlm: true
   wavlm_model: "microsoft/wavlm-large"
-  wavlm_cache_dir: "wavlm_embeddings_raw"
+  wavlm_cache_dir: "/raid/user_fredoliveira/wavlm_cache"
   wavlm_layer: 12
   use_preextracted_embeddings: false
   wavlm_use_weighted_layers: true      # inert in Stage-2 (no extractor is built), kept for consistency

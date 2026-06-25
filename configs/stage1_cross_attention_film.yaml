@@ -40,7 +40,7 @@ model:
   use_xvector: false
   use_wavlm: true
   wavlm_model: "microsoft/wavlm-large"
-  wavlm_cache_dir: "wavlm_embeddings_raw"
+  wavlm_cache_dir: "/raid/user_fredoliveira/wavlm_cache"
   wavlm_layer: 12                      # ignored when wavlm_use_weighted_layers is true
   use_preextracted_embeddings: true    # reuse the pre-extracted all-layer WavLM cache (run extract_wavlm_embeddings.py first)
   wavlm_use_weighted_layers: true      # learnable softmax-weighted sum over ALL WavLM layers

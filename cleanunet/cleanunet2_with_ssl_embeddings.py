@@ -302,6 +302,7 @@ class CleanUNet2WithSSLEmbeddings(nn.Module):
             # OUTSIDE no_grad, so cached_layer_weights are learned during training.
             embedding_list = []
             for emb in raw_list:
+                emb = emb.float()  # cache may be fp16; weighted sum runs in fp32
                 if emb.dim() == 3:  # (num_layers, time, dim)
                     if self.use_weighted_layers:
                         weights = F.softmax(self.cached_layer_weights, dim=0)

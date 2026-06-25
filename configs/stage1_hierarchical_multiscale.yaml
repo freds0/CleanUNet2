@@ -40,7 +40,7 @@ model:
   use_xvector: false
   use_wavlm: true
   wavlm_model: "microsoft/wavlm-large"
-  wavlm_cache_dir: "wavlm_embeddings_raw"
+  wavlm_cache_dir: "/raid/user_fredoliveira/wavlm_cache"
   wavlm_layer: 12                      # ignored when wavlm_use_weighted_layers is true
   use_preextracted_embeddings: false   # MUST stay on-the-fly: hierarchical needs the live per-layer extractor (extract_all_layers)
   wavlm_use_weighted_layers: true      # learnable softmax-weighted sum over ALL WavLM layers
