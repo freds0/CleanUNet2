@@ -13,7 +13,12 @@ from pathlib import Path
 from .cleanunet2 import CleanUNet2, SpecUpsampler, Conditioner
 from .cleanunet import CleanUNet
 from .cleanspecnet import CleanSpecNet
-from .integration_block import SequenceIntegrationBlock
+from .integration_block import (
+    SequenceIntegrationBlock,
+    FiLMCrossAttentionBlock,
+    VariationalLatentBlock,
+    HierarchicalMultiScaleBlock,
+)
 from .wavlm_extractor import WavLMExtractor
 
 
@@ -31,7 +36,10 @@ class CleanUNet2WithSSLEmbeddings(nn.Module):
         use_preextracted_embeddings=False,
         wavlm_pooling_method='self_attention',
         wavlm_attention_heads=8,
-        wavlm_use_weighted_layers=True
+        wavlm_use_weighted_layers=True,
+        fusion_type='cross_attention_film',
+        acoustic_layers=(1, 8),
+        semantic_layers=(17, 24),
     ):
         super().__init__()
 
@@ -40,6 +48,15 @@ class CleanUNet2WithSSLEmbeddings(nn.Module):
         self.use_weighted_layers = wavlm_use_weighted_layers
         self.embedding_type = 'ssl_embeddings'
         self.embedding_dim = 1024
+
+        # Fusion strategy selector. One of:
+        #   "cross_attention_film"    -> FiLMCrossAttentionBlock      (Option 1)
+        #   "cvae_bottleneck"         -> VariationalLatentBlock        (Option 2)
+        #   "hierarchical_multiscale" -> HierarchicalMultiScaleBlock   (Option 3)
+        #   "legacy_pooling"          -> SequenceIntegrationBlock      (original)
+        self.fusion_type = fusion_type
+        self.acoustic_layers = tuple(acoustic_layers)
+        self.semantic_layers = tuple(semantic_layers)
 
         if cleanunet_params is None:
             cleanunet_params = {}
@@ -157,13 +174,51 @@ class CleanUNet2WithSSLEmbeddings(nn.Module):
                 else:
                     self.embedding_extractor.eval()
 
-        print(f"[CleanUNet2WithSSLEmbeddings] Creating SequenceIntegrationBlock (embedding_dim={self.embedding_dim})...")
-        self.integration_block = SequenceIntegrationBlock(
-            latent_channels=self.latent_dim,
-            embedding_dim=self.embedding_dim,
-            num_heads=wavlm_attention_heads,
-            dropout=0.1
-        )
+        # Channel counts of the first two encoder layers (targets of the hierarchical
+        # ACOUSTIC injection). Layer 1 -> channels_H, layer 2 -> min(channels_H*2, max_H).
+        self.early_channels = (channels_H, min(channels_H * 2, max_H))
+
+        # ----- Build the selected fusion block -----
+        print(f"[CleanUNet2WithSSLEmbeddings] Fusion type: {self.fusion_type} "
+              f"(latent_dim={self.latent_dim}, embedding_dim={self.embedding_dim})")
+
+        if self.fusion_type == 'cross_attention_film':
+            # Option 1: frame-to-frame cross-attention -> per-frame FiLM.
+            self.fusion_block = FiLMCrossAttentionBlock(
+                latent_channels=self.latent_dim,
+                embedding_dim=self.embedding_dim,
+                num_heads=wavlm_attention_heads,
+                dropout=0.1,
+            )
+        elif self.fusion_type == 'cvae_bottleneck':
+            # Option 2: CVAE latent filter (mu/logvar + reparameterization).
+            self.fusion_block = VariationalLatentBlock(
+                latent_channels=self.latent_dim,
+                embedding_dim=self.embedding_dim,
+            )
+        elif self.fusion_type == 'hierarchical_multiscale':
+            # Option 3: multi-scale dilated convs + hierarchical FiLM injection.
+            self.fusion_block = HierarchicalMultiScaleBlock(
+                embedding_dim=self.embedding_dim,
+                bottleneck_channels=self.latent_dim,
+                early_channels=self.early_channels,
+                acoustic_layers=self.acoustic_layers,
+                semantic_layers=self.semantic_layers,
+            )
+        elif self.fusion_type == 'legacy_pooling':
+            # Original behaviour: pool WavLM sequence -> broadcast -> concat + conv.
+            self.fusion_block = SequenceIntegrationBlock(
+                latent_channels=self.latent_dim,
+                embedding_dim=self.embedding_dim,
+                num_heads=wavlm_attention_heads,
+                dropout=0.1,
+            )
+        else:
+            raise ValueError(
+                f"Unknown fusion_type '{self.fusion_type}'. Use one of: "
+                "'cross_attention_film', 'cvae_bottleneck', 'hierarchical_multiscale', "
+                "'legacy_pooling'."
+            )
 
         if stage == 'stage2':
             print("[CleanUNet2WithSSLEmbeddings] Creating latent predictor for Stage 2...")
@@ -192,7 +247,7 @@ class CleanUNet2WithSSLEmbeddings(nn.Module):
         filtered_state_dict = {}
         for k, v in state_dict.items():
             new_key = k[len('model.'):] if k.startswith('model.') else k
-            if not new_key.startswith(('xvector_extractor', 'integration_block', 'latent_predictor')):
+            if not new_key.startswith(('xvector_extractor', 'integration_block', 'fusion_block', 'latent_predictor')):
                 filtered_state_dict[new_key] = v
 
         missing_keys, unexpected_keys = self.load_state_dict(filtered_state_dict, strict=False)
@@ -212,91 +267,141 @@ class CleanUNet2WithSSLEmbeddings(nn.Module):
 
         print("[CleanUNet2WithSSLEmbeddings] Vanilla checkpoint loaded successfully!\n")
 
+    def _get_sequence_embedding(self, clean_audio, clean_audio_paths):
+        """
+        Return the WavLM sequence embedding [B, T_wavlm, D_wavlm] used by the
+        cross-attention / CVAE / legacy fusion paths (NOT the hierarchical path,
+        which needs the full per-layer stack).
+        """
+        batch_size = clean_audio.shape[0]
+
+        if self.use_preextracted_embeddings:
+            assert clean_audio_paths is not None, "Audio paths required for pre-extracted embeddings"
+
+            # Load cached tensors (data only -> no_grad). Each cached item is either:
+            #   (num_layers, time, dim)  -> all-layer cache, or
+            #   (time, dim)              -> legacy single-layer cache.
+            with torch.no_grad():
+                raw_list = []
+                for i in range(batch_size):
+                    audio_path = clean_audio_paths[i]
+                    cached_data = self.embedding_cache.get(audio_path, device=clean_audio.device)
+
+                    if cached_data is None:
+                        raise RuntimeError(
+                            f"Pre-extracted embedding not found for: {audio_path}\n"
+                            f"Please run extract_wavlm_embeddings.py first!"
+                        )
+
+                    if isinstance(cached_data, dict) and 'embedding' in cached_data:
+                        cached_data = cached_data['embedding']
+
+                    raw_list.append(cached_data)
+
+            # Combine layers per item. For all-layer caches this softmax is computed
+            # OUTSIDE no_grad, so cached_layer_weights are learned during training.
+            embedding_list = []
+            for emb in raw_list:
+                if emb.dim() == 3:  # (num_layers, time, dim)
+                    if self.use_weighted_layers:
+                        weights = F.softmax(self.cached_layer_weights, dim=0)
+                        emb = torch.einsum('l,ltd->td', weights, emb)
+                    else:
+                        emb = emb.mean(dim=0)
+                embedding_list.append(emb)  # (time, dim)
+
+            # Pad to same length and stack -> (batch, time, dim)
+            max_len = max(emb.shape[0] for emb in embedding_list)
+            padded_embeddings = []
+            for emb in embedding_list:
+                if emb.shape[0] < max_len:
+                    pad = (0, 0, 0, max_len - emb.shape[0])
+                    emb = F.pad(emb, pad, mode='constant', value=0)
+                padded_embeddings.append(emb)
+            embedding = torch.stack(padded_embeddings, dim=0)  # [B, T_wavlm, D_wavlm]
+        else:
+            # On-the-fly extraction. The frozen WavLM backbone is wrapped in no_grad
+            # inside the extractor; the learnable per-layer softmax weights stay
+            # differentiable, so gradients flow to them here.
+            embedding = self.embedding_extractor.extract_embeddings(
+                clean_audio.squeeze(1), sample_rate=16000, return_mean=False
+            )  # [B, T_wavlm, D_wavlm]
+
+        return embedding
+
     def forward(self, noisy_waveform, noisy_spectrogram, clean_audio=None, clean_audio_paths=None, return_latents=False):
         latents = {}
 
-        denoised_spec = self.clean_spec_net(noisy_spectrogram)
-        cond_feature = self.spec_upsampler(denoised_spec)
+        # ----- Shared front-end: spectrogram branch + conditioning -----
+        denoised_spec = self.clean_spec_net(noisy_spectrogram)             # [B, F, T_spec]
+        cond_feature = self.spec_upsampler(denoised_spec)                  # [B, 1, ~L]
 
         if cond_feature.shape[-1] != noisy_waveform.shape[-1]:
             cond_feature = F.interpolate(cond_feature, size=noisy_waveform.shape[-1], mode='linear')
 
-        conditioned_input = self.conditioner(noisy_waveform, cond_feature)
-        latent, encoder_states = self.clean_unet.encode(conditioned_input)
+        conditioned_input = self.conditioner(noisy_waveform, cond_feature)  # [B, 1, L]
 
+        # ============================ STAGE 1 ============================
         if self.stage == 'stage1' and self.embedding_type is not None:
             assert clean_audio is not None, "Clean audio is required for Stage 1 training"
 
-            batch_size = clean_audio.shape[0]
+            if self.fusion_type == 'hierarchical_multiscale':
+                # Option 3: inject FiLM INSIDE the encoder (early acoustic + bottleneck
+                # semantic). Requires the full per-layer WavLM stack.
+                all_states = self.embedding_extractor.extract_all_layers(
+                    clean_audio.squeeze(1), sample_rate=16000
+                )  # [B, L_wavlm, T_wavlm, D_wavlm]
+                all_states = all_states.to(dtype=conditioned_input.dtype)
 
-            if self.use_preextracted_embeddings:
-                assert clean_audio_paths is not None, "Audio paths required for pre-extracted embeddings"
+                early_params, bottleneck_params = self.fusion_block(all_states)
+                # Map ACOUSTIC global-FiLM params to encoder layers 1 & 2 (indices 0, 1).
+                encoder_film = {
+                    0: early_params[self.early_channels[0]],
+                    1: early_params[self.early_channels[1]],
+                }
+                latent, encoder_states = self.clean_unet.encode(
+                    conditioned_input, encoder_film=encoder_film, bottleneck_film=bottleneck_params
+                )  # latent: [B, C_unet, T_unet] (already fused via FiLM)
+                fused_latent = latent
+                enhanced_waveform = self.clean_unet.decode(fused_latent, encoder_states)
 
-                # Load cached tensors (data only -> no_grad). Each cached item is either:
-                #   (num_layers, time, dim)  -> all-layer cache, or
-                #   (time, dim)              -> legacy single-layer cache.
-                with torch.no_grad():
-                    raw_list = []
-                    for i in range(batch_size):
-                        audio_path = clean_audio_paths[i]
-                        cached_data = self.embedding_cache.get(audio_path, device=clean_audio.device)
-
-                        if cached_data is None:
-                            raise RuntimeError(
-                                f"Pre-extracted embedding not found for: {audio_path}\n"
-                                f"Please run extract_wavlm_embeddings.py first!"
-                            )
-
-                        if isinstance(cached_data, dict) and 'embedding' in cached_data:
-                            cached_data = cached_data['embedding']
-
-                        raw_list.append(cached_data)
-
-                # Combine layers per item. For all-layer caches this softmax is computed
-                # OUTSIDE no_grad, so cached_layer_weights are learned during training.
-                embedding_list = []
-                for emb in raw_list:
-                    if emb.dim() == 3:  # (num_layers, time, dim)
-                        if self.use_weighted_layers:
-                            weights = F.softmax(self.cached_layer_weights, dim=0)
-                            emb = torch.einsum('l,ltd->td', weights, emb)
-                        else:
-                            emb = emb.mean(dim=0)
-                    embedding_list.append(emb)  # (time, dim)
-
-                # Pad to same length and stack -> (batch, time, dim)
-                max_len = max(emb.shape[0] for emb in embedding_list)
-                padded_embeddings = []
-                for emb in embedding_list:
-                    if emb.shape[0] < max_len:
-                        padding = (0, 0, 0, max_len - emb.shape[0])
-                        emb = F.pad(emb, padding, mode='constant', value=0)
-                    padded_embeddings.append(emb)
-                embedding = torch.stack(padded_embeddings, dim=0)
+                latents['fused_latent'] = fused_latent.detach()
+                latents['embedding'] = all_states.mean(dim=1).detach()  # [B, T_wavlm, D] placeholder
+                latents['latent'] = fused_latent.detach()
 
             else:
-                # On-the-fly extraction. The frozen WavLM backbone is wrapped in
-                # no_grad inside the extractor; the learnable per-layer softmax
-                # weights stay differentiable, so gradients flow to them here.
-                embedding = self.embedding_extractor.extract_embeddings(
-                    clean_audio.squeeze(1), sample_rate=16000, return_mean=False
-                )
+                # Options 1, 2, legacy: encode first, then fuse at the bottleneck.
+                latent, encoder_states = self.clean_unet.encode(conditioned_input)  # [B, C_unet, T_unet]
+                embedding = self._get_sequence_embedding(clean_audio, clean_audio_paths)  # [B, T_wavlm, D]
+                embedding = embedding.to(dtype=latent.dtype)
 
-            embedding = embedding.to(dtype=latent.dtype)
-            fused_latent = self.integration_block(latent, embedding)
-            enhanced_waveform = self.clean_unet.decode(fused_latent, encoder_states)
+                if self.fusion_type == 'cross_attention_film':
+                    fused_latent = self.fusion_block(latent, embedding)            # [B, C_unet, T_unet]
+                elif self.fusion_type == 'cvae_bottleneck':
+                    # Stage-1 samples z; mu/logvar are surfaced for the KL term.
+                    fused_latent, mu, logvar = self.fusion_block(latent, embedding, sample=True)
+                    latents['kl_mu'] = mu          # [B, C_unet] (NOT detached -> KL grad)
+                    latents['kl_logvar'] = logvar  # [B, C_unet]
+                else:  # 'legacy_pooling'
+                    fused_latent = self.fusion_block(latent, embedding)
 
-            latents['fused_latent'] = fused_latent.detach()
-            latents['embedding'] = embedding.detach()
-            latents['latent'] = latent.detach()
+                enhanced_waveform = self.clean_unet.decode(fused_latent, encoder_states)
 
+                latents['fused_latent'] = fused_latent.detach()
+                latents['embedding'] = embedding.detach()
+                latents['latent'] = latent.detach()
+
+        # ============================ STAGE 2 ============================
         elif self.stage == 'stage2' and self.latent_predictor is not None:
-            predicted_latent = self.latent_predictor(latent)
+            latent, encoder_states = self.clean_unet.encode(conditioned_input)  # [B, C_unet, T_unet]
+            predicted_latent = self.latent_predictor(latent)                    # [B, C_unet, T_unet]
             enhanced_waveform = self.clean_unet.decode(predicted_latent, encoder_states)
             latents['predicted_latent'] = predicted_latent
             latents['latent'] = latent.detach()
 
+        # ====================== VANILLA / FALLBACK ======================
         else:
+            latent, encoder_states = self.clean_unet.encode(conditioned_input)
             enhanced_waveform = self.clean_unet.decode(latent, encoder_states)
             latents['latent'] = latent.detach()
 

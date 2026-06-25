@@ -1,428 +1,281 @@
-# 🎙️ CleanUNet2 with WavLM-Large Embeddings
+# 🎙️ CleanUNet2 + WavLM — Configurable SSL Fusion (WavLM++_dev)
 
-**Two-Stage Self-Supervised Speech Enhancement** using CleanUNet2 architecture with WavLM-Large embeddings.
+**Two-Stage Self-Supervised Speech Enhancement** built on the CleanUNet2 hybrid
+architecture, with **microsoft/wavlm-large** self-supervised embeddings injected into
+the denoiser — and **three interchangeable fusion strategies** selectable from the
+config (`model.fusion_type`).
 
-Based on: *"Causal Speech Enhancement Based on a Two-Branch Nested U-Net Architecture Using Self-Supervised Speech Embeddings"*
-
-## Core Architecture
-
-CleanUNet2 combines:
-* **CleanUNet** (waveform domain UNet)
-* **CleanSpecNet** (spectrogram domain transformer)
-* **Multi-resolution STFT losses**
-* **Phase-aware losses**
-* **FiLM conditioning** for SSL embedding integration
-
-## Two-Stage Training Approach
-
-1. **Stage 1** (50 epochs): Train WITH WavLM embeddings
-2. **Stage 2** (30 epochs): Train WITHOUT embeddings, learning to replicate them internally
-
-Result: Inference without SSL model dependency, 40% faster
+Based on: *"Causal Speech Enhancement Based on a Two-Branch Nested U-Net Architecture
+Using Self-Supervised Speech Embeddings."*
 
 ---
 
-## 🚀 Features
+## Core architecture
 
-* **Hybrid enhancement**: spectrogram refinement + waveform denoising
-* **Multi-Resolution STFT Loss (MR-STFT)**
-* **Anti-Wrapping Phase Loss** for improved phase reconstruction
-* **Fully configurable training (YAML-based)**
-* **Trainer, callbacks, and logging (TensorBoard)**
-* **Modular dataset pipeline (VoiceBank-DEMAND compatible)**
-* **Clean code with English documentation and comments**
+CleanUNet2 combines two branches plus a conditioner:
 
----
+* **CleanUNet** — waveform-domain encoder/decoder U-Net with a Transformer bottleneck.
+* **CleanSpecNet** — spectrogram-domain denoiser (conv + self-attention).
+* **SpecUpsampler + Conditioner** — fuse the refined spectrogram into the waveform path
+  (`conditioning_type`: `addition` | `concatenation` | `film`).
 
-## 📁 Repository Structure
+On top of this, **WavLM embeddings are fused into the CleanUNet bottleneck latent**.
 
-```
-.
-│── lightning_modules/
-│    ├── cleanunet_module.py     # Lightning training module
-│    ├── data_module.py          # DataModule for dataset handling
-│
-│── cleanunet/
-│    ├── cleanunet.py            # CleanUNet (waveform model)
-│    ├── cleanspecnet.py         # CleanSpecNet (spectrogram model)
-│    ├── cleanunet2.py           # Full hybrid CleanUNet2 system
-│
-│── filelists/
-│── configs/
-│    ├── config.yaml             # Training configuration
-│    ├── inference.yaml          # Inference configuration
-│
-│── train.py                     # Training script
-│── inference.py                 # Inference script
-│── metrics.py                   # PESQ/STOI/SI-SDR prediction
-│── losses.py                    # Loss functions (MR-STFT, Phase Loss)
-│── spec_dataset.py              # Dataset loader
-│── README.md
-```
+| Tensor | Shape | Notes |
+|---|---|---|
+| WavLM hidden states | `[B, 25, T_wavlm, 1024]` | 24 transformer layers + embedding output, 1024-D, ~50 Hz |
+| WavLM sequence (weighted) | `[B, T_wavlm, 1024]` | learnable **softmax over all 25 layers** (SUPERB-style) |
+| CleanUNet bottleneck latent | `[B, 768, T_unet]` | `C_unet = 768`, `T_unet ≈ L/256` |
+| Encoder layer 1 / layer 2 | `[B, 64, ·] / [B, 128, ·]` | hierarchical acoustic-injection targets |
+
+WavLM is **frozen**; only the per-layer softmax weights, the fusion block, and the
+CleanUNet/CleanSpecNet weights are trained.
 
 ---
 
-## 🔧 Installation
+## Two-stage training
 
-```bash
-git clone https://github.com/your-repo/CleanUNet2.git
-cd CleanUNet2
-pip install -r requirements.txt
-```
+1. **Stage 1** — train *with* WavLM. The chosen fusion block injects the SSL information
+   into the bottleneck; the resulting fused latent is saved as a distillation target.
+2. **Stage 2** — drop the WavLM extractor. A `latent_predictor`
+   (`Conv1d → PReLU → Conv1d`) learns to reproduce the Stage-1 bottleneck latent from the
+   noisy audio alone → **fast inference with no WavLM dependency**.
 
 ---
 
-## 🎚️ Training - Two-Stage Pipeline
+## 🔀 Fusion options (the three architectures)
 
-### Stage 1: Training WITH WavLM Embeddings (50 epochs)
+Select with `model.fusion_type` in the config. All three are implemented in
+[`cleanunet/integration_block.py`](cleanunet/integration_block.py) and routed in
+[`cleanunet/cleanunet2_with_ssl_embeddings.py`](cleanunet/cleanunet2_with_ssl_embeddings.py).
 
-1. **Pre-extract embeddings** from WavLM-Large (layer 12, 768-D):
-```bash
-python extract_wavlm_embeddings.py --config configs/stage1.yaml
+| `fusion_type` | Block | Temporal granularity | Extra loss | Pre-extract cache | Configs |
+|---|---|---|---|---|---|
+| `cross_attention_film` | `FiLMCrossAttentionBlock` | **per-frame** | — | **yes (enabled)** | `stage{1,2}_cross_attention_film.yaml` |
+| `cvae_bottleneck` | `VariationalLatentBlock` | global (utterance) | **KL** | **yes (enabled)** | `stage{1,2}_cvae_bottleneck.yaml` |
+| `hierarchical_multiscale` | `HierarchicalMultiScaleBlock` | early-global + bottleneck-per-frame | — | **no** (needs live all-layers) | `stage{1,2}_hierarchical_multiscale.yaml` |
+| `legacy_pooling` | `SequenceIntegrationBlock` | global (utterance) | — | optional | (original behaviour) |
+
+> The shipped configs set `use_preextracted_embeddings: true` for Options 1 & 2 (reuse the
+> WavLM cache → faster epochs), so **extraction must run before Stage-1** for them.
+> Option 3 stays on-the-fly (`false`) because it needs the live per-layer extractor.
+
+---
+
+### Option 1 — `cross_attention_film` (Dynamic Modulation Pipeline)
+
+**Idea.** Every CleanUNet bottleneck frame *queries* the full WavLM sequence, then the
+attended context modulates the latent through FiLM. No temporal pooling → the WavLM
+temporal structure is preserved and the time alignment is learned by the attention.
+
+**Flow** (`FiLMCrossAttentionBlock`):
 ```
-
-2. **Train Stage 1** with pre-extracted embeddings:
-```bash
-python train.py --config=configs/stage1.yaml
+latent [B, 768, T_unet] ──transpose──▶ Q [B, T_unet, 768]
+WavLM  [B, T_wavlm, 1024] ───────────▶ K, V  (MultiheadAttention kdim=vdim=1024)
+attended = MHA(Q, K, V)              ▶ [B, T_unet, 768]  (+ residual + LayerNorm)
+γ = Conv1d_1x1(attended) ; β = Conv1d_1x1(attended)   ▶ [B, 768, T_unet]
+fused = (1 + γ) * latent + β                          ▶ [B, 768, T_unet]
 ```
+**Trainable:** cross-attention (Q/K/V projections) + the two FiLM 1×1 convs.
+**Use when:** you want the strongest, most expressive fusion that keeps frame-level detail.
+**Cost:** an extra attention over `T_wavlm` keys per step.
 
-### Stage 2: Training WITHOUT Embeddings (30 epochs)
+---
 
-3. **Train Stage 2** with Stage 1 checkpoint as initialization:
-```bash
-python train.py --config=configs/stage2.yaml
+### Option 2 — `cvae_bottleneck` (Robust Variational Blueprint)
+
+**Idea.** Treat the WavLM summary as a **conditional VAE** latent filter. WavLM features
+parameterize a Gaussian `N(μ, σ²)`; a sample `z` modulates the bottleneck. A KL term
+regularizes the conditioning space, which tends to make Stage-2 distillation more stable.
+
+**Flow** (`VariationalLatentBlock`):
 ```
-
-The model learns to internally replicate the embeddings learned in Stage 1, enabling fast inference without the SSL model.
-
-### Automated Two-Stage Training
-
-Run both stages automatically:
-```bash
-bash run_two_stage_training.sh
+WavLM [B, T_wavlm, 1024] ──mean over time──▶ pooled [B, 1024]
+μ = fc_mu(pooled) ; logvar = fc_logvar(pooled)        ▶ [B, 768]
+Stage-1: z = μ + ε·exp(0.5·logvar),  ε ~ N(0, I)      ▶ [B, 768]   (reparameterization)
+Stage-2: z = μ                                        ▶ deterministic
+z broadcast over time → concat with latent → Conv1d_1x1 → LayerNorm → PReLU ▶ [B, 768, T_unet]
 ```
+**Extra loss** (in [`losses.py`](losses.py) → `KLDivergenceLoss`):
+`KL = -0.5 · Σ(1 + logvar − μ² − e^logvar)`, weighted by `losses.kl_weight` (default `0.001`).
+The Stage-1 module adds `kl_weight · KL` only when `fusion_type == cvae_bottleneck`.
+**Use when:** you want a regularized, smooth conditioning latent and a stable Stage-2 target.
+**Cost:** global (utterance-level) conditioning — coarser than Option 1.
 
-This script:
-- Checks for pre-extracted embeddings
-- Runs Stage 1 training
-- Verifies Stage 1 checkpoint exists
-- Runs Stage 2 training
+---
 
-### TensorBoard Monitoring
+### Option 3 — `hierarchical_multiscale` (Multi-Scale Structural Network)
 
-View training logs:
+**Idea.** Different WavLM depths carry different information — lower layers are more
+*acoustic*, higher layers more *semantic/phonetic*. Split the stack, process each group
+with multi-scale dilated convolutions, and inject **hierarchically**: acoustic features
+into the early encoder, semantic features into the bottleneck.
+
+**Layer groups** (configurable via `acoustic_layers` / `semantic_layers`):
+* **Acoustic** = mean of WavLM hidden states `1–8`
+* **Semantic** = mean of WavLM hidden states `17–24`
+
+**Multi-scale processor** (`MultiScaleDilatedConv`): 4 parallel `Conv1d(kernel=3,
+dilation∈{1,2,4,8})`, concatenated and projected back (1×1) → `[B, 256, T_wavlm]`.
+
+**Hierarchical injection** (applied **inside** `CleanUNet.encode` via `encoder_film` /
+`bottleneck_film`):
+```
+Acoustic → MultiScaleDilatedConv → time-pool → GLOBAL FiLM (γ, β)
+          ▶ encoder layer 1 [B,64] and layer 2 [B,128]   (time-broadcast)
+Semantic → MultiScaleDilatedConv → PER-FRAME FiLM (γ, β [B,768,T_wavlm])
+          ▶ bottleneck (linearly resampled T_wavlm → T_unet)
+```
+**Requires on-the-fly extraction** (`use_preextracted_embeddings: false`) because it needs
+the **live** per-layer stack (`extract_all_layers`).
+**Use when:** you want depth-aware conditioning that reaches both shallow and deep features.
+**Note (Stage-2):** distillation replicates only the **bottleneck** latent; the early
+acoustic injections are Stage-1 teacher-only.
+
+---
+
+## 🎚️ Training
+
+The dataset path in the shipped configs is
+`/raid/user_fredoliveira/DATASETS/VoiceBank-DEMAND-16k`, **100 epochs** per stage.
+
+### Train all options sequentially (recommended)
+
+```bash
+bash train_all_fusion_options.sh                    # all three options
+bash train_all_fusion_options.sh cvae_bottleneck    # a single option
+DEVICE=cuda PYTHON=python bash train_all_fusion_options.sh
+```
+The script (1) pre-extracts the shared WavLM cache once, then (2) for each option runs
+**Stage-1 → Stage-2**.
+
+### Manual, per option
+
+```bash
+# build the shared all-layer WavLM cache (REQUIRED for Options 1 & 2; optional for Option 3)
+python extract_wavlm_embeddings.py --config configs/stage1_cross_attention_film.yaml --device cuda
+
+# Stage 1 (with WavLM), then Stage 2 (distillation)
+python train.py --config configs/stage1_cross_attention_film.yaml --stage 1
+python train.py --config configs/stage2_cross_attention_film.yaml --stage 2
+```
+Swap `cross_attention_film` for `cvae_bottleneck` or `hierarchical_multiscale`.
+
+### Monitoring
+
 ```bash
 tensorboard --logdir experiments/
 ```
-
-Logs include:
-- Training/validation loss per stage
-- L2 regularization (Stage 2 only)
-- PESQ/STOI/SI-SDR validation metrics
+Logged: total / waveform / spec / phase losses, `train/loss_kl` (CVAE only),
+`val/loss_latent` (Stage-2), and PESQ / STOI / SI-SDR.
 
 ---
 
-## 🎤 Inference (Denoising Audio)
+## ⚙️ Configuration reference
 
-Configure `configs/inference.yaml`, then run:
+Per-option config pairs live in `configs/` (`stage1_<opt>.yaml`, `stage2_<opt>.yaml`),
+each writing to an isolated `experiments/<opt>/...` tree. Key fields:
+
+**`model`**
+- `fusion_type` — `cross_attention_film` | `cvae_bottleneck` | `hierarchical_multiscale` | `legacy_pooling`
+- `acoustic_layers: [1, 8]`, `semantic_layers: [17, 24]` — WavLM layer ranges (Option 3 only)
+- `wavlm_model: microsoft/wavlm-large`, `wavlm_use_weighted_layers: true` (softmax over all layers)
+- `use_preextracted_embeddings` — `true` for `cross_attention_film` / `cvae_bottleneck`
+  (reuse the pre-extracted cache → run extraction first); `false` for
+  `hierarchical_multiscale` (must extract on-the-fly via the live per-layer extractor)
+- `cleanunet_params` / `cleanspecnet_params` — backbone architecture
+- `conditioning_type: film` — spectrogram↔waveform conditioner (independent of the SSL fusion)
+
+**`losses`**
+- `weight_waveform: 10`, `weight_spec: 5`, `weight_phase: 5`
+- `kl_weight: 0.001` — KL weight, **used only** by `cvae_bottleneck`
+- `gamma_latent` (Stage-2) — weight of the latent-distillation term
+- `sc_lambda`, `mag_lambda`, `stft_config` — MR-STFT settings
+
+**`data`** — `data_dir`, `train_list_path`, `val_list_path`, `batch_size`, `segment_size: 32000`, `sampling_rate: 16000`
+**`pipeline`** (Stage-2) — `stage1_checkpoint` (auto-pointed at the matching option's Stage-1 last checkpoint)
+
+> ⚠️ The Stage-2 `fusion_type` **must match** Stage-1 so the loaded `fusion_block` weights line up.
+
+---
+
+## 📦 Embedding extraction
 
 ```bash
-python inference.py --config=configs/inference.yaml
+python extract_wavlm_embeddings.py --config configs/stage1_cross_attention_film.yaml --device cuda [--force]
 ```
-
-Denoised WAV files are saved to:
-
-```
-denoised_results/
-```
+Saves the **all-layer** WavLM stack per clean file to `model.wavlm_cache_dir`
+(`wavlm_embeddings_raw/`), shape `(25, time, 1024)`, plus a `metadata.yaml`. The cache is
+read only when `use_preextracted_embeddings: true` (Options 1/2). `hierarchical_multiscale`
+always extracts on-the-fly.
 
 ---
 
-## 📦 Datasets
+## 🎤 Inference (denoising)
 
-The default setup assumes the **VoiceBank-DEMAND (16 kHz)** dataset.
-
-Expected filelist format (`train.csv`, `test.csv`):
-
+```bash
+python inference.py --config configs/inference.yaml
 ```
-clean_file.wav|noisy_file.wav
-```
-
-Example directory:
-
-```
-VoiceBank-DEMAND-16k/
-│── clean/
-│── noisy/
-│── filelists/
-│    ├── train.csv
-│    └── test.csv
-```
+Use a **Stage-2** checkpoint (no WavLM at inference). Set `model.conditioning_type` to the
+value used at training time.
 
 ---
 
-## 🧠 Model Overview
+## 🧠 Branch details
 
-### CleanUNet (Waveform Domain)
-
-* Multi-scale encoder-decoder UNet
-* Convolutional downsampling & upsampling
-* Transformer bottleneck
-* No skip-connection misalignment thanks to input padding logic
-
-### CleanSpecNet (Spectrogram Domain)
-
-* Convolutional feature extractor
-* Multiple transformer layers
-* GLU gating
-* Causal or non-causal mask support
-
-### Hybrid Combination
-
-The denoising workflow:
-
-1. **CleanSpecNet** refines the noisy spectrogram
-2. **Upsampler** expands spectrogram into a waveform-length feature
-3. **WaveformConditioner** fuses noisy + upsampled features
-4. **CleanUNet** produces the enhanced waveform
-
----
+**CleanUNet (waveform):** multi-scale conv encoder/decoder, Transformer bottleneck, padding
+logic that keeps skip connections aligned. `encode()` accepts optional `encoder_film` /
+`bottleneck_film` for hierarchical injection.
+**CleanSpecNet (spectrogram):** conv feature extractor + GLU + self-attention layers.
 
 ## 🎧 Losses
 
-| Loss Type                          | Purpose                              |
-| ---------------------------------- | ------------------------------------ |
-| **L1/L2 waveform loss**            | Basic reconstruction                 |
-| **MR-STFT Loss**                   | Spectral convergence + log magnitude |
-| **Anti-Wrapping Phase Loss**       | Phase consistency                    |
-| **Spectrogram Log-Magnitude Loss** | Auxiliary stabilization              |
+| Loss | Purpose |
+|---|---|
+| L1/L2 waveform | Reconstruction |
+| MR-STFT | Spectral convergence + log-magnitude |
+| Anti-wrapping phase | Phase consistency |
+| Log-magnitude spectrogram | Auxiliary stabilization |
+| **KL divergence** | CVAE posterior regularization (`cvae_bottleneck` only) |
+| **Latent distillation** | Stage-2 replication of the Stage-1 bottleneck latent |
+
+## 📊 Validation metrics
+
+PESQ, STOI, SI-SDR (per sample, averaged), plus a combined `weighted_score`.
 
 ---
 
-## 📊 Validation Metrics
-
-During validation:
-
-* **PESQ**
-* **STOI**
-* **SI-SDR**
-
-Metrics are computed per sample and averaged.
-
----
-
-## ⚙️ Configuration (YAML)
-
-### Stage 1 Configuration (`configs/stage1.yaml`)
-
-**Model Settings:**
-- `use_preextracted_embeddings: true` - Load pre-extracted WavLM embeddings
-- `use_wavlm: true` - Enable WavLM feature extraction
-- `wavlm_model: microsoft/wavlm-large`
-- `wavlm_layer: 12` - Extract from middle layer (24-layer model)
-- `conditioning_type: film` - FiLM conditioning for embedding fusion
-
-**Training Settings:**
-- `max_epochs: 50`
-- `batch_size: 2` - Small batch for embedding handling
-- `learning_rate: 5.0e-05`
-- `gradient_clip_val: 5.0`
-- `precision: 16-mixed`
-
-**Loss Weights:**
-- `weight_waveform: 10.0` - Waveform reconstruction
-- `weight_spec: 5.0` - Spectrogram refinement
-- `weight_phase: 5.0` - Phase consistency
-- `sc_lambda: 0.8` - Spectral convergence
-- `mag_lambda: 0.2` - Log-magnitude STFT
-
-### Stage 2 Configuration (`configs/stage2.yaml`)
-
-**Model Settings:**
-- `use_preextracted_embeddings: false` - No embeddings, learn internally
-- Same architecture as Stage 1
-
-**Training Settings:**
-- `max_epochs: 30`
-- `batch_size: 32` - Larger batch without embedding overhead
-- Same learning rate, gradient clipping
-
-**Stage 2 Specific:**
-- `stage1_checkpoint: experiments/checkpoints/stage1/epoch-last.ckpt` - Initialization
-- L2 regularization (0.001) applied during training to guide internal embedding learning
-
-### Inference Configuration (`configs/inference.yaml`)
-
-* Input audio directory
-* Output directory
-* Checkpoint path (Stage 2 checkpoint for inference)
-* CPU/GPU device override
-
----
-
-## 📦 Embedding Extraction
-
-### Pre-Extract WavLM Embeddings
-
-Raw embeddings (no pooling) are extracted before Stage 1 training:
-
-```bash
-python extract_wavlm_embeddings.py --config configs/stage1.yaml --device cuda --force
-```
-
-**Extraction Details:**
-- **Model:** microsoft/wavlm-large
-- **Layer:** 12 (middle of 24-layer model)
-- **Dimension:** 768-D
-- **Format:** Full temporal sequences (time_steps, 768)
-- **Pooling:** None (applied during model training via self-attention)
-- **Caching:** Embeddings cached by file path hash (MD5)
-
-### Embedding Cache
-
-Extracted embeddings are saved to: `wavlm_embeddings_raw/`
-
-Each file is cached by MD5 hash of its path:
-- `cache_key = MD5(file_path)`
-- `cached_embedding = wavlm_embeddings_raw/{cache_key}.pt`
-
-To force re-extraction: `--force` flag
-
-## 📦 Checkpoints
-
-### Stage 1 Checkpoints
-
-Located in `experiments/checkpoints/stage1/`:
-- `best-{epoch:02d}-{val_loss:.4f}.ckpt` - Best validation loss
-- `epoch-{epoch:04d}.ckpt` - Periodic checkpoints (every 10 epochs)
-- `epoch-last.ckpt` - Latest checkpoint (symlink)
-
-### Stage 2 Checkpoints
-
-Located in `experiments/checkpoints/stage2/`:
-- Initialized from: `experiments/checkpoints/stage1/epoch-last.ckpt`
-- `best-{epoch:02d}-{val_loss:.4f}.ckpt` - Best validation loss
-- `epoch-{epoch:04d}.ckpt` - Periodic checkpoints
-- `epoch-last.ckpt` - Latest checkpoint
-
-### Resume Training
-
-Stage 1 resume:
-```yaml
-# In configs/stage1.yaml
-resume_from_checkpoint: "experiments/checkpoints/stage1/epoch-last.ckpt"
-```
-
-Stage 2 resume:
-```yaml
-# In configs/stage2.yaml
-resume_from_checkpoint: "experiments/checkpoints/stage2/epoch-last.ckpt"
-stage1_checkpoint: "experiments/checkpoints/stage1/epoch-last.ckpt"
-```
-
-### Load for Inference
-
-Use Stage 2 final checkpoint (no embedding dependency):
-```yaml
-# In configs/inference.yaml
-checkpoint_path: "experiments/checkpoints/stage2/epoch-last.ckpt"
-```
-
----
-
-## 🎤 Inference (Denoising Audio)
-
-### Using Stage 2 Model (No SSL Dependency)
-
-Configure `configs/inference.yaml`:
-```yaml
-data_dir: "/path/to/audio/files"
-checkpoint_path: "experiments/checkpoints/stage2/epoch-last.ckpt"
-output_dir: "denoised_results/"
-device: "cuda"  # or "cpu"
-```
-
-Run inference:
-```bash
-python inference.py --config=configs/inference.yaml
-```
-
-Denoised audio saved to: `denoised_results/`
-
-### Performance
-
-- **Inference speed:** ~40% faster than Stage 1 (no SSL model forward pass)
-- **Quality:** Stage 2 maintains Stage 1 performance via learned embedding replication
-- **Model size:** Smaller for deployment (no WavLM model dependency)
-
----
-
-## 📊 Key Hyperparameters
-
-| Parameter | Value | Notes |
-|-----------|-------|-------|
-| **Sample Rate** | 16000 Hz | VoiceBank-DEMAND standard |
-| **Segment Size** | 32000 | 2 seconds at 16 kHz |
-| **Learning Rate** | 5.0e-05 | Adam optimizer |
-| **Gradient Clipping** | 5.0 | Stability during training |
-| **Precision** | 16-mixed | FP16 with loss scaling |
-| **WavLM Layer** | 12 | Middle layer of 24-layer model |
-| **WavLM Dimension** | 768 | Embedding vector size |
-| **FiLM Conditioning** | Yes | Dynamic modulation of features |
-| **L2 Regularization (Stage 2)** | 0.001 | Guides internal embedding learning |
-
----
-
-## 📁 Expected Directory Structure
+## 📁 Directory layout
 
 ```
 .
 ├── configs/
-│   ├── stage1.yaml
-│   ├── stage2.yaml
+│   ├── stage1.yaml / stage2.yaml                  # templates (default fusion)
+│   ├── stage1_cross_attention_film.yaml / stage2_…   # Option 1
+│   ├── stage1_cvae_bottleneck.yaml / stage2_…        # Option 2
+│   ├── stage1_hierarchical_multiscale.yaml / stage2_…# Option 3
 │   └── inference.yaml
-├── lightning_modules/
-│   ├── cleanunet_module.py
-│   └── data_module.py
 ├── cleanunet/
-│   ├── cleanunet.py
+│   ├── cleanunet.py            # CleanUNet (+ FiLM-injectable encode)
 │   ├── cleanspecnet.py
 │   ├── cleanunet2.py
+│   ├── integration_block.py    # the 3 fusion blocks + MultiScaleDilatedConv
+│   ├── cleanunet2_with_ssl_embeddings.py  # fusion routing
 │   └── wavlm_extractor.py
-├── filelists/
-│   ├── train.csv
-│   └── test.csv
-├── train.py
-├── inference.py
-├── extract_wavlm_embeddings.py
-├── run_two_stage_training.sh
-├── wavlm_embeddings_raw/  (created during extraction)
-├── experiments/  (created during training)
-│   ├── checkpoints/
-│   │   ├── stage1/
-│   │   └── stage2/
-│   ├── stage1/
-│   └── stage2/
-└── denoised_results/  (created during inference)
+├── lightning_modules/
+│   ├── cleanunet_ssl_embeddings_stage1_module.py
+│   └── cleanunet_ssl_embeddings_stage2_module.py
+├── losses.py                   # MR-STFT, phase, KLDivergenceLoss
+├── train.py / inference.py / extract_wavlm_embeddings.py
+├── train_all_fusion_options.sh # extract → (stage1 → stage2) per option
+├── filelists/{train,test}.csv
+└── experiments/<fusion_type>/  # checkpoints, logs, stored_latents (per option)
 ```
-
----
-
-## 🤝 Contributing
-
-Pull requests are welcome! Please open an issue before major feature changes.
-
----
-
-## 📄 License
-
-This project is licensed under the **MIT License**.
 
 ---
 
 ## 📚 References
 
 - **Paper:** Causal Speech Enhancement Based on a Two-Branch Nested U-Net Architecture Using Self-Supervised Speech Embeddings
-- **WavLM:** Sanyuan Chen et al., "WavLM: Large-Scale Self-Supervised Pre-Training for Speech Recognition"
+- **WavLM:** Chen et al., "WavLM: Large-Scale Self-Supervised Pre-Training for Full-Stack Speech Processing"
 - **Dataset:** VoiceBank-DEMAND corpus (16 kHz)
-

@@ -190,6 +190,31 @@ class ComplexL1Loss(nn.Module):
     def forward(self, est_wave, clean_wave):
         est_stft = torch.stft(est_wave, n_fft=1024, return_complex=True)
         clean_stft = torch.stft(clean_wave, n_fft=1024, return_complex=True)
-        
+
         # Diferença direta no plano complexo (afeta Mag e Fase)
         return (est_stft - clean_stft).abs().mean()
+
+
+class KLDivergenceLoss(nn.Module):
+    """
+    KL divergence between the encoder posterior N(mu, sigma^2) and the standard
+    Gaussian prior N(0, I), used by the CVAE fusion option ("cvae_bottleneck").
+
+        KL = -0.5 * sum(1 + logvar - mu^2 - exp(logvar))
+
+    The closed-form sum is reduced to a per-example mean (sum over channels, mean over
+    the batch) so the magnitude stays stable across batch sizes.
+    """
+
+    def forward(self, mu, logvar):
+        """
+        Args:
+            mu (Tensor): [B, C] Gaussian mean.
+            logvar (Tensor): [B, C] Gaussian log-variance.
+
+        Returns:
+            Tensor: scalar KL loss (mean over batch).
+        """
+        # Per-example KL: sum over the channel dimension.
+        kl_per_example = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=1)  # [B]
+        return kl_per_example.mean()

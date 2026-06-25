@@ -7,7 +7,7 @@
 # ssl_embedding_strategy: all_layers_softmax
 # selected_layers: all (0..24)
 # ============================================================================
-# Stage 2 Training Configuration: WavLM Large
+# Stage 2 Training Configuration: WavLM Large -- fusion_type = hierarchical_multiscale
 # Trains WITHOUT embeddings (learning to replicate internally)
 # Loads Stage 1 checkpoint for initialization
 # Key: use_preextracted_embeddings: false
@@ -15,7 +15,7 @@
 trainer:
   accelerator: auto
   devices: 1
-  max_epochs: 300
+  max_epochs: 100
   precision: 16-mixed
   log_every_n_steps: 10
   check_val_every_n_epoch: 1
@@ -24,9 +24,9 @@ trainer:
   benchmark: true
 
 seed: 1234
-checkpoint_dir: "experiments/checkpoints/stage2"
-logging_dir: "experiments/stage2"
-latents_dir: "stored_latents_stage1"   # read the fused latents saved by Stage-1
+checkpoint_dir: "experiments/hierarchical_multiscale/checkpoints/stage2"
+logging_dir: "experiments/hierarchical_multiscale/stage2"
+latents_dir: "experiments/hierarchical_multiscale/stored_latents_stage1"   # read the fused latents saved by Stage-1
 
 audio:
   sample_rate: 16000
@@ -46,7 +46,7 @@ model:
   wavlm_attention_heads: 8
   vanilla_checkpoint: null
   # MUST match the Stage-1 fusion_type so the loaded fusion_block weights align.
-  fusion_type: "cross_attention_film"
+  fusion_type: "hierarchical_multiscale"
   acoustic_layers: [1, 8]
   semantic_layers: [17, 24]
   cleanunet_params:
@@ -91,7 +91,7 @@ optimizer:
   betas: [0.9, 0.999]
 
 data:
-  data_dir: "/home/fred/Projetos/DATASETS/VoiceBank-DEMAND-16k/"
+  data_dir: "/raid/user_fredoliveira/DATASETS/VoiceBank-DEMAND-16k"
   train_list_path: "filelists/train.csv"
   val_list_path: "filelists/test.csv"
   batch_size: 16
@@ -104,7 +104,7 @@ callbacks:
   model_checkpoint:
     _target_: pytorch_lightning.callbacks.ModelCheckpoint
     monitor: val_loss
-    dirpath: "./experiments/checkpoints/stage2"
+    dirpath: "./experiments/hierarchical_multiscale/checkpoints/stage2"
     filename: cleanunet-stage2-{epoch:03d}-{val_loss:.4f}
     save_top_k: 3
     mode: min
@@ -120,18 +120,18 @@ logger:
   choice: both
   tensorboard:
     _target_: pytorch_lightning.loggers.TensorBoardLogger
-    save_dir: experiments/stage2
+    save_dir: experiments/hierarchical_multiscale/stage2
     name: tb_logs
     default_hp_metric: false
   wandb:
     _target_: pytorch_lightning.loggers.WandbLogger
     project: "CleanUNet2_WavLM_Large"
-    name: "stage2_wavlm_no_embeddings"
-    save_dir: experiments/stage2
+    name: "stage2_hierarchical_multiscale"
+    save_dir: experiments/hierarchical_multiscale/stage2
     offline: false
     log_model: true
 
 pipeline:
   stage: 2
-  stage1_checkpoint: "./experiments/checkpoints/stage1/cleanunet-stage1-last.ckpt"
+  stage1_checkpoint: "./experiments/hierarchical_multiscale/checkpoints/stage1/cleanunet-stage1-last.ckpt"
   resume_from_checkpoint: null

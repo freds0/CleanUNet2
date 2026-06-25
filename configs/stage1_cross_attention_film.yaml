@@ -7,15 +7,17 @@
 # ssl_embedding_strategy: all_layers_softmax
 # selected_layers: all (0..24)
 # ============================================================================
-# Stage 2 Training Configuration: WavLM Large
-# Trains WITHOUT embeddings (learning to replicate internally)
-# Loads Stage 1 checkpoint for initialization
-# Key: use_preextracted_embeddings: false
+# Stage 1 Training Configuration: WavLM Large -- fusion_type = cross_attention_film
+# Trains WITH WavLM embeddings using a learnable softmax-weighted sum over ALL
+# WavLM layers (the per-layer weights are trained jointly here).
+# Uses the PRE-EXTRACTED all-layer cache (use_preextracted_embeddings: true): run
+# extract_wavlm_embeddings.py first to populate wavlm_cache_dir. The cache stores the
+# full per-layer stack, so the trainable all-layer softmax still works on it.
 
 trainer:
   accelerator: auto
   devices: 1
-  max_epochs: 300
+  max_epochs: 100
   precision: 16-mixed
   log_every_n_steps: 10
   check_val_every_n_epoch: 1
@@ -24,9 +26,9 @@ trainer:
   benchmark: true
 
 seed: 1234
-checkpoint_dir: "experiments/checkpoints/stage2"
-logging_dir: "experiments/stage2"
-latents_dir: "stored_latents_stage1"   # read the fused latents saved by Stage-1
+checkpoint_dir: "experiments/cross_attention_film/checkpoints/stage1"
+logging_dir: "experiments/cross_attention_film/stage1"
+latents_dir: "experiments/cross_attention_film/stored_latents_stage1"   # Stage-1 saves fused latents here (read back in Stage-2)
 
 audio:
   sample_rate: 16000
@@ -39,16 +41,20 @@ model:
   use_wavlm: true
   wavlm_model: "microsoft/wavlm-large"
   wavlm_cache_dir: "wavlm_embeddings_raw"
-  wavlm_layer: 12
-  use_preextracted_embeddings: false
-  wavlm_use_weighted_layers: true      # inert in Stage-2 (no extractor is built), kept for consistency
-  wavlm_pooling_method: "mean"
+  wavlm_layer: 12                      # ignored when wavlm_use_weighted_layers is true
+  use_preextracted_embeddings: true    # reuse the pre-extracted all-layer WavLM cache (run extract_wavlm_embeddings.py first)
+  wavlm_use_weighted_layers: true      # learnable softmax-weighted sum over ALL WavLM layers
+  wavlm_pooling_method: "mean"         # unused (full sequence is returned), must be 'mean' or 'self_attention'
   wavlm_attention_heads: 8
   vanilla_checkpoint: null
-  # MUST match the Stage-1 fusion_type so the loaded fusion_block weights align.
+  # WavLM -> CleanUNet fusion strategy. One of:
+  #   cross_attention_film    (Option 1) frame-to-frame cross-attention + per-frame FiLM
+  #   cvae_bottleneck         (Option 2) variational latent filter (adds KL loss)
+  #   hierarchical_multiscale (Option 3) dilated multi-scale + hierarchical FiLM injection
+  #   legacy_pooling          original pooled-broadcast SequenceIntegrationBlock
   fusion_type: "cross_attention_film"
-  acoustic_layers: [1, 8]
-  semantic_layers: [17, 24]
+  acoustic_layers: [1, 8]              # WavLM layer range (low/acoustic) — Option 3 only
+  semantic_layers: [17, 24]            # WavLM layer range (high/semantic) — Option 3 only
   cleanunet_params:
     channels_input: 1
     channels_output: 1
@@ -81,6 +87,7 @@ losses:
   stft_lambda: 1.0
   sc_lambda: 0.8
   mag_lambda: 0.2
+  kl_weight: 0.001                      # KL weight — only used by fusion_type=cvae_bottleneck
   stft_config:
     fft_sizes: [512, 1024, 2048]
     hop_sizes: [50, 120, 240]
@@ -91,7 +98,7 @@ optimizer:
   betas: [0.9, 0.999]
 
 data:
-  data_dir: "/home/fred/Projetos/DATASETS/VoiceBank-DEMAND-16k/"
+  data_dir: "/raid/user_fredoliveira/DATASETS/VoiceBank-DEMAND-16k"
   train_list_path: "filelists/train.csv"
   val_list_path: "filelists/test.csv"
   batch_size: 16
@@ -104,15 +111,15 @@ callbacks:
   model_checkpoint:
     _target_: pytorch_lightning.callbacks.ModelCheckpoint
     monitor: val_loss
-    dirpath: "./experiments/checkpoints/stage2"
-    filename: cleanunet-stage2-{epoch:03d}-{val_loss:.4f}
+    dirpath: "./experiments/cross_attention_film/checkpoints/stage1"
+    filename: cleanunet-stage1-{epoch:03d}-{val_loss:.4f}
     save_top_k: 3
     mode: min
     save_last: true
   early_stopping:
     _target_: pytorch_lightning.callbacks.EarlyStopping
     monitor: val_loss
-    patience: 10
+    patience: 15
     mode: min
     min_delta: 0.0001
 
@@ -120,18 +127,17 @@ logger:
   choice: both
   tensorboard:
     _target_: pytorch_lightning.loggers.TensorBoardLogger
-    save_dir: experiments/stage2
+    save_dir: experiments/cross_attention_film/stage1
     name: tb_logs
     default_hp_metric: false
   wandb:
     _target_: pytorch_lightning.loggers.WandbLogger
     project: "CleanUNet2_WavLM_Large"
-    name: "stage2_wavlm_no_embeddings"
-    save_dir: experiments/stage2
+    name: "stage1_cross_attention_film"
+    save_dir: experiments/cross_attention_film/stage1
     offline: false
     log_model: true
 
 pipeline:
-  stage: 2
-  stage1_checkpoint: "./experiments/checkpoints/stage1/cleanunet-stage1-last.ckpt"
+  stage: 1
   resume_from_checkpoint: null

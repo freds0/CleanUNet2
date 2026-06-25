@@ -345,13 +345,20 @@ class CleanUNet(nn.Module):
                     pass
 
 
-    def encode(self, noisy_audio: torch.Tensor):
+    def encode(self, noisy_audio: torch.Tensor, encoder_film=None, bottleneck_film=None):
         """
         Encode noisy audio to latent representation.
         Used for X-Vector integration in two-stage training.
 
         Args:
             noisy_audio: Tensor shape (B, L) or (B, 1, L)
+            encoder_film (dict[int, tuple[Tensor, Tensor]] | None): optional GLOBAL FiLM
+                params keyed by encoder layer index. Each value is (gamma, beta) of shape
+                [B, C_layer]; applied as (1 + gamma) * x + beta (time-broadcast) right
+                after that downsampling block. Used by the hierarchical fusion option.
+            bottleneck_film (tuple[Tensor, Tensor] | None): optional PER-FRAME FiLM params
+                (gamma, beta), each [B, channels, T_film], applied to the bottleneck latent
+                (linearly resampled to the bottleneck length if needed).
 
         Returns:
             latent: Latent representation (B, channels, T)
@@ -368,10 +375,13 @@ class CleanUNet(nn.Module):
         noisy_audio = noisy_audio / std
         x = padding(noisy_audio, self.encoder_n_layers, self.kernel_size, self.stride)
 
-        # encoder: collect skip connections
+        # encoder: collect skip connections (optionally FiLM-modulated per layer)
         skip_connections = []
-        for downsampling_block in self.encoder:
-            x = downsampling_block(x)
+        for idx, downsampling_block in enumerate(self.encoder):
+            x = downsampling_block(x)                         # [B, C_layer, T_layer]
+            if encoder_film is not None and idx in encoder_film:
+                gamma, beta = encoder_film[idx]              # [B, C_layer] global
+                x = (1.0 + gamma.unsqueeze(-1)) * x + beta.unsqueeze(-1)  # time-broadcast FiLM
             skip_connections.append(x)
         # reverse skip connections so they correspond to decoder order
         skip_connections = skip_connections[::-1]
@@ -386,6 +396,14 @@ class CleanUNet(nn.Module):
         x = self.tsfm_encoder(x, src_mask=attn_mask)
         x = x.permute(0, 2, 1)           # -> (B, d_model, T)
         x = self.tsfm_conv2(x)           # -> (B, channels, T)
+
+        # Optional PER-FRAME FiLM at the bottleneck (hierarchical semantic injection).
+        if bottleneck_film is not None:
+            gamma_b, beta_b = bottleneck_film               # [B, channels, T_film]
+            if gamma_b.shape[-1] != x.shape[-1]:            # resample WavLM-rate -> bottleneck-rate
+                gamma_b = F.interpolate(gamma_b, size=x.shape[-1], mode='linear', align_corners=False)
+                beta_b = F.interpolate(beta_b, size=x.shape[-1], mode='linear', align_corners=False)
+            x = (1.0 + gamma_b) * x + beta_b                # [B, channels, T_unet]
 
         # Store encoder states for decode
         encoder_states = {

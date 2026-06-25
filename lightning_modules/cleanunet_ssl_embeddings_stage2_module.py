@@ -42,6 +42,9 @@ class CleanUNet2SSLEmbeddingsStage2Module(pl.LightningModule):
         # ===== Model Initialization =====
         model_config = config.get('model', {})
 
+        # Must match the Stage-1 fusion_type so the loaded fusion_block weights line up.
+        self.fusion_type = model_config.get('fusion_type', 'cross_attention_film')
+
         self.model = CleanUNet2WithSSLEmbeddings(
             stage='stage2',
             conditioning_type=model_config.get('conditioning_type', 'addition'),
@@ -54,6 +57,9 @@ class CleanUNet2SSLEmbeddingsStage2Module(pl.LightningModule):
             wavlm_pooling_method=model_config.get('wavlm_pooling_method', 'self_attention'),
             wavlm_attention_heads=model_config.get('wavlm_attention_heads', 8),
             wavlm_use_weighted_layers=model_config.get('wavlm_use_weighted_layers', True),
+            fusion_type=self.fusion_type,
+            acoustic_layers=tuple(model_config.get('acoustic_layers', [1, 8])),
+            semantic_layers=tuple(model_config.get('semantic_layers', [17, 24])),
         )
 
         # ===== Load Stage-1 Checkpoint =====

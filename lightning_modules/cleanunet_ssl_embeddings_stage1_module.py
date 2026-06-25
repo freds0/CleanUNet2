@@ -14,7 +14,7 @@ from pathlib import Path
 import torchaudio
 
 from cleanunet.cleanunet2_with_ssl_embeddings import CleanUNet2WithSSLEmbeddings
-from losses import CleanUNet2Loss, MultiResolutionSTFTLoss, AntiWrappingPhaseLoss
+from losses import CleanUNet2Loss, MultiResolutionSTFTLoss, AntiWrappingPhaseLoss, KLDivergenceLoss
 
 # Import TorchMetrics
 from torchmetrics.audio import PerceptualEvaluationSpeechQuality
@@ -42,6 +42,9 @@ class CleanUNet2SSLEmbeddingsStage1Module(pl.LightningModule):
         # ===== Model Initialization =====
         model_config = config.get('model', {})
 
+        # Fusion strategy: cross_attention_film | cvae_bottleneck | hierarchical_multiscale | legacy_pooling
+        self.fusion_type = model_config.get('fusion_type', 'cross_attention_film')
+
         self.model = CleanUNet2WithSSLEmbeddings(
             stage='stage1',
             conditioning_type=model_config.get('conditioning_type', 'addition'),
@@ -54,6 +57,9 @@ class CleanUNet2SSLEmbeddingsStage1Module(pl.LightningModule):
             wavlm_pooling_method=model_config.get('wavlm_pooling_method', 'self_attention'),
             wavlm_attention_heads=model_config.get('wavlm_attention_heads', 8),
             wavlm_use_weighted_layers=model_config.get('wavlm_use_weighted_layers', True),
+            fusion_type=self.fusion_type,
+            acoustic_layers=tuple(model_config.get('acoustic_layers', [1, 8])),
+            semantic_layers=tuple(model_config.get('semantic_layers', [17, 24])),
         )
 
         # ===== Load Vanilla Checkpoint (Optional) =====
@@ -93,8 +99,14 @@ class CleanUNet2SSLEmbeddingsStage1Module(pl.LightningModule):
         self.weight_spec = float(loss_cfg.get('weight_spec', 1.0))
         self.weight_phase = float(loss_cfg.get('weight_phase', 1.0))
 
+        # KL term — only active for the CVAE fusion option ("cvae_bottleneck").
+        self.kl_loss = KLDivergenceLoss()
+        self.kl_weight = float(loss_cfg.get('kl_weight', 0.001))
+
         print(f"[Stage-1] Loss weights: waveform={self.weight_waveform}, "
               f"spec={self.weight_spec}, phase={self.weight_phase}")
+        if self.fusion_type == 'cvae_bottleneck':
+            print(f"[Stage-1] CVAE fusion active: kl_weight={self.kl_weight}")
 
         # ===== Metrics Initialization =====
         # Read sample rate from `audio.sample_rate`, falling back to `data.sampling_rate`.
@@ -186,6 +198,12 @@ class CleanUNet2SSLEmbeddingsStage1Module(pl.LightningModule):
         total_loss = (self.weight_waveform * loss_waveform +
                      self.weight_spec * loss_spec +
                      self.weight_phase * loss_phase)
+
+        # CVAE fusion: add KL divergence on the bottleneck posterior.
+        if self.fusion_type == 'cvae_bottleneck' and 'kl_mu' in latents:
+            loss_kl = self.kl_loss(latents['kl_mu'], latents['kl_logvar'])
+            total_loss = total_loss + self.kl_weight * loss_kl
+            self.log('train/loss_kl', loss_kl, on_step=False, on_epoch=True)
 
         self.log('train/loss', total_loss, on_step=True, on_epoch=True, prog_bar=True)
         self.log('train/loss_waveform', loss_waveform, on_step=False, on_epoch=True)

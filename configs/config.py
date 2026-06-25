@@ -15,7 +15,7 @@ from typing import Optional, List, Dict, Any
 class WavLMConfig:
     """WavLM embedding extractor configuration."""
     model_name: str = "microsoft/wavlm-large"
-    embedding_dim: int = 768
+    embedding_dim: int = 1024
     hidden_states_layer: int = 24
     normalize_embeddings: bool = True
 

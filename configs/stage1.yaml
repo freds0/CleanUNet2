@@ -1,3 +1,12 @@
+# ============================================================================
+# SSL BACKBONE (standardized documentation -- see CONFIG_STANDARDIZATION_REPORT.md)
+# ssl_model_name: microsoft/wavlm-large
+# ssl_model_size: large
+# ssl_hidden_size: 1024
+# ssl_num_layers: 24
+# ssl_embedding_strategy: all_layers_softmax
+# selected_layers: all (0..24)
+# ============================================================================
 # Stage 1 Training Configuration: WavLM Large
 # Trains WITH on-the-fly WavLM embeddings using a learnable softmax-weighted sum
 # over ALL WavLM layers. The per-layer weights are trained jointly here.
@@ -38,6 +47,14 @@ model:
   wavlm_pooling_method: "mean"         # unused (full sequence is returned), must be 'mean' or 'self_attention'
   wavlm_attention_heads: 8
   vanilla_checkpoint: null
+  # WavLM -> CleanUNet fusion strategy. One of:
+  #   cross_attention_film    (Option 1) frame-to-frame cross-attention + per-frame FiLM
+  #   cvae_bottleneck         (Option 2) variational latent filter (adds KL loss)
+  #   hierarchical_multiscale (Option 3) dilated multi-scale + hierarchical FiLM injection
+  #   legacy_pooling          original pooled-broadcast SequenceIntegrationBlock
+  fusion_type: "cross_attention_film"
+  acoustic_layers: [1, 8]              # WavLM layer range (low/acoustic) — Option 3 only
+  semantic_layers: [17, 24]            # WavLM layer range (high/semantic) — Option 3 only
   cleanunet_params:
     channels_input: 1
     channels_output: 1
@@ -70,6 +87,7 @@ losses:
   stft_lambda: 1.0
   sc_lambda: 0.8
   mag_lambda: 0.2
+  kl_weight: 0.001                      # KL weight — only used by fusion_type=cvae_bottleneck
   stft_config:
     fft_sizes: [512, 1024, 2048]
     hop_sizes: [50, 120, 240]
