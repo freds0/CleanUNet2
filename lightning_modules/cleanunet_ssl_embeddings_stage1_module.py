@@ -10,7 +10,6 @@ Fused latent vectors are saved for Stage-2 training.
 import torch
 import torch.nn.functional as F
 import pytorch_lightning as pl
-from pathlib import Path
 import torchaudio
 
 from cleanunet.cleanunet2_with_ssl_embeddings import CleanUNet2WithSSLEmbeddings
@@ -136,12 +135,6 @@ class CleanUNet2SSLEmbeddingsStage1Module(pl.LightningModule):
         }
         self._pesq_resampler_cache = None
 
-        # ===== Latents Storage =====
-        self.latents_dir = Path(config.get('latents_dir', 'stored_latents_stage1'))
-        self.latents_dir.mkdir(parents=True, exist_ok=True)
-        print(f"[Stage-1] Latents will be saved to: {self.latents_dir}")
-
-        self.global_val_batch_idx = 0
         self.val_audio_samples = []
         self.max_audio_samples = 6
 
@@ -219,23 +212,11 @@ class CleanUNet2SSLEmbeddingsStage1Module(pl.LightningModule):
             noisy_wav, noisy_spec, clean_wav, clean_spec = batch
             clean_paths = None
 
-        enhanced, enhanced_spec, latents = self.model(
+        enhanced, enhanced_spec = self.model(
             noisy_wav, noisy_spec, clean_wav,
             clean_audio_paths=clean_paths,
-            return_latents=True
+            return_latents=False
         )
-
-        # ===== Save Latents for Stage-2 =====
-        latent_path = self.latents_dir / f"val_batch_{self.global_val_batch_idx:06d}.pt"
-        torch.save({
-            'fused_latent': latents['fused_latent'].cpu(),
-            'embedding': latents['embedding'].cpu(),
-            'latent': latents['latent'].cpu(),
-            'noisy_wav': noisy_wav.cpu(),
-            'clean_wav': clean_wav.cpu(),
-            'batch_idx': self.global_val_batch_idx
-        }, latent_path)
-        self.global_val_batch_idx += 1
 
         loss_waveform = self.criterion(clean_wav, enhanced)
         loss_spec = F.l1_loss(
@@ -302,8 +283,6 @@ class CleanUNet2SSLEmbeddingsStage1Module(pl.LightningModule):
         return total_loss
 
     def on_validation_epoch_end(self):
-        print(f"\n[Stage-1] Validation epoch ended. Latent files: {len(list(self.latents_dir.glob('*.pt')))}")
-
         if len(self.val_audio_samples) > 0:
             sr = self.sample_rate
             loggers = self.logger if isinstance(self.logger, list) else [self.logger] if self.logger else []

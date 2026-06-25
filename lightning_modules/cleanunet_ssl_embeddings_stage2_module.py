@@ -128,14 +128,19 @@ class CleanUNet2SSLEmbeddingsStage2Module(pl.LightningModule):
         }
         self._pesq_resampler_cache = None
 
-        # ===== Load Stored Latents from Stage-1 =====
+        # ===== (Optional) Stored Latents from Stage-1 =====
+        # Stage-1 no longer saves latents: the val/loss_latent term never enters
+        # training gradients (it is 0 in training_step), so the stored latents do
+        # not affect the trained model. If a latents_dir from an older run is
+        # present, the val/loss_latent diagnostic is still computed; otherwise it
+        # is skipped (the guard in validation_step falls back to loss_latent=0).
         self.latents_dir = Path(config.get('latents_dir', 'stored_latents_stage1'))
-        if not self.latents_dir.exists():
-            raise ValueError(f"Latents directory not found: {self.latents_dir}. "
-                           "Please run Stage-1 training first.")
-
-        self.stored_latents = self._load_stored_latents()
-        print(f"[Stage-2] Loaded {len(self.stored_latents)} latent files from Stage-1")
+        if self.latents_dir.exists() and any(self.latents_dir.glob('val_batch_*.pt')):
+            self.stored_latents = self._load_stored_latents()
+            print(f"[Stage-2] Loaded {len(self.stored_latents)} latent files from Stage-1")
+        else:
+            self.stored_latents = {}
+            print("[Stage-2] No stored latents found; val/loss_latent diagnostic disabled.")
 
         self.global_val_batch_idx = 0
         self.val_audio_samples = []

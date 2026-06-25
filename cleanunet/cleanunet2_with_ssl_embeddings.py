@@ -379,8 +379,9 @@ class CleanUNet2WithSSLEmbeddings(nn.Module):
                 if self.fusion_type == 'cross_attention_film':
                     fused_latent = self.fusion_block(latent, embedding)            # [B, C_unet, T_unet]
                 elif self.fusion_type == 'cvae_bottleneck':
-                    # Stage-1 samples z; mu/logvar are surfaced for the KL term.
-                    fused_latent, mu, logvar = self.fusion_block(latent, embedding, sample=True)
+                    # Sample z only while training; in eval (validation) use z=mu so
+                    # the forward is deterministic. mu/logvar are surfaced for the KL term.
+                    fused_latent, mu, logvar = self.fusion_block(latent, embedding, sample=self.training)
                     latents['kl_mu'] = mu          # [B, C_unet] (NOT detached -> KL grad)
                     latents['kl_logvar'] = logvar  # [B, C_unet]
                 else:  # 'legacy_pooling'

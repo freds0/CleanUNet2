@@ -317,12 +317,16 @@ class MelDataset(torch.utils.data.Dataset):
         fmax_loss: Optional[int] = None,
         noise_addition: bool = False,
         augmentations = None,
-        return_audio_paths: bool = False
+        return_audio_paths: bool = False,
+        deterministic_crop: bool = False
     ):
         super().__init__()
         self.data_dir = data_dir
         self.audio_files = get_dataset_filelist(data_files)  # list[(clean_rel, noisy_rel)]
         self.return_audio_paths = return_audio_paths
+        # When True, segment cropping uses a fixed (center) position instead of a
+        # random one -> deterministic validation. Train uses random crops.
+        self.deterministic_crop = deterministic_crop
 
         # Deterministic shuffling seed for reproducibility
         random.seed(1234)
@@ -405,7 +409,10 @@ class MelDataset(torch.utils.data.Dataset):
             # Ensure we have shape (channels, samples)
             if clean_audio.size(1) >= self.segment_size:
                 max_audio_start = clean_audio.size(1) - self.segment_size
-                audio_start = random.randint(0, max_audio_start)
+                if self.deterministic_crop:
+                    audio_start = max_audio_start // 2  # center crop (reproducible)
+                else:
+                    audio_start = random.randint(0, max_audio_start)
                 # keep even start index (original code enforced even start)
                 if audio_start % 2 != 0:
                     audio_start = audio_start - 1 if audio_start > 0 else 0

@@ -222,10 +222,12 @@ class CleanUNetDataModule(pl.LightningDataModule):
                 data_files=self.train_list_path,
                 **train_kwargs
             )
+            val_kwargs = ds_kwargs.copy()
+            val_kwargs["deterministic_crop"] = True
             self.val_dataset = MelDataset(
                 data_dir=self.data_dir,
                 data_files=self.val_list_path,
-                **ds_kwargs
+                **val_kwargs
             )
         else:
             # Auto-split
@@ -298,6 +300,7 @@ class CleanUNetDataModule(pl.LightningDataModule):
                     val_kwargs = train_kwargs.copy()
                     val_kwargs.pop("augmentations", None)
                     val_kwargs["data_files"] = val_list
+                    val_kwargs["deterministic_crop"] = True
 
                     train_datasets.append(MelDataset(**train_kwargs))
                     val_datasets.append(MelDataset(**val_kwargs))
