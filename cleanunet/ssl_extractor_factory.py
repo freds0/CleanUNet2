@@ -94,3 +94,21 @@ def ssl_args_from_config(model_config):
         'ssl_num_selected_layers': ssl.get('num_selected_layers', 3),
         'ssl_embedding_dim': ssl.get('embedding_dim'),       # required by Stage 2 (no extractor)
     }
+
+
+def fusion_args_from_config(model_config):
+    """
+    Translate the `model.fusion` block into the `fusion_*` kwargs accepted by
+    CleanUNet2WithSSLEmbeddings. Defaults to the hierarchical multi-scale fusion.
+
+    Schema (model.fusion):
+        type: 'hierarchical_multiscale' (default) | 'legacy_pooling'
+        acoustic_layers: [lo, hi] | null   (inclusive indices into the selected SSL stack)
+        semantic_layers: [lo, hi] | null   (null -> lower/upper halves, auto per SSL model)
+    """
+    fusion = model_config.get('fusion', {})
+    return {
+        'fusion_type': fusion.get('type', 'hierarchical_multiscale'),
+        'acoustic_layers': fusion.get('acoustic_layers'),   # None -> lower half (auto)
+        'semantic_layers': fusion.get('semantic_layers'),   # None -> upper half (auto)
+    }

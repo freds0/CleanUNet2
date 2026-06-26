@@ -13,7 +13,7 @@ from pathlib import Path
 import torchaudio
 
 from cleanunet.cleanunet2_with_ssl_embeddings import CleanUNet2WithSSLEmbeddings
-from cleanunet.ssl_extractor_factory import ssl_args_from_config
+from cleanunet.ssl_extractor_factory import ssl_args_from_config, fusion_args_from_config
 from losses import CleanUNet2Loss, MultiResolutionSTFTLoss, AntiWrappingPhaseLoss
 
 # Import TorchMetrics
@@ -45,6 +45,8 @@ class CleanUNet2SSLEmbeddingsStage1Module(pl.LightningModule):
         # Generic SSL embedding configuration (model.ssl.*).
         # Falls back to the legacy nested model.wav2vec2.* block for old configs.
         ssl_args = ssl_args_from_config(model_config)
+        # Fusion strategy (model.fusion.*); defaults to hierarchical_multiscale.
+        fusion_args = fusion_args_from_config(model_config)
 
         self.model = CleanUNet2WithSSLEmbeddings(
             stage='stage1',
@@ -52,6 +54,7 @@ class CleanUNet2SSLEmbeddingsStage1Module(pl.LightningModule):
             cleanunet_params=model_config.get('cleanunet_params', {}),
             cleanspecnet_params=model_config.get('cleanspecnet_params', {}),
             **ssl_args,
+            **fusion_args,
         )
 
         # ===== Load Vanilla Checkpoint (Optional) =====

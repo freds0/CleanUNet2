@@ -17,7 +17,7 @@ from pathlib import Path
 from .cleanunet2 import CleanUNet2, SpecUpsampler, Conditioner
 from .cleanunet import CleanUNet
 from .cleanspecnet import CleanSpecNet
-from .integration_block import SequenceIntegrationBlock
+from .integration_block import SequenceIntegrationBlock, HierarchicalMultiScaleBlock
 from .ssl_extractor_factory import build_ssl_extractor
 
 
@@ -53,6 +53,12 @@ class CleanUNet2WithSSLEmbeddings(nn.Module):
         # Backbone embedding dim. Authoritative for Stage 2 (no extractor/cache to infer
         # it from); in Stage 1 it is overwritten by the extractor/cache.
         ssl_embedding_dim=None,
+        # Fusion strategy: how the SSL features modulate the CleanUNet.
+        #   'hierarchical_multiscale' -> HierarchicalMultiScaleBlock (default)
+        #   'legacy_pooling'          -> SequenceIntegrationBlock     (pooled fusion)
+        fusion_type='hierarchical_multiscale',
+        acoustic_layers=None,
+        semantic_layers=None,
     ):
         """
         Initialize CleanUNet2 with SSL embeddings integration.
@@ -79,6 +85,11 @@ class CleanUNet2WithSSLEmbeddings(nn.Module):
         # must match what Stage 1 trained so the integration_block shapes line up with
         # the checkpoint. Stage 1 overwrites it from the extractor/cache below.
         self.embedding_dim = ssl_embedding_dim if ssl_embedding_dim is not None else 1024
+
+        # Fusion strategy selector (see fusion block construction below).
+        self.fusion_type = fusion_type
+        self.acoustic_layers = acoustic_layers
+        self.semantic_layers = semantic_layers
 
         if cleanunet_params is None:
             cleanunet_params = {}
@@ -221,15 +232,40 @@ class CleanUNet2WithSSLEmbeddings(nn.Module):
                 else:
                     self.embedding_extractor.eval()
 
-        # Integration Block (for fusing embeddings with latent features)
-        # Always use SequenceIntegrationBlock — embeddings are never pooled
-        print(f"[CleanUNet2WithSSLEmbeddings] Creating SequenceIntegrationBlock (embedding_dim={self.embedding_dim})...")
-        self.integration_block = SequenceIntegrationBlock(
-            latent_channels=self.latent_dim,
-            embedding_dim=self.embedding_dim,
-            num_heads=ssl_attention_heads,
-            dropout=0.1
-        )
+        # Channel counts of the first two encoder layers (targets of the hierarchical
+        # ACOUSTIC injection). Layer 1 -> channels_H, layer 2 -> min(channels_H*2, max_H).
+        self.early_channels = (channels_H, min(channels_H * 2, max_H))
+
+        # ----- Build the selected fusion block -----
+        # Only one of integration_block / fusion_block is active; the other is None.
+        print(f"[CleanUNet2WithSSLEmbeddings] Fusion type: {self.fusion_type} "
+              f"(latent_dim={self.latent_dim}, embedding_dim={self.embedding_dim})")
+        if self.fusion_type == 'hierarchical_multiscale':
+            # Option 3: multi-scale dilated convs + hierarchical FiLM injection.
+            # Works with any SSL backbone; the acoustic/semantic split is relative
+            # to the number of selected layers (resolved inside the block).
+            self.fusion_block = HierarchicalMultiScaleBlock(
+                embedding_dim=self.embedding_dim,
+                bottleneck_channels=self.latent_dim,
+                early_channels=self.early_channels,
+                acoustic_layers=self.acoustic_layers,
+                semantic_layers=self.semantic_layers,
+            )
+            self.integration_block = None
+        elif self.fusion_type == 'legacy_pooling':
+            # Original behaviour: pool SSL sequence -> broadcast -> concat + conv.
+            self.fusion_block = None
+            self.integration_block = SequenceIntegrationBlock(
+                latent_channels=self.latent_dim,
+                embedding_dim=self.embedding_dim,
+                num_heads=ssl_attention_heads,
+                dropout=0.1
+            )
+        else:
+            raise ValueError(
+                f"Unknown fusion_type '{self.fusion_type}'. Use one of: "
+                "'hierarchical_multiscale', 'legacy_pooling'."
+            )
 
         # Latent Predictor (Stage 2 only)
         if stage == 'stage2':
@@ -272,8 +308,8 @@ class CleanUNet2WithSSLEmbeddings(nn.Module):
             else:
                 new_key = k
 
-            # Only load compatible components (skip X-Vector related components)
-            if not new_key.startswith(('xvector_extractor', 'integration_block', 'latent_predictor')):
+            # Only load compatible components (skip fusion / X-Vector related components)
+            if not new_key.startswith(('xvector_extractor', 'integration_block', 'fusion_block', 'latent_predictor')):
                 filtered_state_dict[new_key] = v
 
         # Load with strict=False to allow missing keys (X-Vector components)
@@ -338,6 +374,45 @@ class CleanUNet2WithSSLEmbeddings(nn.Module):
 
         # Apply conditioning
         conditioned_input = self.conditioner(noisy_waveform, cond_feature)
+
+        # ============ STAGE 1: Hierarchical fusion (FiLM inside encode) ============
+        # The hierarchical option injects FiLM INSIDE the encoder (early acoustic +
+        # bottleneck semantic), so it cannot reuse a plain encode(). It needs the
+        # full per-layer SSL stack, hence on-the-fly extraction only.
+        if (self.stage == 'stage1' and self.embedding_type is not None
+                and self.fusion_type == 'hierarchical_multiscale'):
+            assert clean_audio is not None, "Clean audio is required for Stage 1 training"
+            if self.use_preextracted_embeddings:
+                raise ValueError(
+                    "fusion_type='hierarchical_multiscale' requires on-the-fly extraction "
+                    "(set ssl.use_preextracted=false / data.use_preextracted_embeddings=false)."
+                )
+
+            # Stacked SELECTED SSL layers: (batch, N, time, dim). The frozen backbone
+            # runs inside the extractor; the hierarchical convs downstream are trained.
+            stacked = self.embedding_extractor.extract_selected_layers(
+                clean_audio.squeeze(1), sample_rate=16000
+            )
+            stacked = stacked.to(dtype=conditioned_input.dtype)
+
+            early_params, bottleneck_params = self.fusion_block(stacked)
+            # Map ACOUSTIC global-FiLM params to encoder layers 1 & 2 (indices 0, 1).
+            encoder_film = {
+                0: early_params[self.early_channels[0]],
+                1: early_params[self.early_channels[1]],
+            }
+            fused_latent, encoder_states = self.clean_unet.encode(
+                conditioned_input, encoder_film=encoder_film, bottleneck_film=bottleneck_params
+            )  # fused_latent: (batch, latent_dim, time), already FiLM-fused
+            enhanced_waveform = self.clean_unet.decode(fused_latent, encoder_states)
+
+            latents['fused_latent'] = fused_latent.detach()
+            latents['embedding'] = stacked.mean(dim=1).detach()  # (batch, time, dim) placeholder
+            latents['latent'] = fused_latent.detach()
+
+            if return_latents:
+                return enhanced_waveform, denoised_spec, latents
+            return enhanced_waveform, denoised_spec
 
         # ============ Encode to Latent Space ============
         latent, encoder_states = self.clean_unet.encode(conditioned_input)

@@ -29,6 +29,11 @@
       "use_preextracted": false,
       "layer_strategy": "all_layers",
       "selected_layers": "all"
+    },
+    "fusion": {
+      "type": "hierarchical_multiscale",
+      "acoustic_layers": null,
+      "semantic_layers": null
     }
   },
   "loss": {

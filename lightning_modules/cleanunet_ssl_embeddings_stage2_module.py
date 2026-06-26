@@ -13,7 +13,7 @@ from pathlib import Path
 import torchaudio
 
 from cleanunet.cleanunet2_with_ssl_embeddings import CleanUNet2WithSSLEmbeddings
-from cleanunet.ssl_extractor_factory import ssl_args_from_config
+from cleanunet.ssl_extractor_factory import ssl_args_from_config, fusion_args_from_config
 from losses import CleanUNet2Loss, MultiResolutionSTFTLoss, AntiWrappingPhaseLoss
 from spec_dataset import latent_cache_key
 
@@ -52,6 +52,8 @@ class CleanUNet2SSLEmbeddingsStage2Module(pl.LightningModule):
             'cleanunet_params': model_config.get('cleanunet_params', {}),
             'cleanspecnet_params': model_config.get('cleanspecnet_params', {}),
             **ssl_args_from_config(model_config),
+            # Fusion type must match Stage 1 so the architecture/weights line up.
+            **fusion_args_from_config(model_config),
         }
 
         self.model = CleanUNet2WithSSLEmbeddings(**model_args)

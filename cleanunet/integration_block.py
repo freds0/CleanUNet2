@@ -280,3 +280,156 @@ class SequenceIntegrationBlock(nn.Module):
         fused = self.activation(fused)
 
         return fused
+
+
+# ============================================================================
+# Hierarchical Multi-Scale fusion (Option 3) — model-agnostic across SSL backbones
+# ============================================================================
+def _resolve_layer_range(rng, n):
+    """
+    Clamp an inclusive (lo, hi) layer range into a stack of ``n`` layers.
+
+    The hierarchical split is expressed as indices INTO THE SELECTED SSL stack,
+    not absolute backbone layers, so the same block works for any SSL family
+    regardless of how many layers it exposes (wavlm 25, wav2vec2-xls-r-2b 49,
+    whisper 33, ...) and for both '+' (few layers) and '++' (all layers).
+    """
+    lo, hi = rng
+    lo = max(0, min(int(lo), n - 1))
+    hi = max(lo, min(int(hi), n - 1))
+    return lo, hi
+
+
+class MultiScaleDilatedConv(nn.Module):
+    """
+    Four parallel dilated 1-D convolutions (dilations [1, 2, 4, 8], kernel 3) whose
+    outputs are concatenated along channels and projected back to ``out_channels``.
+    Temporal length is preserved (padding = dilation).
+    """
+
+    def __init__(self, in_channels, out_channels, dilations=(1, 2, 4, 8), kernel_size=3):
+        super().__init__()
+        self.branches = nn.ModuleList([
+            nn.Conv1d(in_channels, out_channels, kernel_size=kernel_size,
+                      padding=d, dilation=d)
+            for d in dilations
+        ])
+        # 1x1 conv merges the concatenated multi-scale features back to out_channels.
+        self.project = nn.Conv1d(out_channels * len(dilations), out_channels, kernel_size=1)
+        self.activation = nn.PReLU()
+
+    def forward(self, x):
+        """
+        Args:
+            x (Tensor): [B, in_channels, T]
+        Returns:
+            Tensor: [B, out_channels, T]
+        """
+        outs = [branch(x) for branch in self.branches]       # each [B, out_channels, T]
+        cat = torch.cat(outs, dim=1)                         # [B, out_channels * 4, T]
+        return self.activation(self.project(cat))            # [B, out_channels, T]
+
+
+class HierarchicalMultiScaleBlock(nn.Module):
+    """
+    Layer-wise hierarchical fusion that works with ANY SSL backbone.
+
+    It receives the stacked SELECTED SSL layers ``[B, N, T, D]`` and splits them
+    into an Acoustic group (lower layers, fine acoustic detail) and a Semantic
+    group (upper layers, phonetic/content), each processed by a
+    ``MultiScaleDilatedConv``. It then produces FiLM parameters for hierarchical
+    injection inside ``CleanUNet.encode``:
+
+        - Acoustic group -> GLOBAL FiLM for the early CleanUNet encoder layers (1 & 2).
+        - Semantic group -> PER-FRAME FiLM for the Transformer bottleneck.
+
+    The split is RELATIVE to ``N`` (the number of selected layers), so it adapts
+    automatically to each SSL family and to the '+'/'++' layer strategy. The
+    acoustic/semantic ranges may be overridden via config (indices into the
+    selected stack); when ``None`` the lower/upper halves are used.
+
+    This block only GENERATES the FiLM parameters; the actual application happens
+    inside ``CleanUNet.encode`` (encoder_film / bottleneck_film arguments).
+    """
+
+    def __init__(self, embedding_dim, bottleneck_channels, early_channels=(64, 128),
+                 acoustic_layers=None, semantic_layers=None, hidden=256):
+        """
+        Args:
+            embedding_dim (int): SSL hidden size D.
+            bottleneck_channels (int): CleanUNet bottleneck channels C_unet.
+            early_channels (tuple[int]): channel counts of encoder layers 1 & 2.
+            acoustic_layers (tuple[int]|None): inclusive index range into the
+                selected SSL stack for the low group. None -> lower half.
+            semantic_layers (tuple[int]|None): inclusive index range for the high
+                group. None -> upper half.
+            hidden (int): hidden width of the multi-scale processors.
+        """
+        super().__init__()
+        self.early_channels = tuple(early_channels)
+        self.acoustic_layers = tuple(acoustic_layers) if acoustic_layers is not None else None
+        self.semantic_layers = tuple(semantic_layers) if semantic_layers is not None else None
+
+        self.acoustic_proc = MultiScaleDilatedConv(embedding_dim, hidden)   # -> [B, hidden, T]
+        self.semantic_proc = MultiScaleDilatedConv(embedding_dim, hidden)   # -> [B, hidden, T]
+
+        # GLOBAL FiLM heads (one per early encoder layer): hidden -> 2 * channels.
+        self.early_film = nn.ModuleDict({
+            str(ch): nn.Linear(hidden, ch * 2) for ch in self.early_channels
+        })
+
+        # PER-FRAME FiLM heads for the bottleneck (semantic group).
+        self.bottleneck_gamma = nn.Conv1d(hidden, bottleneck_channels, kernel_size=1)
+        self.bottleneck_beta = nn.Conv1d(hidden, bottleneck_channels, kernel_size=1)
+
+    def _group_ranges(self, n):
+        """Resolve (acoustic, semantic) inclusive ranges for a stack of n layers."""
+        if self.acoustic_layers is not None:
+            a_lo, a_hi = _resolve_layer_range(self.acoustic_layers, n)
+        else:
+            a_lo, a_hi = 0, max(0, (n // 2) - 1)            # lower half
+        if self.semantic_layers is not None:
+            s_lo, s_hi = _resolve_layer_range(self.semantic_layers, n)
+        else:
+            s_lo, s_hi = n // 2, n - 1                       # upper half
+        return (a_lo, a_hi), (s_lo, s_hi)
+
+    def forward(self, stacked_states):
+        """
+        Args:
+            stacked_states (Tensor): [B, N, T, D] stacked SELECTED SSL layers
+                (N = number of selected layers; from extractor.extract_selected_layers).
+
+        Returns:
+            early_params (dict[int, tuple[Tensor, Tensor]]): {channels: (gamma [B, C],
+                beta [B, C])} GLOBAL FiLM params for early encoder layers.
+            bottleneck_params (tuple[Tensor, Tensor]): (gamma, beta), each
+                [B, C_unet, T] PER-FRAME FiLM params for the bottleneck.
+        """
+        n = stacked_states.size(1)
+        (a_lo, a_hi), (s_lo, s_hi) = self._group_ranges(n)
+
+        # Group-average over the selected layers -> [B, T, D]
+        acoustic = stacked_states[:, a_lo:a_hi + 1].mean(dim=1)
+        semantic = stacked_states[:, s_lo:s_hi + 1].mean(dim=1)
+
+        # To conv layout [B, D, T]
+        acoustic = acoustic.transpose(1, 2)                  # [B, D, T]
+        semantic = semantic.transpose(1, 2)                  # [B, D, T]
+
+        a_feat = self.acoustic_proc(acoustic)                # [B, hidden, T]
+        s_feat = self.semantic_proc(semantic)                # [B, hidden, T]
+
+        # Early layers: GLOBAL FiLM (pool over time, then per-channel scale/shift).
+        a_pooled = a_feat.mean(dim=-1)                       # [B, hidden]
+        early_params = {}
+        for ch_str, head in self.early_film.items():
+            gamma_beta = head(a_pooled)                      # [B, 2*ch]
+            gamma, beta = gamma_beta.chunk(2, dim=1)         # [B, ch], [B, ch]
+            early_params[int(ch_str)] = (gamma, beta)
+
+        # Bottleneck: PER-FRAME FiLM at SSL rate (resampled to T_unet in encode()).
+        b_gamma = self.bottleneck_gamma(s_feat)              # [B, C_unet, T]
+        b_beta = self.bottleneck_beta(s_feat)                # [B, C_unet, T]
+
+        return early_params, (b_gamma, b_beta)

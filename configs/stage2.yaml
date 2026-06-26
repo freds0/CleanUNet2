@@ -28,6 +28,12 @@ model:
     wav2vec2_layer: 24
     device: "cuda"
 
+  # Fusion strategy — MUST match Stage 1 so the loaded weights line up.
+  fusion:
+    type: "hierarchical_multiscale"    # or "legacy_pooling"
+    acoustic_layers: ~
+    semantic_layers: ~
+
   conditioning_type: "film"
   freeze_cleanunet: false
   freeze_cleanspecnet: false

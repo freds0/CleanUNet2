@@ -34,6 +34,11 @@
         32
       ],
       "num_selected_layers": 3
+    },
+    "fusion": {
+      "type": "hierarchical_multiscale",
+      "acoustic_layers": null,
+      "semantic_layers": null
     }
   },
   "loss": {

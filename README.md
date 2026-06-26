@@ -15,6 +15,7 @@ waveform/spectrogram denoiser on **self-supervised (SSL) speech embeddings**. It
 - **🌊 Waveform denoising** — CleanUNet (multi-scale encoder-decoder)
 - **🧠 SSL embeddings** — representations from one of five interchangeable backbones
 - **🔗 Hybrid conditioning** — FiLM-based fusion of spectrogram and waveform features
+- **🪜 Hierarchical multi-scale fusion** — the default SSL→denoiser fusion (see below)
 
 This repo **consolidates all SSL backbones behind one CleanUNet2 base**. The SSL family
 is selected purely by config (`model.ssl.type`); the base architecture, both Lightning
@@ -45,6 +46,52 @@ Supported families (`model.ssl.type` → backbone):
 Dispatch lives in `cleanunet/ssl_extractor_factory.py`. Each family has its own extractor
 module (`cleanunet/<family>_extractor.py`) sharing an identical constructor signature, so
 the rest of the pipeline never branches on backbone type.
+
+---
+
+## 🔀 Fusion strategy (`model.fusion.type`)
+
+How the SSL features modulate the CleanUNet is selected by `model.fusion.type`. The
+**default is `hierarchical_multiscale`**; a `legacy_pooling` option is kept for
+backward compatibility.
+
+| `type` | Block | Idea |
+|---|---|---|
+| `hierarchical_multiscale` *(default)* | `HierarchicalMultiScaleBlock` | layer-wise hierarchy + multi-scale dilated convs + FiLM injection |
+| `legacy_pooling` | `SequenceIntegrationBlock` | attention-pool the SSL sequence → broadcast → concat + 1×1 conv |
+
+### Hierarchical multi-scale (default)
+
+The block consumes the **stacked selected SSL layers** `[B, N, T, D]`
+(`extractor.extract_selected_layers`) and splits them into two groups:
+
+- **Acoustic** (lower layers) → `MultiScaleDilatedConv` (dilations `[1,2,4,8]`) →
+  **GLOBAL FiLM** modulating the **first two CleanUNet encoder layers**.
+- **Semantic** (upper layers) → `MultiScaleDilatedConv` → **PER-FRAME FiLM**
+  modulating the **Transformer bottleneck** (resampled to the bottleneck rate).
+
+FiLM is applied **inside** `CleanUNet.encode` (`encoder_film` / `bottleneck_film`).
+
+**Model-agnostic across SSL backbones.** The acoustic/semantic split is **relative to
+`N`** (the number of selected layers), so the same block works for every family and for
+both `+` (few layers) and `++` (all layers) — no hard-coded layer indices. Defaults:
+acoustic = lower half, semantic = upper half. Override per config with explicit
+inclusive index ranges into the selected stack:
+
+```jsonc
+"model": {
+  "fusion": {
+    "type": "hierarchical_multiscale",
+    "acoustic_layers": null,   // e.g. [0, 11]  (null -> lower half, auto)
+    "semantic_layers": null    // e.g. [12, 24] (null -> upper half, auto)
+  }
+}
+```
+
+> ⚠️ `hierarchical_multiscale` requires **on-the-fly** extraction (it needs the live
+> per-layer SSL stack): keep `model.ssl.use_preextracted: false` and
+> `data.use_preextracted_embeddings: false`. The shipped configs are already set this way.
+> Pairing it with `++` (`selected_layers: "all"`) gives the richest hierarchy.
 
 ---
 
@@ -183,7 +230,12 @@ checkpoint and log folders. The SSL-specific block:
     "use_weighted_layers": true,     // learnable softmax over layers
     "selected_layers": "all",        // [i,j,k] -> '+'  |  "all" -> '++'
     "layer_strategy": "all_layers",  // "selected" ('+') | "all_layers" ('++')
-    "use_preextracted": false        // on-the-fly extraction (default)
+    "use_preextracted": false        // on-the-fly extraction (required by hierarchical)
+  },
+  "fusion": {
+    "type": "hierarchical_multiscale", // default | "legacy_pooling"
+    "acoustic_layers": null,           // [lo,hi] into selected stack | null -> lower half
+    "semantic_layers": null            // [lo,hi] into selected stack | null -> upper half
   }
 }
 ```
@@ -237,8 +289,10 @@ Primary dataset: **VoiceBank-DEMAND** (16 kHz).
 Input: (Noisy waveform, Noisy spectrogram, SSL embeddings)
   → CleanSpecNet        : refine spectrogram (self-attention)
   → SpecUpsampler       : expand spectrogram to waveform length
-  → Conditioner (FiLM)  : fuse spectrogram + SSL features into the waveform path
-  → CleanUNet           : multi-scale encoder-decoder w/ transformer bottleneck
+  → Conditioner (FiLM)  : fuse spectrogram into the waveform path
+  → Hierarchical fusion : split SSL layers (acoustic/semantic), multi-scale dilated convs
+  → CleanUNet           : encoder-decoder w/ transformer bottleneck;
+                          acoustic→GLOBAL FiLM on early encoder, semantic→PER-FRAME FiLM on bottleneck
 Output: Enhanced waveform   (Stage-1 latents are saved for Stage 2)
 ```
 

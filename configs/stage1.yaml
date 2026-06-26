@@ -22,13 +22,19 @@ model:
   wav2vec2:
     model_name: "facebook/wav2vec2-xls-r-2b"
     embedding_dim: 1024
-    use_preextracted: true
+    use_preextracted: false            # hierarchical fusion needs on-the-fly per-layer states
     cache_embeddings: true
     wav2vec2_cache_dir: "wav2vec2_embeddings_raw"
     layer: 24
     wav2vec2_layer: 24                 # only used if use_weighted_layers is false
     use_weighted_layers: true          # learnable softmax over ALL wav2vec2 layers
     device: "cuda"
+
+  # Fusion strategy (default: hierarchical multi-scale; works with any SSL backbone).
+  fusion:
+    type: "hierarchical_multiscale"    # or "legacy_pooling"
+    acoustic_layers: ~                 # [lo, hi] into selected stack; ~ -> lower half (auto)
+    semantic_layers: ~                 # [lo, hi] into selected stack; ~ -> upper half (auto)
 
   conditioning_type: "film"
   freeze_cleanunet: false
@@ -76,7 +82,7 @@ data:
   segment_size: 32000
   sampling_rate: 16000
   augmentations: ~
-  use_preextracted_embeddings: true
+  use_preextracted_embeddings: false
   quick_test: false
   quick_test_samples: 30
 
