@@ -39,6 +39,10 @@
       "type": "hierarchical_multiscale",
       "acoustic_layers": null,
       "semantic_layers": null
+    },
+    "latent_predictor": {
+      "type": "tcn",
+      "params": null
     }
   },
   "loss": {
@@ -74,12 +78,12 @@
     "num_cycles": 0.5
   },
   "data": {
-    "data_dir": "/home/fred/Projetos/DATASETS/VoiceBank-DEMAND-16k/",
+    "data_dir": "/raid/user_fredoliveira/DATASETS/VoiceBank-DEMAND-16k/",
     "train_list_path": "filelists/train.csv",
     "val_list_path": "filelists/test.csv",
     "val_split": null,
-    "batch_size": 16,
-    "num_workers": 2,
+    "batch_size": 32,
+    "num_workers": 8,
     "persistent_workers": false,
     "segment_size": 32000,
     "sampling_rate": 16000,

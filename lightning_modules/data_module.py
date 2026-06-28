@@ -215,17 +215,21 @@ class CleanUNetDataModule(pl.LightningDataModule):
             ds_kwargs["sampling_rate"] = self.sampling_rate
         if self.use_preextracted_embeddings or self.return_audio_paths:
             ds_kwargs["return_audio_paths"] = True
-        # Deterministic crop on BOTH train and val: each sample maps to a fixed segment so
-        # it lines up with its cached Stage-1 latent target (train loss + val metric).
+
+        # Validation ALWAYS uses deterministic crops -> reproducible val metrics across
+        # epochs/runs (both Stage-1 and Stage-2). Training uses deterministic crops only
+        # when requested (Stage-2 needs them to align with cached latent targets; Stage-1
+        # keeps random crops as augmentation).
+        val_kwargs = ds_kwargs.copy()
+        val_kwargs["deterministic_crop"] = True
+        train_kwargs = ds_kwargs.copy()
         if self.deterministic_crop:
-            ds_kwargs["deterministic_crop"] = True
+            train_kwargs["deterministic_crop"] = True
+        if self.augmentations:
+            train_kwargs["augmentations"] = self.augmentations
 
         if self.val_list_path is not None:
             # Separate val file
-            train_kwargs = ds_kwargs.copy()
-            if self.augmentations:
-                train_kwargs["augmentations"] = self.augmentations
-
             self.train_dataset = MelDataset(
                 data_dir=self.data_dir,
                 data_files=self.train_list_path,
@@ -234,35 +238,31 @@ class CleanUNetDataModule(pl.LightningDataModule):
             self.val_dataset = MelDataset(
                 data_dir=self.data_dir,
                 data_files=self.val_list_path,
-                **ds_kwargs
+                **val_kwargs
             )
         else:
-            # Auto-split
-            full_ds = MelDataset(
+            # Auto-split: train and val come from the same list. Build separate dataset
+            # objects (same file order/seed -> aligned indices) so val can be
+            # deterministic while train follows train_kwargs.
+            full_ds_train = MelDataset(
                 data_dir=self.data_dir,
                 data_files=self.train_list_path,
-                **ds_kwargs
+                **train_kwargs
             )
-            total = len(full_ds)
+            full_ds_val = MelDataset(
+                data_dir=self.data_dir,
+                data_files=self.train_list_path,
+                **val_kwargs
+            )
+            total = len(full_ds_train)
             val_size = int(total * self.val_split)
             train_size = total - val_size
 
             gen = torch.Generator().manual_seed(42)
             train_idx, val_idx = random_split(range(total), [train_size, val_size], generator=gen)
 
-            self.val_dataset = Subset(full_ds, val_idx.indices)
-
-            if self.augmentations:
-                train_kwargs = ds_kwargs.copy()
-                train_kwargs["augmentations"] = self.augmentations
-                full_ds_aug = MelDataset(
-                    data_dir=self.data_dir,
-                    data_files=self.train_list_path,
-                    **train_kwargs
-                )
-                self.train_dataset = Subset(full_ds_aug, train_idx.indices)
-            else:
-                self.train_dataset = Subset(full_ds, train_idx.indices)
+            self.train_dataset = Subset(full_ds_train, train_idx.indices)
+            self.val_dataset = Subset(full_ds_val, val_idx.indices)
 
     # ------------------------------------------------------------------
     def _setup_multi_dataset(self):

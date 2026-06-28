@@ -112,3 +112,20 @@ def fusion_args_from_config(model_config):
         'acoustic_layers': fusion.get('acoustic_layers'),   # None -> lower half (auto)
         'semantic_layers': fusion.get('semantic_layers'),   # None -> upper half (auto)
     }
+
+
+def latent_predictor_args_from_config(model_config):
+    """
+    Translate the `model.latent_predictor` block into the kwargs accepted by
+    CleanUNet2WithSSLEmbeddings for the Stage-2 latent predictor. Defaults to the
+    original 'baseline' predictor (2-layer 1x1 conv) for back-compat.
+
+    Schema (model.latent_predictor):
+        type: 'baseline' | 'tcn'
+        params: { ... } | null   (forwarded to the predictor constructor)
+    """
+    lp = model_config.get('latent_predictor', {})
+    return {
+        'latent_predictor_type': lp.get('type', 'baseline'),
+        'latent_predictor_params': lp.get('params'),
+    }
