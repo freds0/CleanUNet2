@@ -18,22 +18,31 @@
     "dropout_rate": 0.0,
     "activation": "relu",
     "ssl": {
-      "type": "w2v-bert",
-      "model_name": "facebook/w2v-bert-2.0",
+      "type": "wavlm",
+      "model_name": "microsoft/wavlm-large",
       "embedding_dim": 1024,
       "layer": 12,
       "use_weighted_layers": true,
       "pooling_method": "mean",
       "attention_heads": 8,
-      "cache_dir": "ssl_embeddings_w2vbert",
+      "cache_dir": "ssl_embeddings_wavlm",
       "use_preextracted": false,
-      "layer_strategy": "all_layers",
-      "selected_layers": "all"
+      "layer_strategy": "selected",
+      "selected_layers": [
+        0,
+        12,
+        24
+      ],
+      "num_selected_layers": 3
     },
     "fusion": {
       "type": "hierarchical_multiscale",
       "acoustic_layers": null,
       "semantic_layers": null
+    },
+    "latent_predictor": {
+      "type": "norm",
+      "params": null
     }
   },
   "loss": {
@@ -69,12 +78,12 @@
     "num_cycles": 0.5
   },
   "data": {
-    "data_dir": "/home/fred/Projetos/DATASETS/VoiceBank-DEMAND-16k/",
+    "data_dir": "/raid/user_fredoliveira/DATASETS/VoiceBank-DEMAND-16k/",
     "train_list_path": "filelists/train.csv",
     "val_list_path": "filelists/test.csv",
     "val_split": null,
-    "batch_size": 16,
-    "num_workers": 2,
+    "batch_size": 32,
+    "num_workers": 8,
     "persistent_workers": false,
     "segment_size": 32000,
     "sampling_rate": 16000,
@@ -86,7 +95,7 @@
     "return_audio_paths": true
   },
   "trainer": {
-    "max_epochs": 300,
+    "max_epochs": 50,
     "accelerator": "auto",
     "devices": 1,
     "precision": "16-mixed",
@@ -98,7 +107,7 @@
     "enable_progress_bar": true
   },
   "logging": {
-    "save_dir": "./experiments/w2vbert_plusplus/stage2",
+    "save_dir": "./experiments/wavlm_latent_norm/stage2",
     "log_model": false,
     "log_frequency": 10,
     "save_checkpoints": true,
@@ -108,7 +117,7 @@
   "callbacks": {
     "model_checkpoint": {
       "_target_": "pytorch_lightning.callbacks.ModelCheckpoint",
-      "dirpath": "./experiments/w2vbert_plusplus/checkpoints/stage2",
+      "dirpath": "./experiments/wavlm_latent_norm/checkpoints/stage2",
       "filename": "cleanunet-stage2-{epoch:03d}-{val_loss:.4f}",
       "monitor": "val_loss",
       "mode": "min",
@@ -127,15 +136,15 @@
     "choice": "both",
     "tensorboard": {
       "_target_": "pytorch_lightning.loggers.TensorBoardLogger",
-      "save_dir": "./experiments/w2vbert_plusplus/stage2",
-      "name": "w2vbert_plusplus-stage2",
+      "save_dir": "./experiments/wavlm_latent_norm/stage2",
+      "name": "wavlm_latent_norm-stage2",
       "version": "v1"
     },
     "wandb": {
       "_target_": "pytorch_lightning.loggers.WandbLogger",
       "project": "CleanUNet2-SSL",
-      "name": "w2vbert_plusplus-stage2",
-      "save_dir": "./experiments/w2vbert_plusplus/stage2"
+      "name": "wavlm_latent_norm-stage2",
+      "save_dir": "./experiments/wavlm_latent_norm/stage2"
     }
   },
   "pipeline": {
@@ -143,8 +152,8 @@
     "resume_from_checkpoint": null,
     "seed": 42,
     "log_all_config": false,
-    "stage1_checkpoint": "./experiments/w2vbert_plusplus/checkpoints/stage1/cleanunet-stage1-last.ckpt"
+    "stage1_checkpoint": "./experiments/wavlm_plus/checkpoints/stage1/cleanunet-stage1-last.ckpt"
   },
-  "train_latents_dir": "./experiments/w2vbert_plusplus/train_latents",
-  "val_latents_dir": "./experiments/w2vbert_plusplus/val_latents"
+  "train_latents_dir": "./experiments/wavlm_plus/train_latents",
+  "val_latents_dir": "./experiments/wavlm_plus/val_latents"
 }

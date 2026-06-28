@@ -95,6 +95,45 @@ inclusive index ranges into the selected stack:
 
 ---
 
+## 🧬 Stage-2 latent predictor (`model.latent_predictor.type`)
+
+In **Stage 2** the SSL extractor is gone; a **latent predictor** maps the plain CleanUNet
+bottleneck back to the Stage-1 *fused* latent it was distilled from. Its architecture is
+selectable via `model.latent_predictor.type` (lives in `cleanunet/latent_predictors.py`).
+These are **Stage-2-only** — they change neither Stage-1 nor the cached distillation
+targets, so the same Stage-1 checkpoint and latent cache stay valid across all variants.
+
+| `type` | Class | Idea | Params* |
+|---|---|---|---|
+| `baseline` *(default)* | `BaselinePredictor` | original 2-layer 1×1 conv, per-frame (no temporal context) | 1.18M |
+| `tcn` | `TCNPredictor` | temporal receptive field: dilated residual blocks (`[1,2,4,8]`), mirroring the Stage-1 generator | 14.8M |
+| `residual` | `ResidualMLPPredictor` | predicts only the delta over the latent; zero-init → starts as identity | 1.18M |
+| `norm` | `NormPredictor` | per-frame MLP + `GroupNorm` for training stability (AMP) | 1.18M |
+| `conformer` | `ConformerPredictor` | self-attention (global/semantic context) + depthwise conv (local/acoustic) | 5.33M |
+| `film` | `FiLMPredictor` | predicts FiLM `(γ, β)` and applies `(1+γ)·latent + β`; zero-init → identity | 1.77M |
+
+<sub>*Param counts at the default bottleneck `latent_dim = 768`.</sub>
+
+```jsonc
+"model": {
+  "latent_predictor": {
+    "type": "tcn",      // baseline | tcn | residual | norm | conformer | film
+    "params": null       // optional dict forwarded to the predictor constructor
+  }
+}
+```
+
+If the block is omitted, the predictor defaults to `baseline` (back-compat with older
+configs/checkpoints). One predictor is active per config; the shipped
+`configs/config_wavlm_stage2_latent_<type>.json` set one variant each (WavLM embeddings),
+sharing the same Stage-1 checkpoint and distillation latents.
+
+> ℹ️ Only the **bottleneck** latent is distilled. With `hierarchical_multiscale` fusion,
+> Stage-1 also FiLM-modulates the early encoder layers (skip connections), which Stage-2
+> does not reproduce — an inherent ceiling no latent-predictor choice removes on its own.
+
+---
+
 ## 🚀 Quick start
 
 ### 1. Install
@@ -200,6 +239,7 @@ CleanUNet2-SSL_Embeddings/
 │   ├── config_<family>_plus_stage2.json      # '+'  variant, Stage 2
 │   ├── config_<family>_plusplus_stage1.json  # '++' variant, Stage 1
 │   ├── config_<family>_plusplus_stage2.json  # '++' variant, Stage 2
+│   ├── config_wavlm_stage2_latent_<type>.json # Stage-2 latent-predictor ablations (WavLM)
 │   ├── config.py                     # Optional strict dataclass schema/validator
 │   └── inference.yaml
 │
@@ -301,6 +341,7 @@ Output: Enhanced waveform   (Stage-1 latents are saved for Stage 2)
 ```
 Input: (Noisy waveform, Noisy spectrogram)     # no SSL embeddings
   → latent predictor trained to reproduce Stage-1 latents
+    (architecture selectable via model.latent_predictor.type — see above)
 Output: Enhanced waveform
 ```
 

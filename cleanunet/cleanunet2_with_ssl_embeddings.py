@@ -18,6 +18,7 @@ from .cleanunet2 import CleanUNet2, SpecUpsampler, Conditioner
 from .cleanunet import CleanUNet
 from .cleanspecnet import CleanSpecNet
 from .integration_block import SequenceIntegrationBlock, HierarchicalMultiScaleBlock
+from .latent_predictors import build_latent_predictor
 from .ssl_extractor_factory import build_ssl_extractor
 
 
@@ -59,6 +60,10 @@ class CleanUNet2WithSSLEmbeddings(nn.Module):
         fusion_type='hierarchical_multiscale',
         acoustic_layers=None,
         semantic_layers=None,
+        # Stage-2 latent predictor architecture (see cleanunet/latent_predictors.py):
+        #   'baseline' (default) | 'tcn' | 'residual' | 'norm' | 'conformer' | 'film'
+        latent_predictor_type='baseline',
+        latent_predictor_params=None,
     ):
         """
         Initialize CleanUNet2 with SSL embeddings integration.
@@ -90,6 +95,10 @@ class CleanUNet2WithSSLEmbeddings(nn.Module):
         self.fusion_type = fusion_type
         self.acoustic_layers = acoustic_layers
         self.semantic_layers = semantic_layers
+
+        # Stage-2 latent predictor selector (built below, Stage 2 only).
+        self.latent_predictor_type = latent_predictor_type
+        self.latent_predictor_params = latent_predictor_params
 
         if cleanunet_params is None:
             cleanunet_params = {}
@@ -269,11 +278,12 @@ class CleanUNet2WithSSLEmbeddings(nn.Module):
 
         # Latent Predictor (Stage 2 only)
         if stage == 'stage2':
-            print("[CleanUNet2WithSSLEmbeddings] Creating latent predictor for Stage 2...")
-            self.latent_predictor = nn.Sequential(
-                nn.Conv1d(self.latent_dim, self.latent_dim, kernel_size=1),
-                nn.PReLU(),
-                nn.Conv1d(self.latent_dim, self.latent_dim, kernel_size=1)
+            print(f"[CleanUNet2WithSSLEmbeddings] Creating latent predictor for Stage 2 "
+                  f"(type='{self.latent_predictor_type}')...")
+            self.latent_predictor = build_latent_predictor(
+                self.latent_predictor_type,
+                self.latent_dim,
+                **(self.latent_predictor_params or {})
             )
         else:
             self.latent_predictor = None
