@@ -160,7 +160,7 @@ cannot, in principle, recover that structure — which is what motivates the var
 - **Trade-off.** Cheapest and matches legacy checkpoints, but structurally blind to the
   contextual modulation in the target — the weakest fit for `hierarchical_multiscale`.
 
-#### `tcn` — `TCNPredictor`  *(default in the shipped latent configs)*
+#### `tcn` — `TCNPredictor`
 
 - **High level.** Gives the predictor a **temporal receptive field** that mirrors how the
   Stage-1 target was generated (multi-scale dilated convs), so it can infer the
@@ -394,7 +394,6 @@ CleanUNet2-SSL_Embeddings/
 │   ├── config_<family>_plus_stage2.json      # '+'  variant, Stage 2
 │   ├── config_<family>_plusplus_stage1.json  # '++' variant, Stage 1
 │   ├── config_<family>_plusplus_stage2.json  # '++' variant, Stage 2
-│   ├── config_wavlm_stage2_latent_<type>.json         # latent-predictor ablations (tcn/residual/norm/conformer/film)
 │   ├── config_wavlm_stage2_latent_unet_gamma<g>.json  # unet + cosine, γ_latent sweep (0.05/0.2/0.5)
 │   ├── config_wavlm_stage2_latent_unet_skipfilm.json  # unet + cosine + skip-FiLM distillation
 │   ├── config.py                     # Optional strict dataclass schema/validator
