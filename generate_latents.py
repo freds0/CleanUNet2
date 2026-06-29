@@ -5,7 +5,11 @@ checkpoint, for use as distillation targets in Stage-2 training.
 
 It writes ONE file per training sample, keyed by MD5 of the clean-audio path:
 
-    <output-dir>/<md5(clean_path)>.pt   # CPU tensor, shape (C, T) = fused_latent
+    <output-dir>/<md5(clean_path)>.pt
+        # For hierarchical fusion: a dict {"fused_latent": (C, T),
+        #   "encoder_film": {layer_idx: (gamma (C,), beta (C,))}} where encoder_film
+        #   holds the early-layer skip FiLM targets for Stage-2 skip distillation.
+        # For legacy_pooling fusion: a bare CPU tensor of shape (C, T) = fused_latent.
 
 The checkpoint is loaded with strict=False, so weights present in the checkpoint but not
 built by the config (e.g. an unused self-attention pooling head) are ignored — they do not
@@ -135,13 +139,23 @@ def main():
                 return_latents=True,
             )
             fused = latents["fused_latent"].cpu()  # (B, C, T)
+            # Skip-FiLM distillation targets (hierarchical fusion only): per-example
+            # GLOBAL (gamma, beta) for the modulated early encoder layers, keyed by
+            # encoder layer index. None for legacy_pooling fusion.
+            enc_film = latents.get("encoder_film")
 
             for i, path in enumerate(clean_paths):
                 cache_file = out_dir / f"{latent_cache_key(path)}.pt"
                 if cache_file.exists() and not args.force:
                     skipped += 1
                     continue
-                torch.save(fused[i].contiguous(), cache_file)
+                if enc_film is not None:
+                    film_i = {k: (g[i].cpu().contiguous(), b[i].cpu().contiguous())
+                              for k, (g, b) in enc_film.items()}
+                    torch.save({"fused_latent": fused[i].contiguous(),
+                                "encoder_film": film_i}, cache_file)
+                else:
+                    torch.save(fused[i].contiguous(), cache_file)
                 extracted += 1
 
     logger.info("Done. Extracted: %d, skipped(existing): %d. Cache dir: %s",

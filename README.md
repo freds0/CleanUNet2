@@ -111,13 +111,14 @@ targets, so the same Stage-1 checkpoint and latent cache stay valid across all v
 | `norm` | `NormPredictor` | per-frame MLP + `GroupNorm` for training stability (AMP) | 1.18M |
 | `conformer` | `ConformerPredictor` | self-attention (global/semantic context) + depthwise conv (local/acoustic) | 5.33M |
 | `film` | `FiLMPredictor` | predicts FiLM `(γ, β)` and applies `(1+γ)·latent + β`; zero-init → identity | 1.77M |
+| `unet` | `UNetTemporalPredictor` | temporal U-Net (down/process/up + additive skips) — long receptive field at lower param cost than an equally wide dilated stack | 18.9M |
 
 <sub>*Param counts at the default bottleneck `latent_dim = 768`.</sub>
 
 ```jsonc
 "model": {
   "latent_predictor": {
-    "type": "tcn",      // baseline | tcn | residual | norm | conformer | film
+    "type": "tcn",      // baseline | tcn | residual | norm | conformer | film | unet
     "params": null       // optional dict forwarded to the predictor constructor
   }
 }
@@ -128,9 +129,163 @@ configs/checkpoints). One predictor is active per config; the shipped
 `configs/config_wavlm_stage2_latent_<type>.json` set one variant each (WavLM embeddings),
 sharing the same Stage-1 checkpoint and distillation latents.
 
-> ℹ️ Only the **bottleneck** latent is distilled. With `hierarchical_multiscale` fusion,
-> Stage-1 also FiLM-modulates the early encoder layers (skip connections), which Stage-2
-> does not reproduce — an inherent ceiling no latent-predictor choice removes on its own.
+> ℹ️ By default only the **bottleneck** latent is distilled. With `hierarchical_multiscale`
+> fusion, Stage-1 also FiLM-modulates the early encoder layers (skip connections) — Stage-2
+> can optionally reproduce those too via **skip-FiLM distillation** (`model.distill_skips`,
+> see [Stage-2 skip-FiLM distillation](#-stage-2-skip-film-distillation-modeldistill_skips)),
+> which lifts the ceiling that bottleneck-only distillation leaves in place.
+
+### Per-architecture details
+
+**Shared contract.** Every predictor is an `nn.Module` mapping the bottleneck
+`latent (B, C, T)` → `predicted_latent (B, C, T)` (same shape), where `C = latent_dim`
+(768 by default) and `T` is the bottleneck time axis. The model's forward is always
+`predicted_latent = self.latent_predictor(latent)`, so swapping architectures never
+touches the rest of the pipeline. The training objective is unchanged: an MSE between
+`predicted_latent` and the cached Stage-1 `fused_latent`, plus the waveform/spec/phase
+reconstruction losses on the decoded audio.
+
+**Why architecture matters here.** The target `fused_latent` was produced in Stage-1 by
+FiLM modulation driven by **multi-scale dilated convs** over the SSL layers and a
+**per-frame** semantic FiLM resampled along time. So the target carries *temporal* and
+*global* structure. A predictor that only sees one frame at a time (the `baseline`)
+cannot, in principle, recover that structure — which is what motivates the variants.
+
+#### `baseline` — `BaselinePredictor`
+
+- **High level.** The original Stage-2 head: a position-wise (per-frame) 2-layer MLP. It
+  re-maps each time step independently, with **zero temporal context**.
+- **Low level.** `Conv1d(C, C, k=1) → PReLU → Conv1d(C, C, k=1)`. Kernel size 1 ⇒
+  receptive field of exactly one frame. ~1.18M params (`2·C²`).
+- **Trade-off.** Cheapest and matches legacy checkpoints, but structurally blind to the
+  contextual modulation in the target — the weakest fit for `hierarchical_multiscale`.
+
+#### `tcn` — `TCNPredictor`  *(default in the shipped latent configs)*
+
+- **High level.** Gives the predictor a **temporal receptive field** that mirrors how the
+  Stage-1 target was generated (multi-scale dilated convs), so it can infer the
+  context-dependent modulation rather than guess it per frame.
+- **Low level.** Four `_DilatedResidualBlock`s with dilations `[1, 2, 4, 8]`. Each block:
+  `Conv1d(C, C, k=3, dilation=d) → PReLU → Conv1d(C, C, k=3, dilation=d)` wrapped in a
+  residual (`x + block(x)`); padding keeps `T` fixed. A final `Conv1d(C, C, k=1)`
+  projects the output. The stacked dilations reach an effective receptive field of ~60
+  frames. ~14.8M params (the largest variant — most of the cost is the `k=3` convs).
+- **Trade-off.** Highest capacity / receptive field, highest param & compute cost.
+  Best-justified choice when fusion is `hierarchical_multiscale`.
+
+#### `residual` — `ResidualMLPPredictor`
+
+- **High level.** Same per-frame MLP as `baseline`, but it predicts only the **delta**
+  over the input latent and is **zero-initialised** so it starts as the identity. Keeps
+  the decoded audio valid from epoch 0 (Stage-1 weights are warm-started) and makes the
+  optimisation easier (learn a correction, not the whole latent).
+- **Low level.** `fc1 = Conv1d(C, hidden, k=1)`, `PReLU`, `fc2 = Conv1d(hidden, C, k=1)`
+  with `hidden = C`; `fc2.weight`/`fc2.bias` zero-init. Forward:
+  `x + fc2(PReLU(fc1(x)))`. At init `fc2(...) = 0` ⇒ output `= x` exactly. ~1.18M params.
+- **Trade-off.** Cheap and stable, but still per-frame (no temporal context) — it
+  improves *trainability*, not receptive field.
+
+#### `norm` — `NormPredictor`
+
+- **High level.** The per-frame MLP plus a normalization layer for **training stability**,
+  which matters under mixed precision (`16-mixed`).
+- **Low level.** `Conv1d(C, C, k=1) → GroupNorm(num_groups=8, C) → PReLU →
+  Conv1d(C, C, k=1)`. GroupNorm normalises across channel groups per frame (no batch/time
+  coupling), so it is batch-size and length agnostic. ~1.18M params (+ tiny GN affine).
+- **Trade-off.** Cheap stabiliser; like `baseline`/`residual` it has no temporal context.
+
+#### `conformer` — `ConformerPredictor`
+
+- **High level.** A Conformer-style block that gives the predictor **both** global context
+  (self-attention) **and** local context (depthwise conv) — mirroring the acoustic-local
+  vs. semantic-global split that the Stage-1 fusion encodes.
+- **Low level.** Operates on `(B, T, C)` internally (transposes in/out). Three residual
+  sub-modules, each pre-normed with `LayerNorm(C)`:
+  1. **Self-attention** — `MultiheadAttention(C, num_heads=8, batch_first=True)`,
+     `h = h + attn(LN(h))`. Provides utterance-level (semantic) context.
+  2. **Convolution** — depthwise `Conv1d(C, C, k=7, groups=C) → GroupNorm(8, C) → PReLU →
+     Conv1d(C, C, k=1)`, `h = h + conv(LN(h))`. Provides local (acoustic) context.
+  3. **Feed-forward** — `Linear(C, 2C) → PReLU → Linear(2C, C)`, `h = h + ff(LN(h))`.
+  ~5.33M params.
+- **Trade-off.** Strong modelling capacity (global + local) at moderate cost; attention is
+  `O(T²)` so it is the most sensitive to long bottleneck sequences.
+
+#### `film` — `FiLMPredictor`
+
+- **High level.** Instead of regressing the latent directly, it predicts a **FiLM
+  modulation** `(γ, β)` and applies it to the input — baking in the *same multiplicative
+  structure* the Stage-1 target actually has. Zero-initialised heads ⇒ starts as identity.
+- **Low level.** Shared trunk `Conv1d(C, hidden, k=1) → PReLU` (`hidden = C`); two heads
+  `to_gamma`/`to_beta = Conv1d(hidden, C, k=1)`, both zero-init. Forward:
+  `(1 + γ(x))·x + β(x)`. At init `γ = β = 0` ⇒ output `= x`. ~1.77M params.
+- **Trade-off.** Encodes the right inductive bias cheaply, but the `(γ, β)` are predicted
+  per-frame (k=1) — it isolates the FiLM idea, not temporal context.
+
+#### `unet` — `UNetTemporalPredictor`
+
+- **High level.** A temporal **U-Net**: it processes the latent at reduced time resolution
+  (`T → T/2 → T/4`) and reconstructs it, reaching a **long receptive field** for far fewer
+  params than an equally wide dilated stack. A small conv at `T/4` already spans a long
+  stretch of the signal, capturing the multi-scale structure of the target.
+- **Low level.** `depth=2`. Encoder: per level `_ConvBlock` (`Conv1d(C,C,k=3)+PReLU`) then
+  a strided `Conv1d(C,C,k=4,stride=2)` (halves `T`). A `_ConvBlock` bottleneck. Decoder:
+  per level `ConvTranspose1d(C,C,k=4,stride=2)` (doubles `T`), an **additive** skip from
+  the matching encoder level, then a `_ConvBlock`; a final `Conv1d(C,C,k=1)` projects. A
+  `_match_len` helper crops/pads to absorb the ±1-frame mismatch on odd `T`. ~18.9M params.
+- **Trade-off.** Long receptive field at lower param/compute cost than `tcn`; the
+  down/upsampling can blur fine temporal detail if `depth` is too large.
+
+---
+
+## 🎯 Stage-2 distillation objective (`loss.*`)
+
+On top of the reconstruction losses, Stage-2 adds distillation terms pulling the predicted
+latents toward the cached Stage-1 targets:
+
+`total = loss_recon + γ_latent · loss_latent + γ_skip · loss_skip`
+
+| Knob | Default | Meaning |
+|---|---|---|
+| `loss.gamma_latent` | `0.05` | weight of the bottleneck latent loss (`loss_latent`) |
+| `loss.cosine_weight` | `0.0` | adds `cosine_weight · (1 − cos)` to `loss_latent` — penalises per-frame **direction**, not just magnitude (the decoder is direction-sensitive). `0` ⇒ MSE only |
+| `loss.gamma_skip` | `0.0` | weight of the skip-FiLM loss (`loss_skip`); requires `model.distill_skips: true` |
+
+`loss_latent` is `MSE(predicted_latent, fused_latent)` (+ the optional cosine term), keyed
+per clean-audio path against the deterministic-crop targets. The two new knobs default to
+`0`, so **older configs are unaffected**. The shipped `..._unet_gamma{0.05,0.2,0.5}.json`
+sweep `gamma_latent` with the cosine term on (`unet` predictor).
+
+## 🪜 Stage-2 skip-FiLM distillation (`model.distill_skips`)
+
+With `hierarchical_multiscale` fusion, Stage-1 modulates the **first two encoder skips**
+with a GLOBAL FiLM `(γ, β)` derived from the SSL acoustic layers. Standard Stage-2 only
+distills the bottleneck, so the decoder receives **unmodulated** skips — an inherent
+quality ceiling. Skip-FiLM distillation removes it by reproducing that modulation:
+
+- A **`SkipFiLMHead`** per modulated layer (encoder layers 0, 1) pools the unmodulated skip
+  over time and regresses its `(γ, β)`; the head is **zero-initialised** so it starts as
+  the identity (warm-started decoder undisturbed at epoch 0). The predicted FiLM is applied
+  to the skips in place (encode reverses the skip list, so layer *i* sits at position
+  `N-1-i`) before decoding.
+- `loss_skip = Σ_layer [ MSE(γ̂, γ) + MSE(β̂, β) ]` against the cached Stage-1 targets,
+  weighted by `loss.gamma_skip`.
+
+```jsonc
+"model": { "distill_skips": true },
+"loss":  { "gamma_skip": 1.0 }       // tune: γ,β live on a different scale than the latent MSE
+```
+
+> ⚠️ **Cache must be regenerated.** Skip targets only exist in caches written by the updated
+> `generate_latents.py`, which stores a dict `{"fused_latent": (C,T), "encoder_film":
+> {layer: (γ, β)}}` for hierarchical fusion (legacy_pooling still writes a bare `(C,T)`
+> tensor). Old bare-tensor caches have no `encoder_film`, so `loss_skip` would silently stay
+> 0 — point the skip config at a **fresh** `train_latents_dir`/`val_latents_dir` and
+> regenerate. Configs without `distill_skips` keep reading the old caches unchanged (the
+> Stage-2 loader accepts both formats).
+
+The shipped `config_wavlm_stage2_latent_unet_skipfilm.json` enables this end-to-end:
+`unet` predictor + cosine + `gamma_latent=0.2` + `distill_skips` + `gamma_skip`, with its
+own `experiments/wavlm_skipfilm/` cache.
 
 ---
 
@@ -239,7 +394,9 @@ CleanUNet2-SSL_Embeddings/
 │   ├── config_<family>_plus_stage2.json      # '+'  variant, Stage 2
 │   ├── config_<family>_plusplus_stage1.json  # '++' variant, Stage 1
 │   ├── config_<family>_plusplus_stage2.json  # '++' variant, Stage 2
-│   ├── config_wavlm_stage2_latent_<type>.json # Stage-2 latent-predictor ablations (WavLM)
+│   ├── config_wavlm_stage2_latent_<type>.json         # latent-predictor ablations (tcn/residual/norm/conformer/film)
+│   ├── config_wavlm_stage2_latent_unet_gamma<g>.json  # unet + cosine, γ_latent sweep (0.05/0.2/0.5)
+│   ├── config_wavlm_stage2_latent_unet_skipfilm.json  # unet + cosine + skip-FiLM distillation
 │   ├── config.py                     # Optional strict dataclass schema/validator
 │   └── inference.yaml
 │
