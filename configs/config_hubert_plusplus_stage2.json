@@ -36,7 +36,7 @@
       "semantic_layers": null
     },
     "latent_predictor": {
-      "type": "tcn",
+      "type": "unet",
       "params": null
     }
   },
@@ -54,7 +54,7 @@
     "weight_waveform": 10.0,
     "weight_spec": 5.0,
     "weight_phase": 5.0,
-    "gamma_latent": 0.05
+    "gamma_latent": 0.5
   },
   "optimizer": {
     "type": "adamw",

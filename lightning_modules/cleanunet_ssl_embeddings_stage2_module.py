@@ -56,6 +56,8 @@ class CleanUNet2SSLEmbeddingsStage2Module(pl.LightningModule):
             **fusion_args_from_config(model_config),
             # Stage-2-only latent predictor architecture.
             **latent_predictor_args_from_config(model_config),
+            # Stage-2-only skip-connection FiLM distillation toggle.
+            'distill_skips': model_config.get('distill_skips', False),
         }
 
         self.model = CleanUNet2WithSSLEmbeddings(**model_args)
@@ -101,10 +103,18 @@ class CleanUNet2SSLEmbeddingsStage2Module(pl.LightningModule):
         self.weight_spec = float(loss_cfg.get('weight_spec', 1.0))
         self.weight_phase = float(loss_cfg.get('weight_phase', 1.0))
         self.gamma_latent = float(loss_cfg.get('gamma_latent', 0.05))  # From paper
+        # Cosine term in the latent loss: penalises per-frame direction, not just
+        # magnitude (the decoder is sensitive to the latent's direction). 0 -> MSE only.
+        self.cosine_weight = float(loss_cfg.get('cosine_weight', 0.0))
+        # Skip-FiLM distillation weight: matches the predicted early-skip (gamma, beta)
+        # to the cached Stage-1 targets. 0 -> disabled (also requires model.distill_skips).
+        self.gamma_skip = float(loss_cfg.get('gamma_skip', 0.0))
 
         print(f"[Stage-2] Loss weights: waveform={self.weight_waveform}, "
               f"spec={self.weight_spec}, phase={self.weight_phase}")
         print(f"[Stage-2] Latent replication weight (γ): {self.gamma_latent}")
+        print(f"[Stage-2] Latent cosine weight: {self.cosine_weight}")
+        print(f"[Stage-2] Skip-FiLM distillation weight (γ_skip): {self.gamma_skip}")
 
         # ===== Metrics Initialization =====
         sr = config.get('audio', {}).get('sample_rate', 16000)
@@ -190,15 +200,33 @@ class CleanUNet2SSLEmbeddingsStage2Module(pl.LightningModule):
         keys = {p.stem for p in d.glob('*.pt')} if (d is not None and d.exists()) else set()
         return d, keys
 
-    def _get_cached_latent(self, clean_path, latents_dir, keys, mem):
-        """Lazily load the cached Stage-1 fused latent (C, T) for a clean-audio path,
-        or None if not cached."""
+    def _get_cached_entry(self, clean_path, latents_dir, keys, mem):
+        """Lazily load and cache the raw object for a clean-audio path. The object is
+        either a bare fused-latent tensor (legacy) or a dict {'fused_latent', 'encoder_film'}
+        (hierarchical, with skip-FiLM targets). Returns None if not cached."""
         key = latent_cache_key(clean_path)
         if key not in keys:
             return None
         if key not in mem:
-            mem[key] = torch.load(latents_dir / f"{key}.pt", map_location='cpu').float()
+            mem[key] = torch.load(latents_dir / f"{key}.pt", map_location='cpu')
         return mem[key]
+
+    def _get_cached_latent(self, clean_path, latents_dir, keys, mem):
+        """Lazily load the cached Stage-1 fused latent (C, T) for a clean-audio path,
+        or None if not cached. Handles both the bare-tensor and dict cache formats."""
+        entry = self._get_cached_entry(clean_path, latents_dir, keys, mem)
+        if entry is None:
+            return None
+        fused = entry['fused_latent'] if isinstance(entry, dict) else entry
+        return fused.float()
+
+    def _get_cached_skip_film(self, clean_path, latents_dir, keys, mem):
+        """Lazily load the cached Stage-1 skip-FiLM targets {layer_idx: (gamma, beta)}
+        for a clean-audio path, or None if absent (bare-tensor cache or no skip targets)."""
+        entry = self._get_cached_entry(clean_path, latents_dir, keys, mem)
+        if not isinstance(entry, dict):
+            return None
+        return entry.get('encoder_film')
 
     def _cached_latent_loss(self, predicted_latent, clean_paths, latents_dir, keys, mem):
         """MSE between the predicted latent and the cached Stage-1 fused latents for this
@@ -216,7 +244,41 @@ class CleanUNet2SSLEmbeddingsStage2Module(pl.LightningModule):
         target = torch.stack(targets).to(device=predicted_latent.device,
                                          dtype=predicted_latent.dtype)
         min_t = min(predicted_latent.size(-1), target.size(-1))
-        return F.mse_loss(predicted_latent[..., :min_t], target[..., :min_t])
+        pred = predicted_latent[..., :min_t]
+        tgt = target[..., :min_t]
+        loss = F.mse_loss(pred, tgt)
+        if self.cosine_weight > 0:
+            # Per-frame cosine over the channel dim: 1 - cos in [0, 2].
+            cos = F.cosine_similarity(pred, tgt, dim=1)  # (B, T)
+            loss = loss + self.cosine_weight * (1.0 - cos).mean()
+        return loss
+
+    def _cached_skip_loss(self, predicted_film, clean_paths, latents_dir, keys, mem):
+        """MSE between the predicted early-skip FiLM (gamma, beta) and the cached Stage-1
+        targets for this batch. Returns 0 if skip distillation is off, paths/cache are
+        unavailable, or any sample in the batch lacks a cached target (alignment must be
+        complete to be valid)."""
+        zero = torch.zeros((), device=self.device)
+        if predicted_film is None or clean_paths is None or not keys:
+            return zero
+        # Per layer, gather the batch's target (gamma, beta) in path order.
+        targets = {k: ([], []) for k in predicted_film}
+        for p in clean_paths:
+            film = self._get_cached_skip_film(p, latents_dir, keys, mem)
+            if not film:
+                return zero
+            for k in predicted_film:
+                if k not in film:
+                    return zero
+                g, b = film[k]
+                targets[k][0].append(g)
+                targets[k][1].append(b)
+        loss = zero
+        for k, (g_pred, b_pred) in predicted_film.items():
+            g_tgt = torch.stack(targets[k][0]).to(device=g_pred.device, dtype=g_pred.dtype)
+            b_tgt = torch.stack(targets[k][1]).to(device=b_pred.device, dtype=b_pred.dtype)
+            loss = loss + F.mse_loss(g_pred, g_tgt) + F.mse_loss(b_pred, b_tgt)
+        return loss
 
     def _assert_latents_aligned(self, config, list_key, latents_dir, keys,
                                 required, min_ratio=0.9):
@@ -350,8 +412,14 @@ class CleanUNet2SSLEmbeddingsStage2Module(pl.LightningModule):
             predicted_latent, clean_audio_paths,
             self.train_latents_dir, self.train_latent_keys, self._train_latent_mem)
 
-        # Total loss (Eq. 5 from paper)
-        total_loss = loss_recon + self.gamma_latent * loss_latent
+        # ===== Compute Skip-FiLM Distillation Loss =====
+        loss_skip = self._cached_skip_loss(
+            latents.get('predicted_encoder_film'), clean_audio_paths,
+            self.train_latents_dir, self.train_latent_keys, self._train_latent_mem)
+
+        # Total loss (Eq. 5 from paper, plus optional skip-FiLM distillation)
+        total_loss = (loss_recon + self.gamma_latent * loss_latent +
+                      self.gamma_skip * loss_skip)
 
         # Logging
         self.log('train/loss', total_loss, on_step=True, on_epoch=True, prog_bar=True)
@@ -360,6 +428,7 @@ class CleanUNet2SSLEmbeddingsStage2Module(pl.LightningModule):
         self.log('train/loss_spec', loss_spec, on_step=False, on_epoch=True)
         self.log('train/loss_phase', loss_phase, on_step=False, on_epoch=True)
         self.log('train/loss_latent', loss_latent, on_step=False, on_epoch=True)
+        self.log('train/loss_skip', loss_skip, on_step=False, on_epoch=True)
 
         return total_loss
 
@@ -400,8 +469,14 @@ class CleanUNet2SSLEmbeddingsStage2Module(pl.LightningModule):
             predicted_latent, clean_audio_paths,
             self.val_latents_dir, self.val_latent_keys, self._val_latent_mem)
 
+        # ===== Compute Skip-FiLM Distillation Loss (path-keyed, same as training) =====
+        loss_skip = self._cached_skip_loss(
+            latents.get('predicted_encoder_film'), clean_audio_paths,
+            self.val_latents_dir, self.val_latent_keys, self._val_latent_mem)
+
         # Total loss
-        total_loss = loss_recon + self.gamma_latent * loss_latent
+        total_loss = (loss_recon + self.gamma_latent * loss_latent +
+                      self.gamma_skip * loss_skip)
 
         # ===== Compute Metrics (Safe Mode) =====
         # Disable autocast for metrics computation to ensure float32 precision
@@ -468,6 +543,7 @@ class CleanUNet2SSLEmbeddingsStage2Module(pl.LightningModule):
         self.log('val/loss', total_loss, prog_bar=True, on_epoch=True, sync_dist=True)
         self.log('val/loss_recon', loss_recon, on_epoch=True, sync_dist=True)
         self.log('val/loss_latent', loss_latent, on_epoch=True, sync_dist=True)
+        self.log('val/loss_skip', loss_skip, on_epoch=True, sync_dist=True)
         self.log('val/pesq', val_pesq, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         self.log('val/stoi', val_stoi, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         self.log('val/si_sdr', val_sisdr, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)

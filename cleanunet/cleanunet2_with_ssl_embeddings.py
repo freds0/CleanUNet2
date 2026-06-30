@@ -18,7 +18,7 @@ from .cleanunet2 import CleanUNet2, SpecUpsampler, Conditioner
 from .cleanunet import CleanUNet
 from .cleanspecnet import CleanSpecNet
 from .integration_block import SequenceIntegrationBlock, HierarchicalMultiScaleBlock
-from .latent_predictors import build_latent_predictor
+from .latent_predictors import build_latent_predictor, SkipFiLMHead
 from .ssl_extractor_factory import build_ssl_extractor
 
 
@@ -61,9 +61,12 @@ class CleanUNet2WithSSLEmbeddings(nn.Module):
         acoustic_layers=None,
         semantic_layers=None,
         # Stage-2 latent predictor architecture (see cleanunet/latent_predictors.py):
-        #   'baseline' | 'tcn'
+        #   'baseline' | 'tcn' | 'unet'
         latent_predictor_type='baseline',
         latent_predictor_params=None,
+        # Stage-2 skip-connection distillation: also reproduce the Stage-1 early-layer
+        # (acoustic) FiLM modulation on the encoder skips, not just the bottleneck.
+        distill_skips=False,
     ):
         """
         Initialize CleanUNet2 with SSL embeddings integration.
@@ -99,6 +102,7 @@ class CleanUNet2WithSSLEmbeddings(nn.Module):
         # Stage-2 latent predictor selector (built below, Stage 2 only).
         self.latent_predictor_type = latent_predictor_type
         self.latent_predictor_params = latent_predictor_params
+        self.distill_skips = distill_skips
 
         if cleanunet_params is None:
             cleanunet_params = {}
@@ -288,6 +292,20 @@ class CleanUNet2WithSSLEmbeddings(nn.Module):
         else:
             self.latent_predictor = None
 
+        # Stage-2 skip-FiLM predictors: one head per modulated early encoder layer
+        # (0, 1), mirroring the Stage-1 hierarchical ACOUSTIC FiLM. Each head regresses
+        # a GLOBAL (gamma, beta) from the unmodulated skip; zero-init -> starts as the
+        # identity so the warm-started decoder is undisturbed at epoch 0.
+        if stage == 'stage2' and self.distill_skips:
+            self.skip_film_predictors = nn.ModuleDict({
+                '0': SkipFiLMHead(self.early_channels[0]),
+                '1': SkipFiLMHead(self.early_channels[1]),
+            })
+            print(f"[CleanUNet2WithSSLEmbeddings] Skip-FiLM distillation ON "
+                  f"(early_channels={self.early_channels}).")
+        else:
+            self.skip_film_predictors = None
+
         print("[CleanUNet2WithSSLEmbeddings] Model initialized successfully!")
 
     def load_vanilla_checkpoint(self, checkpoint_path):
@@ -419,6 +437,11 @@ class CleanUNet2WithSSLEmbeddings(nn.Module):
             latents['fused_latent'] = fused_latent.detach()
             latents['embedding'] = stacked.mean(dim=1).detach()  # (batch, time, dim) placeholder
             latents['latent'] = fused_latent.detach()
+            # Skip-FiLM distillation targets: the GLOBAL (gamma, beta) applied to the
+            # early encoder skips (keyed by encoder layer index 0, 1).
+            latents['encoder_film'] = {
+                k: (g.detach(), b.detach()) for k, (g, b) in encoder_film.items()
+            }
 
             if return_latents:
                 return enhanced_waveform, denoised_spec, latents
@@ -513,6 +536,23 @@ class CleanUNet2WithSSLEmbeddings(nn.Module):
             # Predict latent (trying to replicate Stage 1's fused latent)
             predicted_latent = self.latent_predictor(latent)
             # predicted_latent shape: (batch, latent_dim, time)
+
+            # Skip-FiLM distillation: reproduce the Stage-1 early-layer FiLM on the
+            # encoder skips. The modulation is GLOBAL (time-broadcast), so we can apply
+            # it to the stored skips in place before decoding. encode() reverses the skip
+            # list, so encoder layer i sits at position (N-1) - i.
+            if self.skip_film_predictors is not None:
+                skips = encoder_states['skip_connections']
+                n_skips = len(skips)
+                predicted_film = {}
+                for idx_str, head in self.skip_film_predictors.items():
+                    enc_idx = int(idx_str)
+                    pos = (n_skips - 1) - enc_idx
+                    skip = skips[pos]
+                    gamma, beta = head(skip)                        # [B, C], [B, C]
+                    skips[pos] = (1.0 + gamma.unsqueeze(-1)) * skip + beta.unsqueeze(-1)
+                    predicted_film[enc_idx] = (gamma, beta)
+                latents['predicted_encoder_film'] = predicted_film
 
             # Decode to enhanced audio
             enhanced_waveform = self.clean_unet.decode(predicted_latent, encoder_states)

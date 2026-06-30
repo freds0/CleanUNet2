@@ -18,14 +18,14 @@
     "dropout_rate": 0.0,
     "activation": "relu",
     "ssl": {
-      "type": "wav2vec2",
-      "model_name": "facebook/wav2vec2-xls-r-2b",
-      "embedding_dim": 1920,
-      "layer": 24,
+      "type": "wavlm",
+      "model_name": "microsoft/wavlm-large",
+      "embedding_dim": 1024,
+      "layer": 12,
       "use_weighted_layers": true,
       "pooling_method": "mean",
       "attention_heads": 8,
-      "cache_dir": "ssl_embeddings_wav2vec2",
+      "cache_dir": "ssl_embeddings_wavlm",
       "use_preextracted": false,
       "layer_strategy": "all_layers",
       "selected_layers": "all"
@@ -54,7 +54,8 @@
     "weight_waveform": 10.0,
     "weight_spec": 5.0,
     "weight_phase": 5.0,
-    "gamma_latent": 0.5
+    "gamma_latent": 0.5,
+    "cosine_weight": 0.5
   },
   "optimizer": {
     "type": "adamw",
@@ -102,7 +103,7 @@
     "enable_progress_bar": true
   },
   "logging": {
-    "save_dir": "./experiments/wav2vec2_plusplus/stage2",
+    "save_dir": "./experiments/wavlm_latent_unet_gamma0.5/stage2",
     "log_model": false,
     "log_frequency": 10,
     "save_checkpoints": true,
@@ -112,7 +113,7 @@
   "callbacks": {
     "model_checkpoint": {
       "_target_": "pytorch_lightning.callbacks.ModelCheckpoint",
-      "dirpath": "./experiments/wav2vec2_plusplus/checkpoints/stage2",
+      "dirpath": "./experiments/wavlm_latent_unet_gamma0.5/checkpoints/stage2",
       "filename": "cleanunet-stage2-{epoch:03d}-{val_loss:.4f}",
       "monitor": "val_loss",
       "mode": "min",
@@ -131,15 +132,15 @@
     "choice": "both",
     "tensorboard": {
       "_target_": "pytorch_lightning.loggers.TensorBoardLogger",
-      "save_dir": "./experiments/wav2vec2_plusplus/stage2",
-      "name": "wav2vec2_plusplus-stage2",
+      "save_dir": "./experiments/wavlm_latent_unet_gamma0.5/stage2",
+      "name": "wavlm_latent_unet_gamma0.5-stage2",
       "version": "v1"
     },
     "wandb": {
       "_target_": "pytorch_lightning.loggers.WandbLogger",
       "project": "CleanUNet2-SSL",
-      "name": "wav2vec2_plusplus-stage2",
-      "save_dir": "./experiments/wav2vec2_plusplus/stage2"
+      "name": "wavlm_latent_unet_gamma0.5-stage2",
+      "save_dir": "./experiments/wavlm_latent_unet_gamma0.5/stage2"
     }
   },
   "pipeline": {
@@ -147,8 +148,8 @@
     "resume_from_checkpoint": null,
     "seed": 42,
     "log_all_config": false,
-    "stage1_checkpoint": "./experiments/wav2vec2_plusplus/checkpoints/stage1/cleanunet-stage1-last.ckpt"
+    "stage1_checkpoint": "./experiments/wavlm_plusplus/checkpoints/stage1/cleanunet-stage1-last.ckpt"
   },
-  "train_latents_dir": "./experiments/wav2vec2_plusplus/train_latents",
-  "val_latents_dir": "./experiments/wav2vec2_plusplus/val_latents"
+  "train_latents_dir": "./experiments/wavlm_plusplus/train_latents",
+  "val_latents_dir": "./experiments/wavlm_plusplus/val_latents"
 }

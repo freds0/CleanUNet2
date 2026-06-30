@@ -121,7 +121,7 @@ def latent_predictor_args_from_config(model_config):
     original 'baseline' predictor (2-layer 1x1 conv) for back-compat.
 
     Schema (model.latent_predictor):
-        type: 'baseline' | 'tcn'
+        type: 'baseline' | 'tcn' | 'unet'
         params: { ... } | null   (forwarded to the predictor constructor)
     """
     lp = model_config.get('latent_predictor', {})
