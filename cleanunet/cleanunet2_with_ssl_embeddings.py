@@ -54,6 +54,9 @@ class CleanUNet2WithSSLEmbeddings(nn.Module):
         # Backbone embedding dim. Authoritative for Stage 2 (no extractor/cache to infer
         # it from); in Stage 1 it is overwritten by the extractor/cache.
         ssl_embedding_dim=None,
+        # SSL conditioning input source: 'clean' (Stage-1 oracle, default) or 'noisy'
+        # (this fork's Stage-2 -- extract SSL from the noisy input, available at inference).
+        ssl_audio_source='clean',
         # Fusion strategy: how the SSL features modulate the CleanUNet.
         #   'hierarchical_multiscale' -> HierarchicalMultiScaleBlock (default)
         #   'legacy_pooling'          -> SequenceIntegrationBlock     (pooled fusion)
@@ -86,6 +89,17 @@ class CleanUNet2WithSSLEmbeddings(nn.Module):
         super().__init__()
 
         self.stage = stage
+        if ssl_audio_source not in ('clean', 'noisy'):
+            raise ValueError(
+                f"ssl_audio_source must be 'clean' or 'noisy', got '{ssl_audio_source}'."
+            )
+        self.ssl_audio_source = ssl_audio_source
+        # SSL-conditioned forward (extractor + hierarchical FiLM fusion) runs for
+        # Stage-1 (clean SSL) and for this fork's Stage-2 when SSL comes from the noisy
+        # input. Plain Stage-2 distillation keeps ssl_audio_source='clean'.
+        self._ssl_conditioned = (stage == 'stage1') or (
+            stage == 'stage2' and ssl_audio_source == 'noisy'
+        )
         self.use_preextracted_embeddings = use_preextracted_embeddings
         self.use_weighted_layers = ssl_use_weighted_layers
         self.embedding_type = 'ssl_embeddings'  # Always using SSL embeddings
@@ -163,7 +177,7 @@ class CleanUNet2WithSSLEmbeddings(nn.Module):
         self.embedding_extractor = None
         self.embedding_cache = None
 
-        if stage == 'stage1':
+        if self._ssl_conditioned:
             if use_preextracted_embeddings:
                 print("[CleanUNet2WithSSLEmbeddings] Using pre-extracted SSL embeddings...")
                 if ssl_cache_dir:
@@ -280,8 +294,9 @@ class CleanUNet2WithSSLEmbeddings(nn.Module):
                 "'hierarchical_multiscale', 'legacy_pooling'."
             )
 
-        # Latent Predictor (Stage 2 only)
-        if stage == 'stage2':
+        # Latent Predictor (Stage 2 distillation only -- not built when Stage 2 is
+        # SSL-conditioned from noisy audio, which trains the full denoiser instead).
+        if stage == 'stage2' and not self._ssl_conditioned:
             print(f"[CleanUNet2WithSSLEmbeddings] Creating latent predictor for Stage 2 "
                   f"(type='{self.latent_predictor_type}')...")
             self.latent_predictor = build_latent_predictor(
@@ -296,7 +311,7 @@ class CleanUNet2WithSSLEmbeddings(nn.Module):
         # (0, 1), mirroring the Stage-1 hierarchical ACOUSTIC FiLM. Each head regresses
         # a GLOBAL (gamma, beta) from the unmodulated skip; zero-init -> starts as the
         # identity so the warm-started decoder is undisturbed at epoch 0.
-        if stage == 'stage2' and self.distill_skips:
+        if stage == 'stage2' and self.distill_skips and not self._ssl_conditioned:
             self.skip_film_predictors = nn.ModuleDict({
                 '0': SkipFiLMHead(self.early_channels[0]),
                 '1': SkipFiLMHead(self.early_channels[1]),
@@ -403,13 +418,19 @@ class CleanUNet2WithSSLEmbeddings(nn.Module):
         # Apply conditioning
         conditioned_input = self.conditioner(noisy_waveform, cond_feature)
 
+        # SSL conditioning reads the clean reference (Stage-1 oracle) or the noisy input
+        # (this fork's Stage-2), selected by ssl_audio_source.
+        ssl_input = noisy_waveform if self.ssl_audio_source == 'noisy' else clean_audio
+
         # ============ STAGE 1: Hierarchical fusion (FiLM inside encode) ============
         # The hierarchical option injects FiLM INSIDE the encoder (early acoustic +
         # bottleneck semantic), so it cannot reuse a plain encode(). It needs the
         # full per-layer SSL stack, hence on-the-fly extraction only.
-        if (self.stage == 'stage1' and self.embedding_type is not None
+        if (self._ssl_conditioned and self.embedding_type is not None
                 and self.fusion_type == 'hierarchical_multiscale'):
-            assert clean_audio is not None, "Clean audio is required for Stage 1 training"
+            assert ssl_input is not None, (
+                f"SSL conditioning requires the {self.ssl_audio_source} audio, but it was None."
+            )
             if self.use_preextracted_embeddings:
                 raise ValueError(
                     "fusion_type='hierarchical_multiscale' requires on-the-fly extraction "
@@ -419,7 +440,7 @@ class CleanUNet2WithSSLEmbeddings(nn.Module):
             # Stacked SELECTED SSL layers: (batch, N, time, dim). The frozen backbone
             # runs inside the extractor; the hierarchical convs downstream are trained.
             stacked = self.embedding_extractor.extract_selected_layers(
-                clean_audio.squeeze(1), sample_rate=16000
+                ssl_input.squeeze(1), sample_rate=16000
             )
             stacked = stacked.to(dtype=conditioned_input.dtype)
 
@@ -452,11 +473,13 @@ class CleanUNet2WithSSLEmbeddings(nn.Module):
         # latent shape: (batch, latent_dim, time)
 
         # ============ STAGE 1: With Embeddings ============
-        if self.stage == 'stage1' and self.embedding_type is not None:
-            assert clean_audio is not None, "Clean audio is required for Stage 1 training"
+        if self._ssl_conditioned and self.embedding_type is not None:
+            assert ssl_input is not None, (
+                f"SSL conditioning requires the {self.ssl_audio_source} audio, but it was None."
+            )
 
-            # Extract embeddings from clean audio
-            batch_size = clean_audio.shape[0]
+            # Extract embeddings from the SSL source audio (clean or noisy)
+            batch_size = ssl_input.shape[0]
 
             if self.use_preextracted_embeddings:
                 # Load pre-extracted SSL embeddings from cache.
@@ -508,7 +531,7 @@ class CleanUNet2WithSSLEmbeddings(nn.Module):
                 # Extract SSL embeddings on-the-fly. The frozen backbone runs under no_grad inside
                 # the extractor; the softmax over ALL layers stays differentiable.
                 embedding = self.embedding_extractor.extract_embeddings(
-                    clean_audio.squeeze(1),
+                    ssl_input.squeeze(1),
                     sample_rate=16000,
                     return_mean=False
                 )

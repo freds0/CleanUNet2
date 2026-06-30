@@ -40,10 +40,7 @@
       "acoustic_layers": null,
       "semantic_layers": null
     },
-    "latent_predictor": {
-      "type": "unet",
-      "params": null
-    }
+    "ssl_audio_source": "noisy"
   },
   "loss": {
     "time_domain_weight": 1.0,
@@ -58,8 +55,7 @@
     "mag_lambda": 0.2,
     "weight_waveform": 10.0,
     "weight_spec": 5.0,
-    "weight_phase": 5.0,
-    "gamma_latent": 0.5
+    "weight_phase": 5.0
   },
   "optimizer": {
     "type": "adamw",
@@ -90,9 +86,7 @@
     "augmentations": null,
     "use_preextracted_embeddings": false,
     "quick_test": false,
-    "quick_test_samples": 30,
-    "deterministic_crop": true,
-    "return_audio_paths": true
+    "quick_test_samples": 30
   },
   "trainer": {
     "max_epochs": 300,
@@ -151,9 +145,6 @@
     "stage": 2,
     "resume_from_checkpoint": null,
     "seed": 42,
-    "log_all_config": false,
-    "stage1_checkpoint": "./experiments/hubert_plus/checkpoints/stage1/cleanunet-stage1-last.ckpt"
-  },
-  "train_latents_dir": "./experiments/hubert_plus/train_latents",
-  "val_latents_dir": "./experiments/hubert_plus/val_latents"
+    "log_all_config": false
+  }
 }

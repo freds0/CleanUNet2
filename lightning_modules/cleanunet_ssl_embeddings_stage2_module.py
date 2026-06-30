@@ -1,21 +1,20 @@
 """
-PyTorch Lightning module for CleanUNet2 Stage-2 training with SSL Embeddings.
+PyTorch Lightning module for CleanUNet2 Stage-2 training with NOISY SSL embeddings.
 
-Stage-2: Training without SSL embedding extraction, replicating latent vectors from Stage-1.
-The model learns to predict the fused latents without using the embedding extractor,
-enabling fast inference while maintaining the benefits of speaker information.
+This fork's Stage-2 trains exactly like Stage-1 (full SSL-conditioned denoising with
+the waveform/spec/phase losses), but the SSL embeddings are extracted from the NOISY
+input audio instead of the clean reference. Unlike the distillation Stage-2, the SSL
+extractor stays in the model and is fed the same noisy audio available at inference.
 """
 
 import torch
 import torch.nn.functional as F
 import pytorch_lightning as pl
-from pathlib import Path
 import torchaudio
 
 from cleanunet.cleanunet2_with_ssl_embeddings import CleanUNet2WithSSLEmbeddings
-from cleanunet.ssl_extractor_factory import ssl_args_from_config, fusion_args_from_config, latent_predictor_args_from_config
+from cleanunet.ssl_extractor_factory import ssl_args_from_config, fusion_args_from_config
 from losses import CleanUNet2Loss, MultiResolutionSTFTLoss, AntiWrappingPhaseLoss
-from spec_dataset import latent_cache_key
 
 # Import TorchMetrics
 from torchmetrics.audio import PerceptualEvaluationSpeechQuality
@@ -25,10 +24,10 @@ from torchmetrics.audio import ScaleInvariantSignalNoiseRatio
 
 class CleanUNet2SSLEmbeddingsStage2Module(pl.LightningModule):
     """
-    Lightning module for Stage-2 training with SSL Embeddings (multi-backbone).
+    Lightning module for Stage-2 training with NOISY SSL embeddings (multi-backbone).
 
-    Trains the model to replicate Stage-1's fused latent vectors using
-    only the noisy audio (no SSL embedding extractor).
+    Trains the full SSL-conditioned denoiser like Stage-1, but the SSL embeddings are
+    extracted from the noisy input audio instead of the clean reference.
     """
 
     def __init__(self, config):
@@ -37,38 +36,37 @@ class CleanUNet2SSLEmbeddingsStage2Module(pl.LightningModule):
         self.config = config
 
         print("=" * 80)
-        print("STAGE-2: Replicating Latents (SSL Embeddings - Inference Mode)")
+        print("STAGE-2: Training with SSL Embeddings from NOISY input (multi-backbone)")
         print("=" * 80)
 
         # ===== Model Initialization =====
         model_config = config.get('model', {})
 
-        # Generic SSL embedding configuration (model.ssl.*), with legacy fallback.
-        # Note: Stage 2 doesn't run the extractor, but the model is built with the
-        # same args so the architecture (integration block, dims) matches Stage 1.
-        model_args = {
-            'stage': 'stage2',
-            'conditioning_type': model_config.get('conditioning_type', 'addition'),
-            'cleanunet_params': model_config.get('cleanunet_params', {}),
-            'cleanspecnet_params': model_config.get('cleanspecnet_params', {}),
-            **ssl_args_from_config(model_config),
-            # Fusion type must match Stage 1 so the architecture/weights line up.
-            **fusion_args_from_config(model_config),
-            # Stage-2-only latent predictor architecture.
-            **latent_predictor_args_from_config(model_config),
-            # Stage-2-only skip-connection FiLM distillation toggle.
-            'distill_skips': model_config.get('distill_skips', False),
-        }
+        # Generic SSL embedding configuration (model.ssl.*).
+        # Falls back to the legacy nested model.wav2vec2.* block for old configs.
+        ssl_args = ssl_args_from_config(model_config)
+        # Fusion strategy (model.fusion.*); defaults to hierarchical_multiscale.
+        fusion_args = fusion_args_from_config(model_config)
 
-        self.model = CleanUNet2WithSSLEmbeddings(**model_args)
+        # stage='stage2' + ssl_audio_source='noisy' makes the model run the same
+        # SSL-conditioned forward as Stage-1, but extracting SSL from the noisy input.
+        self.model = CleanUNet2WithSSLEmbeddings(
+            stage='stage2',
+            conditioning_type=model_config.get('conditioning_type', 'addition'),
+            cleanunet_params=model_config.get('cleanunet_params', {}),
+            cleanspecnet_params=model_config.get('cleanspecnet_params', {}),
+            ssl_audio_source='noisy',
+            **ssl_args,
+            **fusion_args,
+        )
 
-        # ===== Load Stage-1 Checkpoint =====
-        stage1_ckpt = config.get('stage1_checkpoint') or config.get('pipeline', {}).get('stage1_checkpoint')
-        if stage1_ckpt:
-            print(f"[Stage-2] Loading Stage-1 checkpoint: {stage1_ckpt}")
-            self.model.load_stage1_weights(stage1_ckpt)
+        # ===== Load Vanilla Checkpoint (Optional) =====
+        vanilla_ckpt = model_config.get('vanilla_checkpoint')
+        if vanilla_ckpt:
+            print(f"\n[Stage-2] Loading vanilla checkpoint for warm start: {vanilla_ckpt}")
+            self.model.load_vanilla_checkpoint(vanilla_ckpt)
         else:
-            print("[WARNING] No Stage-1 checkpoint provided. Training from scratch.")
+            print("[Stage-2] No vanilla checkpoint specified. Training from scratch.")
 
         # ===== Loss Initialization =====
         loss_cfg = config.get('losses') or config.get('loss', {})
@@ -102,19 +100,9 @@ class CleanUNet2SSLEmbeddingsStage2Module(pl.LightningModule):
         self.weight_waveform = float(loss_cfg.get('weight_waveform', 10.0))
         self.weight_spec = float(loss_cfg.get('weight_spec', 1.0))
         self.weight_phase = float(loss_cfg.get('weight_phase', 1.0))
-        self.gamma_latent = float(loss_cfg.get('gamma_latent', 0.05))  # From paper
-        # Cosine term in the latent loss: penalises per-frame direction, not just
-        # magnitude (the decoder is sensitive to the latent's direction). 0 -> MSE only.
-        self.cosine_weight = float(loss_cfg.get('cosine_weight', 0.0))
-        # Skip-FiLM distillation weight: matches the predicted early-skip (gamma, beta)
-        # to the cached Stage-1 targets. 0 -> disabled (also requires model.distill_skips).
-        self.gamma_skip = float(loss_cfg.get('gamma_skip', 0.0))
 
         print(f"[Stage-2] Loss weights: waveform={self.weight_waveform}, "
               f"spec={self.weight_spec}, phase={self.weight_phase}")
-        print(f"[Stage-2] Latent replication weight (γ): {self.gamma_latent}")
-        print(f"[Stage-2] Latent cosine weight: {self.cosine_weight}")
-        print(f"[Stage-2] Skip-FiLM distillation weight (γ_skip): {self.gamma_skip}")
 
         # ===== Metrics Initialization =====
         sr = config.get('audio', {}).get('sample_rate', 16000)
@@ -149,174 +137,9 @@ class CleanUNet2SSLEmbeddingsStage2Module(pl.LightningModule):
         }
         self._pesq_resampler_cache = None
 
-        # ===== Per-file latent caches (keyed by MD5 of the clean-audio path) =====
-        # Generated by generate_latents.py from a trained Stage-1 checkpoint. Both training
-        # and validation use the same path-keyed lookup; alignment relies on the matching
-        # deterministic crop (applied to train AND val) so each sample lines up with its
-        # cached fused-latent target.
-        #
-        # TRAIN cache is REQUIRED: Stage-2 trains ONLY if it exists (distillation targets).
-        train_dir = config.get('train_latents_dir')
-        if not train_dir:
-            raise ValueError(
-                "[Stage-2] 'train_latents_dir' is not set in the config. Stage-2 distillation "
-                "requires the Stage-1 TRAIN latents. Generate them with "
-                "`generate_latents.py --split train` and set 'train_latents_dir'."
-            )
-        self.train_latents_dir, self.train_latent_keys = self._load_latent_cache(train_dir)
-        self._train_latent_mem = {}
-        if not self.train_latent_keys:
-            raise FileNotFoundError(
-                f"[Stage-2] No train latents found in '{self.train_latents_dir}'. Stage-2 will not "
-                f"train without them. Generate first:\n"
-                f"  python generate_latents.py --split train --config <stage1-config> "
-                f"--checkpoint <stage1.ckpt> --output-dir {self.train_latents_dir}"
-            )
-        print(f"[Stage-2] Train latent cache: {len(self.train_latent_keys)} files "
-              f"in {self.train_latents_dir} (training-time latent loss ENABLED)")
-        self._assert_latents_aligned(config, 'train_list_path', self.train_latents_dir,
-                                     self.train_latent_keys, required=True)
-
-        # VAL cache is OPTIONAL (metric only): if present, the validation latent loss is
-        # computed the same path-keyed way; if absent, val/loss_latent stays 0.
-        self.val_latents_dir, self.val_latent_keys = self._load_latent_cache(config.get('val_latents_dir'))
-        self._val_latent_mem = {}
-        if self.val_latent_keys:
-            print(f"[Stage-2] Val latent cache: {len(self.val_latent_keys)} files "
-                  f"in {self.val_latents_dir} (validation latent metric ENABLED)")
-            self._assert_latents_aligned(config, 'val_list_path', self.val_latents_dir,
-                                         self.val_latent_keys, required=False)
-        else:
-            print(f"[Stage-2] No val latent cache (val_latents_dir={config.get('val_latents_dir')}); "
-                  f"validation latent metric = 0. Generate with `generate_latents.py --split val`.")
-
         # Audio samples for logging (6 samples: noisy, clean, denoised)
         self.val_audio_samples = []
         self.max_audio_samples = 6
-
-    def _load_latent_cache(self, latents_dir):
-        """Return (Path|None, set_of_stems) for a per-file <md5>.pt latent cache."""
-        d = Path(latents_dir) if latents_dir else None
-        keys = {p.stem for p in d.glob('*.pt')} if (d is not None and d.exists()) else set()
-        return d, keys
-
-    def _get_cached_entry(self, clean_path, latents_dir, keys, mem):
-        """Lazily load and cache the raw object for a clean-audio path. The object is
-        either a bare fused-latent tensor (legacy) or a dict {'fused_latent', 'encoder_film'}
-        (hierarchical, with skip-FiLM targets). Returns None if not cached."""
-        key = latent_cache_key(clean_path)
-        if key not in keys:
-            return None
-        if key not in mem:
-            mem[key] = torch.load(latents_dir / f"{key}.pt", map_location='cpu')
-        return mem[key]
-
-    def _get_cached_latent(self, clean_path, latents_dir, keys, mem):
-        """Lazily load the cached Stage-1 fused latent (C, T) for a clean-audio path,
-        or None if not cached. Handles both the bare-tensor and dict cache formats."""
-        entry = self._get_cached_entry(clean_path, latents_dir, keys, mem)
-        if entry is None:
-            return None
-        fused = entry['fused_latent'] if isinstance(entry, dict) else entry
-        return fused.float()
-
-    def _get_cached_skip_film(self, clean_path, latents_dir, keys, mem):
-        """Lazily load the cached Stage-1 skip-FiLM targets {layer_idx: (gamma, beta)}
-        for a clean-audio path, or None if absent (bare-tensor cache or no skip targets)."""
-        entry = self._get_cached_entry(clean_path, latents_dir, keys, mem)
-        if not isinstance(entry, dict):
-            return None
-        return entry.get('encoder_film')
-
-    def _cached_latent_loss(self, predicted_latent, clean_paths, latents_dir, keys, mem):
-        """MSE between the predicted latent and the cached Stage-1 fused latents for this
-        batch. Returns 0 if the cache is disabled, paths are unavailable, or any sample in
-        the batch is not cached (alignment must be complete to be valid)."""
-        zero = torch.zeros((), device=self.device)
-        if predicted_latent is None or clean_paths is None or not keys:
-            return zero
-        targets = []
-        for p in clean_paths:
-            t = self._get_cached_latent(p, latents_dir, keys, mem)
-            if t is None:
-                return zero
-            targets.append(t)
-        target = torch.stack(targets).to(device=predicted_latent.device,
-                                         dtype=predicted_latent.dtype)
-        min_t = min(predicted_latent.size(-1), target.size(-1))
-        pred = predicted_latent[..., :min_t]
-        tgt = target[..., :min_t]
-        loss = F.mse_loss(pred, tgt)
-        if self.cosine_weight > 0:
-            # Per-frame cosine over the channel dim: 1 - cos in [0, 2].
-            cos = F.cosine_similarity(pred, tgt, dim=1)  # (B, T)
-            loss = loss + self.cosine_weight * (1.0 - cos).mean()
-        return loss
-
-    def _cached_skip_loss(self, predicted_film, clean_paths, latents_dir, keys, mem):
-        """MSE between the predicted early-skip FiLM (gamma, beta) and the cached Stage-1
-        targets for this batch. Returns 0 if skip distillation is off, paths/cache are
-        unavailable, or any sample in the batch lacks a cached target (alignment must be
-        complete to be valid)."""
-        zero = torch.zeros((), device=self.device)
-        if predicted_film is None or clean_paths is None or not keys:
-            return zero
-        # Per layer, gather the batch's target (gamma, beta) in path order.
-        targets = {k: ([], []) for k in predicted_film}
-        for p in clean_paths:
-            film = self._get_cached_skip_film(p, latents_dir, keys, mem)
-            if not film:
-                return zero
-            for k in predicted_film:
-                if k not in film:
-                    return zero
-                g, b = film[k]
-                targets[k][0].append(g)
-                targets[k][1].append(b)
-        loss = zero
-        for k, (g_pred, b_pred) in predicted_film.items():
-            g_tgt = torch.stack(targets[k][0]).to(device=g_pred.device, dtype=g_pred.dtype)
-            b_tgt = torch.stack(targets[k][1]).to(device=b_pred.device, dtype=b_pred.dtype)
-            loss = loss + F.mse_loss(g_pred, g_tgt) + F.mse_loss(b_pred, b_tgt)
-        return loss
-
-    def _assert_latents_aligned(self, config, list_key, latents_dir, keys,
-                                required, min_ratio=0.9):
-        """Verify the cache keys align with a split's file paths (md5(os.path.join(
-        data_dir, rel))). Abort if `required` and misaligned; otherwise warn. Skips
-        multi-dataset / pathless configs (can't reconstruct the same keys here)."""
-        import os
-        data_cfg = config.get('data', {})
-        list_path = data_cfg.get(list_key)
-        data_dir = data_cfg.get('data_dir', '.')
-
-        if not list_path or data_cfg.get('datasets'):
-            print(f"[Stage-2] Skipping latent-alignment check for {list_key} "
-                  f"(no single {list_key}).")
-            return
-
-        try:
-            from spec_dataset import get_dataset_filelist
-            pairs = get_dataset_filelist(list_path)
-        except Exception as e:
-            print(f"[Stage-2] Could not read {list_key} for alignment check ({e}); skipping.")
-            return
-        if not pairs:
-            return
-
-        hit = sum(latent_cache_key(os.path.join(data_dir, c)) in keys for c, _ in pairs)
-        ratio = hit / len(pairs)
-        if ratio < min_ratio:
-            msg = (f"[Stage-2] Latents MISALIGNED with {list_key}: only {hit}/{len(pairs)} "
-                   f"paths have a cached latent in '{latents_dir}' "
-                   f"({ratio:.0%} < {min_ratio:.0%}). Likely a wrong cache dir or a "
-                   f"data_dir/{list_key} mismatch. Regenerate with generate_latents.py "
-                   f"using the SAME config.")
-            if required:
-                raise RuntimeError(msg + " The training latent loss would be silently zeroed.")
-            print("[WARNING] " + msg + " The validation latent metric will be ~0.")
-            return
-        print(f"[Stage-2] Latents aligned with {list_key}: {hit}/{len(pairs)} ({ratio:.0%}).")
 
     def _get_pesq_resampler(self):
         """
@@ -330,7 +153,7 @@ class CleanUNet2SSLEmbeddingsStage2Module(pl.LightningModule):
             self._pesq_resampler_cache = torchaudio.transforms.Resample(
                 orig_freq=self._pesq_resampler_config['orig_freq'],
                 new_freq=self._pesq_resampler_config['new_freq']
-            )
+            ).to(self.device)  # Move to same device as model
         return self._pesq_resampler_cache
 
     def load_state_dict(self, state_dict, strict=True):
@@ -371,26 +194,25 @@ class CleanUNet2SSLEmbeddingsStage2Module(pl.LightningModule):
         # Call parent's load_state_dict with filtered dict
         return super().load_state_dict(filtered_state_dict, strict=strict)
 
-    def forward(self, noisy_wav, noisy_spec):
-        return self.model(noisy_wav, noisy_spec, clean_audio=None)
+    def forward(self, noisy_wav, noisy_spec, clean_wav=None):
+        return self.model(noisy_wav, noisy_spec, clean_wav)
 
     def training_step(self, batch, batch_idx):
-        # Handle both dataset formats: with and without file paths
+        # Unpack batch (may include file paths for caching)
         if len(batch) == 5:
-            noisy_wav, noisy_spec, clean_wav, clean_spec, clean_audio_paths = batch
+            noisy_wav, noisy_spec, clean_wav, clean_spec, clean_paths = batch
         else:
             noisy_wav, noisy_spec, clean_wav, clean_spec = batch
-            clean_audio_paths = None
+            clean_paths = None
 
-        # Forward without X-Vectors
+        # Forward with X-Vectors (with optional caching)
         enhanced, enhanced_spec, latents = self.model(
-            noisy_wav, noisy_spec, clean_audio=None,
+            noisy_wav, noisy_spec, clean_wav,
+            clean_audio_paths=clean_paths,
             return_latents=True
         )
 
-        predicted_latent = latents['predicted_latent']
-
-        # ===== Compute Reconstruction Losses =====
+        # Compute losses
         loss_waveform = self.criterion(clean_wav, enhanced)
 
         loss_spec = F.l1_loss(
@@ -400,55 +222,35 @@ class CleanUNet2SSLEmbeddingsStage2Module(pl.LightningModule):
 
         loss_phase = self.phase_loss(enhanced, clean_wav)
 
-        loss_recon = (self.weight_waveform * loss_waveform +
+        total_loss = (self.weight_waveform * loss_waveform +
                      self.weight_spec * loss_spec +
                      self.weight_phase * loss_phase)
 
-        # ===== Compute Latent Replication Loss =====
-        # Training-time latent distillation: match the predicted latent to the cached
-        # Stage-1 fused latent for each sample (keyed by clean path, aligned via the
-        # deterministic train crop). Falls back to 0 if the cache is unavailable.
-        loss_latent = self._cached_latent_loss(
-            predicted_latent, clean_audio_paths,
-            self.train_latents_dir, self.train_latent_keys, self._train_latent_mem)
-
-        # ===== Compute Skip-FiLM Distillation Loss =====
-        loss_skip = self._cached_skip_loss(
-            latents.get('predicted_encoder_film'), clean_audio_paths,
-            self.train_latents_dir, self.train_latent_keys, self._train_latent_mem)
-
-        # Total loss (Eq. 5 from paper, plus optional skip-FiLM distillation)
-        total_loss = (loss_recon + self.gamma_latent * loss_latent +
-                      self.gamma_skip * loss_skip)
-
         # Logging
         self.log('train/loss', total_loss, on_step=True, on_epoch=True, prog_bar=True)
-        self.log('train/loss_recon', loss_recon, on_step=False, on_epoch=True)
         self.log('train/loss_waveform', loss_waveform, on_step=False, on_epoch=True)
         self.log('train/loss_spec', loss_spec, on_step=False, on_epoch=True)
         self.log('train/loss_phase', loss_phase, on_step=False, on_epoch=True)
-        self.log('train/loss_latent', loss_latent, on_step=False, on_epoch=True)
-        self.log('train/loss_skip', loss_skip, on_step=False, on_epoch=True)
 
         return total_loss
 
     def validation_step(self, batch, batch_idx):
-        # Handle both dataset formats: with and without file paths
+        # Unpack batch (may include file paths for caching)
         if len(batch) == 5:
-            noisy_wav, noisy_spec, clean_wav, clean_spec, clean_audio_paths = batch
+            noisy_wav, noisy_spec, clean_wav, clean_spec, clean_paths = batch
         else:
             noisy_wav, noisy_spec, clean_wav, clean_spec = batch
-            clean_audio_paths = None
+            clean_paths = None
 
-        # Forward without X-Vectors
-        enhanced, enhanced_spec, latents = self.model(
-            noisy_wav, noisy_spec, clean_audio=None,
-            return_latents=True
+        # Forward (latents are not needed here; Stage-2 targets are produced
+        # separately by generate_latents.py, so nothing is written to disk).
+        enhanced, enhanced_spec = self.model(
+            noisy_wav, noisy_spec, clean_wav,
+            clean_audio_paths=clean_paths,
+            return_latents=False
         )
 
-        predicted_latent = latents['predicted_latent']
-
-        # ===== Compute Reconstruction Losses =====
+        # ===== Compute Losses =====
         loss_waveform = self.criterion(clean_wav, enhanced)
 
         loss_spec = F.l1_loss(
@@ -458,25 +260,9 @@ class CleanUNet2SSLEmbeddingsStage2Module(pl.LightningModule):
 
         loss_phase = self.phase_loss(enhanced, clean_wav)
 
-        loss_recon = (self.weight_waveform * loss_waveform +
+        total_loss = (self.weight_waveform * loss_waveform +
                      self.weight_spec * loss_spec +
                      self.weight_phase * loss_phase)
-
-        # ===== Compute Latent Replication Loss (path-keyed, same mechanism as training) =====
-        # Aligns each val sample with its cached Stage-1 fused latent via the deterministic
-        # val crop. 0 if the val cache is absent/misaligned (metric only — see __init__).
-        loss_latent = self._cached_latent_loss(
-            predicted_latent, clean_audio_paths,
-            self.val_latents_dir, self.val_latent_keys, self._val_latent_mem)
-
-        # ===== Compute Skip-FiLM Distillation Loss (path-keyed, same as training) =====
-        loss_skip = self._cached_skip_loss(
-            latents.get('predicted_encoder_film'), clean_audio_paths,
-            self.val_latents_dir, self.val_latent_keys, self._val_latent_mem)
-
-        # Total loss
-        total_loss = (loss_recon + self.gamma_latent * loss_latent +
-                      self.gamma_skip * loss_skip)
 
         # ===== Compute Metrics (Safe Mode) =====
         # Disable autocast for metrics computation to ensure float32 precision
@@ -502,11 +288,11 @@ class CleanUNet2SSLEmbeddingsStage2Module(pl.LightningModule):
                         preds_pesq = preds
                         target_pesq = target
 
-                    # CORRECTED: PESQ expects (reference, degraded) order, i.e., (clean, enhanced)
                     # Move to CPU for PESQ calculation (PESQ internal weights are on CPU)
                     preds_pesq_cpu = preds_pesq.cpu()
                     target_pesq_cpu = target_pesq.cpu()
 
+                    # CORRECTED: PESQ expects (reference, degraded) order, i.e., (clean, enhanced)
                     val_pesq = self.val_pesq(target_pesq_cpu, preds_pesq_cpu)
                 except Exception as e:
                     print(f"[WARNING] PESQ computation failed: {e}")
@@ -541,9 +327,6 @@ class CleanUNet2SSLEmbeddingsStage2Module(pl.LightningModule):
         # Logging
         self.log('val_loss', total_loss, prog_bar=False, on_epoch=True, sync_dist=True)
         self.log('val/loss', total_loss, prog_bar=True, on_epoch=True, sync_dist=True)
-        self.log('val/loss_recon', loss_recon, on_epoch=True, sync_dist=True)
-        self.log('val/loss_latent', loss_latent, on_epoch=True, sync_dist=True)
-        self.log('val/loss_skip', loss_skip, on_epoch=True, sync_dist=True)
         self.log('val/pesq', val_pesq, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         self.log('val/stoi', val_stoi, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         self.log('val/si_sdr', val_sisdr, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
@@ -552,6 +335,8 @@ class CleanUNet2SSLEmbeddingsStage2Module(pl.LightningModule):
         return total_loss
 
     def on_validation_epoch_end(self):
+        print(f"\n[Stage-2] Validation epoch ended")
+
         # ===== Log Audio Samples =====
         if len(self.val_audio_samples) > 0:
             # Use the sample rate saved during initialization
@@ -609,7 +394,7 @@ class CleanUNet2SSLEmbeddingsStage2Module(pl.LightningModule):
                     except Exception as e:
                         print(f"[Stage-2] Warning: Could not log audio sample {idx}: {e}")
 
-            print(f"[Stage-2] Logged {len(self.val_audio_samples)} audio samples")
+            print(f"[Stage-2] Logged {len(self.val_audio_samples)} audio samples\n")
 
             # Clear samples for next epoch
             self.val_audio_samples = []
@@ -619,10 +404,11 @@ class CleanUNet2SSLEmbeddingsStage2Module(pl.LightningModule):
         lr = float(optimizer_cfg.get('lr', optimizer_cfg.get('learning_rate', 1e-4)))
         betas = optimizer_cfg.get('betas', [0.9, 0.999])
 
-        # All parameters are trainable in Stage-2 (no frozen X-Vector extractor)
-        optimizer = torch.optim.AdamW(self.parameters(), lr=lr, betas=betas)
+        # Filter trainable parameters (X-Vector extractor is frozen)
+        trainable_params = filter(lambda p: p.requires_grad, self.parameters())
+
+        optimizer = torch.optim.AdamW(trainable_params, lr=lr, betas=betas)
 
         print(f"[Stage-2] Optimizer: AdamW(lr={lr}, betas={betas})")
 
         return optimizer
-

@@ -115,42 +115,33 @@ Two-stage pipeline with **one config file per stage** (`config_<family>_<variant
 and `_stage2.json`), each self-contained with its own checkpoint/log folders. The stage is
 read from `pipeline.stage` in the config, so `--stage` is optional.
 
-**Stage 1** trains the SSL layer-softmax + the denoiser (SSL embeddings injected into the
-latent space). **Stage 2** trains a latent predictor to reproduce the Stage-1 latents
-*without* the SSL extractor at inference time — a **distillation** step that requires the
-Stage-1 train latents as targets.
+**Stage 1** trains the SSL layer-softmax + the denoiser using SSL embeddings extracted from
+the **clean** reference audio (an *oracle* setup). **Stage 2** (this fork) trains the
+**same** full SSL-conditioned denoiser, but extracts the SSL embeddings from the **noisy**
+input audio — the audio actually available at inference. There is no distillation and no
+latent predictor; both stages train from scratch (or an optional vanilla warm start).
 
 ```bash
-# 1) Stage 1
+# Stage 1 — SSL embeddings from the CLEAN reference (oracle)
 python train.py --config configs/config_wavlm_plusplus_stage1.json
 
-# 2) Generate the Stage-1 TRAIN latents (distillation targets) — REQUIRED before Stage 2
-python generate_latents.py \
-  --config configs/config_wavlm_plusplus_stage1.json \
-  --checkpoint experiments/wavlm_plusplus/checkpoints/stage1/cleanunet-stage1-last.ckpt \
-  --output-dir experiments/wavlm_plusplus/train_latents
-
-# 3) Stage 2 (reads train_latents_dir from the config)
+# Stage 2 — SSL embeddings from the NOISY input (model.ssl_audio_source="noisy")
 python train.py --config configs/config_wavlm_plusplus_stage2.json
 ```
 
-The Stage-2 config carries `pipeline.stage1_checkpoint`, `train_latents_dir`, and
-`data.deterministic_crop`/`data.return_audio_paths` (needed to align each sample with its
-cached latent target). **Stage 2 will not start unless the train latents exist** — it
-raises a clear error pointing you at `generate_latents.py`.
+The only difference between the two stages is `model.ssl_audio_source` (`"clean"` for
+Stage 1, `"noisy"` for Stage 2). Stage 2 no longer needs `generate_latents.py`,
+`train_latents_dir`, or a Stage-1 checkpoint; each config has its own
+`./experiments/<variant>/stage{1,2}/...` checkpoint and log folders.
 
-> Configs default to **on-the-fly** SSL extraction (`model.ssl.use_preextracted: false`),
-> which is required for the learnable layer-softmax to receive gradients.
+> Both stage configs default to **on-the-fly** SSL extraction
+> (`model.ssl.use_preextracted: false`), required for the learnable layer-softmax to
+> receive gradients.
 
-#### Why the train latents (and not the val ones)?
-
-The Stage-2 latent-replication loss is a distillation objective: the predicted latent must
-match the Stage-1 **fused** latent for the *same* training sample. `generate_latents.py`
-loads a fully-trained Stage-1 checkpoint and writes one target per train file, keyed by the
-clean-audio path (`<md5>.pt`), using a **deterministic per-file crop** so the cached target
-matches the segment Stage-2 training sees. The checkpoint is loaded with `strict=False`, so
-any extra weights it carries that the config doesn't build (e.g. an unused self-attention
-pooling head) are ignored — they don't affect the fused latent.
+> **Inference caveat.** Because Stage 2 keeps the SSL extractor (now fed the noisy input),
+> a Stage-2 checkpoint must run that extractor at inference. The shipped `inference.py`
+> still runs the denoiser only — update it to feed the noisy SSL embeddings before using a
+> Stage-2 checkpoint.
 
 ### 4. Inference
 
@@ -215,10 +206,9 @@ CleanUNet2-SSL_Embeddings/
 ## 📋 Configuration
 
 There is one self-contained JSON config per family · variant · **stage**. Stage-1 and
-Stage-2 configs share the model/loss/data sections; the Stage-2 config additionally sets
-`pipeline.stage1_checkpoint`, `train_latents_dir`, and `data.deterministic_crop` /
-`data.return_audio_paths`. Each config points at its own `./experiments/<variant>/...`
-checkpoint and log folders. The SSL-specific block:
+Stage-2 configs share the model/loss/data sections; the Stage-2 config only differs by
+`pipeline.stage: 2` and `model.ssl_audio_source: "noisy"`. Each config points at its own
+`./experiments/<variant>/...` checkpoint and log folders. The SSL-specific block:
 
 ```jsonc
 "model": {
@@ -296,13 +286,17 @@ Input: (Noisy waveform, Noisy spectrogram, SSL embeddings)
 Output: Enhanced waveform   (Stage-1 latents are saved for Stage 2)
 ```
 
-### Stage 2 — latent replication (no SSL at inference)
+### Stage 2 — SSL embeddings from the noisy input
 
 ```
-Input: (Noisy waveform, Noisy spectrogram)     # no SSL embeddings
-  → latent predictor trained to reproduce Stage-1 latents
+Input: (Noisy waveform, Noisy spectrogram, SSL embeddings OF the noisy input)
+  → same hierarchical SSL→denoiser fusion as Stage 1 (acoustic/semantic FiLM)
+  → CleanUNet encoder-decoder
 Output: Enhanced waveform
 ```
+
+Identical to Stage 1 except the SSL extractor is fed the **noisy** input instead of the
+clean reference (`model.ssl_audio_source: "noisy"`).
 
 ---
 
@@ -312,11 +306,9 @@ Output: Enhanced waveform
 - **`float`/`Half` dtype mismatch in an extractor** — the extractors derive device/dtype
   from `next(self.model.parameters())`; ensure you're on a version that includes that fix
   (needed under `precision: "16-mixed"`).
-- **Stage 2 can't find a checkpoint** — set `pipeline.stage1_checkpoint` in the
-  `_stage2.json` config to a real Stage-1 checkpoint.
-- **Stage 2 aborts: "No train latents found"** — Stage 2 trains only if the distillation
-  targets exist. Run `generate_latents.py` (see step 2 above) and make sure its
-  `--output-dir` matches `train_latents_dir` in the `_stage2.json` config.
+- **Stage 2 loads the SSL backbone / is as slow as Stage 1** — expected: this fork's
+  Stage 2 keeps the SSL extractor (fed the noisy input). It no longer uses
+  `generate_latents.py`, `train_latents_dir`, or a Stage-1 checkpoint.
 - **`ssl_type` unknown** — must be one of `wav2vec2 | hubert | wavlm | w2v-bert | whisper`
   (see `cleanunet/ssl_extractor_factory.py`).
 
