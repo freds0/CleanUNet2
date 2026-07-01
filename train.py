@@ -220,8 +220,13 @@ def train(config: dict, quick_test: bool = False, quick_test_samples: int = 30, 
         **trainer_kwargs
     )
 
-    # Resume from checkpoint if configured
-    ckpt_path = config.get("resume_from_checkpoint", None)
+    # Resume from checkpoint if configured. Prefer pipeline.resume_from_checkpoint
+    # (where the configs place it and where the startup log reads it from); fall
+    # back to a top-level key for backward compatibility.
+    ckpt_path = (
+        config.get("pipeline", {}).get("resume_from_checkpoint")
+        or config.get("resume_from_checkpoint")
+    )
     if ckpt_path:
         logger.info("Resuming training from checkpoint: %s", ckpt_path)
 
