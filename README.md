@@ -244,6 +244,10 @@ python evaluate.py --checkpoint logs/S30_soup/last.ckpt --blend_spec logs/W5/las
 `configs/ablation/k0.yaml` points `model.init.cleanunet_checkpoint` to the stage A checkpoint of the study; override
 it with your own.
 
+Keep the batch size of the configs (16). A rerun of this recipe with the largest batch that fits a 24 GB GPU (stage A
+and S30 at 128, W5 at 1024, square-root learning-rate scaling, same epochs) lost 0.063 test PESQ-WB, because S30 and
+W5 get 8-64x fewer optimizer steps; only stage A was unaffected (`IMPROVEMENT_PLAN.md`, section 14.10).
+
 ### Other recipes
 
 ```bash

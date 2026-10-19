@@ -12,7 +12,7 @@
 
 ## 0. Summary
 
-**Status on 2026-10-19, 15:00.** Queue Y (14.9) finished: training-free checks and a new set with 80 unseen speakers (vctk_unseen), which confirms the test results. Queue X (14.8) finished on 2026-10-16 at 10:53 with no failures, and the complementary analysis (14.8.2) revised the case for S30hp. Queue X covered streaming with a scale prior, DNSMOS, a listening page and the metric discriminator restricted to the band above 100 Hz (S30hp). Queue W (section 14: best system and simplest robust model) finished at 04:43: results in 14.4–14.6 and analysis in 14.7.
+**Status on 2026-10-19, 19:00.** Queue BB (14.10) finished: the S30 + W5 system retrained with the largest batch that fits the GPU scores 3.312 on the test set, against 3.375 with batch 16, so the batch-16 recipe stays. Queue Y (14.9) finished earlier the same day: training-free checks and a new set with 80 unseen speakers (vctk_unseen), which confirms the test results. Queue X (14.8) finished on 2026-10-16 at 10:53 with no failures, and the complementary analysis (14.8.2) revised the case for S30hp. Queue X covered streaming with a scale prior, DNSMOS, a listening page and the metric discriminator restricted to the band above 100 Hz (S30hp). Queue W (section 14: best system and simplest robust model) finished at 04:43: results in 14.4–14.6 and analysis in 14.7.
 
 - **Best system (A):** the training-free blend of the **S30** soup with the bidirectional spectral branch **W5** (w = 0.25, chosen on val_unseen) gives **PESQ 3.375** on the test set. With the 3 S30 seeds separately, it gives **3.372 ± 0.009**.
   - That is +0.164 over RX_C3 (3.212) and +0.212 over K0extfull (3.164).
@@ -56,6 +56,9 @@
   - **80 unseen speakers (vctk_unseen):** the numbers are within ≤ 0.03 of the test set, with the same ranking. The discriminator's PESQ-NB gain (+0.055) appears for 100% of the speakers, the same for S30 and S30hp. The blend with W5 improves every metric for 85–100% of the speakers.
   - **S30hp gains no PESQ over S30 in any band** (PESQ-NB −0.001; without < 100 Hz +0.008, for 51% of the speakers). It gains SI-SDR and segSNR.
   - **Blend weight of S30hp + W5:** w = 0.25, as for S30. **Blend with the causal branch (Bext):** only +0.011 to +0.018 on the test set, a third of W5; the streaming blend drops to low priority.
+- **Queue BB (14.10):** stage A and S30 at batch 128 and W5 at batch 1024, with square-root learning-rate scaling and the same epochs.
+  - Stage A is unchanged. S30 loses 0.045 on the test set, mostly the part of the discriminator gain below 100 Hz. W5 underfits with 1,100 steps: the blend gains +0.022 instead of +0.040.
+  - The full system loses 0.052 to 0.063 on the three sets, with no real saving of time. Keep batch 16.
 
 Summary of queue V (2026-10-15):
 
@@ -1922,3 +1925,102 @@ The STOI of the blends rises by +0.007, for 99% of the speakers; in the other co
 2. **Independent set for the final report.** vctk_unseen uses the val_unseen noises, which were used to choose the weights. Repeating it with the 5 DEMAND environments of the test set (download from Zenodo) would give a set on which no choice was made. Optional.
 3. **DNSMOS on vctk_unseen**, to see the effect on BAK with 80 speakers: ~20 min, optional.
 4. **Low priority:** the steeper cutoff (only if the listening test shows the band matters), the causal spectral branch (Y3) and the learned gate.
+
+### 14.10 Queue BB: the S30 + W5 system retrained with the largest batch that fits the GPU (2026-10-19) ✔
+
+User request: run the full training of the S30 + W5 system again, with a batch size that uses all the GPU memory.
+- **Launcher:** `logs/abl/run_BB.sh`. Log in `logs/abl/queue_BB.log`.
+- **Analysis:** `results/abl/BB_analysis/` (README, `bb_report.py`, `bb_report.txt`). The batch-16 stage A checkpoint
+  was also scored on val_unseen and test with all metrics, in `results/abl/stageA_old/`.
+- **Execution:** 2026-10-19, 15:16–18:51, with no failures.
+- **Batch sizes.** The peaks were measured with a few training steps on the RTX 4090 (24.5 GB). About 10–15% of the
+  memory was left free, because the GPU is sometimes shared.
+
+| Stage | Batch | Peak memory | Optimizer steps | Learning rate | Wall time |
+|---|---|---|---|---|---|
+| Stage A (20 epochs) | 16 → 128 | 19.8 GB | 13,520 → 1,700 | 5.0e-5 → 1.414e-4 | 27 → 15 min |
+| W5 (100 epochs) | 16 → 1024 | 22.0 GB | 67,600 → 1,100 | 5.0e-4 → 4.0e-3 | 28 → 50 min |
+| S30, per seed (30 epochs) | 16 → 128 | 20.9 GB | 20,280 → 2,550 | 2.0e-5 → 5.657e-5 | 58–95 → 43 min |
+
+- **Same recipe otherwise:** data, epochs, seeds, checkpoint selection and the soup are those of the batch-16 system.
+- **Learning rates** follow the square-root rule for AdamW, lr × √(B / 16). The discriminator learning rate is scaled
+  the same way (5e-4 → 1.414e-3), and its warm-up keeps the number of examples (300 → 38 steps).
+- **The batch-16 wall times are not clean:** some of those runs shared the GPU, and S30 s1 crashed once and resumed.
+- **W5 is slower at batch 1024 than at 16.** Data loading (MUSAN mixing and the STFT of 1024 clips per step) is the
+  bottleneck, not the GPU.
+
+**Results** (PESQ-WB; the soups, and the blends with w = 0.25):
+
+| System | val_unseen | Test | vctk_unseen |
+|---|---|---|---|
+| Stage A, batch 16 | 3.101 | 3.095 | — |
+| Stage A, batch 128 | 3.097 | 3.093 | — |
+| S30 soup, batch 16 | 3.348 | 3.335 | 3.325 |
+| S30 soup, batch 128 | 3.295 | 3.290 | 3.288 |
+| S30 soup + W5, batch 16 | **3.373** | **3.375** | **3.365** |
+| S30 soup + W5, large batch | 3.313 | 3.312 | 3.313 |
+| Large-batch S30 soup + batch-16 W5 | 3.326 | 3.334 | 3.331 |
+| Batch-16 S30 soup + large-batch W5 | 3.357 | 3.352 | 3.347 |
+
+With the 3 seeds (mean ± sample standard deviation), on the test set: S30 3.328 ± 0.011 at batch 16 and
+3.283 ± 0.013 at batch 128; S30 + W5 3.372 ± 0.009 and 3.308 ± 0.012.
+
+**Paired differences of the full system** (soups, large batch − batch 16). 95% CI per file; on vctk_unseen, the CI by
+bootstrap over speakers and the share of the 80 speakers that improve.
+
+| Set | PESQ-WB | Without < 100 Hz | PESQ-NB | SI-SDR | CBAK |
+|---|---|---|---|---|---|
+| val_unseen | −0.060 [−0.065, −0.055] | −0.015 | −0.029 | −0.09 dB | −0.031 |
+| Test | −0.063 [−0.071, −0.055] | −0.022 | −0.028 | −0.12 dB | −0.035 |
+| vctk_unseen | −0.052 [−0.060, −0.045], 8% | −0.015, 24% | −0.025, 2% | −0.16 dB, 16% | −0.028, 11% |
+
+**Attribution with cross blends** (soups, w = 0.25; change of PESQ-WB against the batch-16 system):
+
+| Set | Waveform branch | Spectral branch | Both | Interaction |
+|---|---|---|---|---|
+| val_unseen | −0.047 | −0.016 | −0.060 | +0.003 |
+| Test | −0.042 | −0.023 | −0.063 | +0.002 |
+| vctk_unseen | −0.034 | −0.018 | −0.052 | +0.000 |
+
+**14.10.1 Findings.**
+1. **Stage A loses nothing at batch 128.**
+   - PESQ −0.004 on val_unseen and −0.002 on the test set, within the CI; SI-SDR −0.06 to −0.09 dB.
+   - 8× fewer steps are enough to fine-tune from the DNS checkpoint with best-checkpoint selection, and it took 15 min
+     instead of 27.
+2. **W5 underfits at batch 1024:** 1,100 steps instead of 67,600.
+   - Its validation loss is 0.0183 at epoch 100, still falling. Batch 16 reached that value near epoch 25 (0.0184)
+     and ended at 0.0170.
+   - Alone (estimated magnitude with the noisy phase, val_unseen): PESQ 2.886 against 2.967. The log-magnitude error
+     is 5–8% higher in every band.
+   - The gain of the blend falls from +0.040 to +0.022 on the test set (val_unseen +0.024 → +0.018; vctk_unseen
+     +0.040 → +0.024).
+   - Blend weight: 0.15 and 0.25 tie on val_unseen (3.309, mean of the seeds), and 0.25 was kept.
+3. **S30 at batch 128 loses most of the discriminator gain below 100 Hz.**
+   - Gain over the control K0ext30p soup on val_unseen: PESQ-WB +0.144 at batch 16 and +0.091 at batch 128.
+     Without < 100 Hz it is +0.064 and +0.061; PESQ-NB +0.053 and +0.035.
+   - Paired, PESQ without < 100 Hz changes by −0.003 (val_unseen), −0.006 (test) and +0.000 (vctk_unseen, 50% of the
+     speakers). The PESQ-WB loss sits in the band that S30hp leaves out: the large-batch S30 has the PESQ-WB of S30hp
+     (3.295 on val_unseen for both), but not its SI-SDR gain.
+   - There are smaller losses in the speech band too: PESQ-NB −0.016 to −0.018 (−0.009 on vctk_unseen), SI-SDR −0.04
+     to −0.12 dB, CBAK −0.016 to −0.026.
+   - Training curves (mean of the seeds): the PESQ of the training outputs scored for the discriminator is about 0.06
+     lower at every epoch (2.853 against 2.911 at epoch 30), and the discriminator loss stays higher (0.0050 against
+     0.0040). With 8× fewer updates, the generator does not get as far.
+   - The spread between seeds (sd 0.013 against 0.011) and the gain of the soup (+0.007) do not change.
+4. **The two losses add up** (interaction ≤ 0.003): 65–78% from the waveform branch and the rest from the spectral
+   branch, on all three sets.
+5. **The time saved is small.** Training took 3 h 14 min, against about 4 h 27 min at batch 16. But the batch-16 time
+   includes GPU sharing and a crash, and W5 got slower.
+
+**14.10.2 Conclusions.**
+1. **Keep batch 16.** The recommended systems and numbers of 14.8 and 14.9 do not change. The large-batch checkpoints
+   stay in `logs/abl/BB_*`, but they are not recommended.
+2. **The square-root rule with the same number of epochs is not enough** when the step count falls by 8–64×. Only
+   stage A tolerates it (fine-tuning from a pretrained model, with best-checkpoint selection).
+3. **If a larger batch is ever needed** (e.g. on a bigger GPU), the options are below. None was run, and they are low
+   priority, because batch 16 already fits and the time saving is small.
+   - Stage A at batch 128 works as is and saves 12 min.
+   - W5 at batch 128 or 256 (8,400 or 4,200 steps), with more epochs. Data loading caps the speed anyway, so first
+     precompute the STFTs or add workers.
+   - S30 needs about the same number of generator and discriminator updates. For example, batch 32–64 with more
+     epochs, checking that the PESQ of the training outputs reaches ~2.91 by the end.
