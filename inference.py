@@ -31,6 +31,7 @@ from config_utils import resolve_architecture
 
 
 def build_model(cfg: dict, config_dir: str, device: torch.device) -> CleanUNet2:
+    """Build CleanUNet2 from the inference config and load the CleanUMamba or CleanUNet2 weights."""
     inf = cfg["inference"]
     arch = resolve_architecture(cfg["model"]["architecture"], config_dir)
     model = CleanUNet2(**arch)
@@ -79,6 +80,7 @@ def denoise(model: CleanUNet2, wav: torch.Tensor, sample_rate: int, max_chunk_se
 
 
 def run_inference(cfg: dict, config_dir: str = "."):
+    """Denoise every audio file of ``inference.input_dir`` (offline or streaming) and write the outputs."""
     inf, audio_cfg, out_cfg = cfg["inference"], cfg.get("audio", {}), cfg.get("output", {})
     device = torch.device("cpu" if inf.get("force_cpu", False) or not torch.cuda.is_available() else "cuda")
     print(f"[INFO] Using device: {device}")

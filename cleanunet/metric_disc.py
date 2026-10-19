@@ -46,12 +46,14 @@ def batch_pesq(ref: torch.Tensor, est: torch.Tensor, pool=None, sample_rate: int
 
 
 class LearnableSigmoid(nn.Module):
+    """beta * sigmoid(slope * x) with a learnable slope (output range 0..beta)."""
     def __init__(self, beta: float = 2.0):
         super().__init__()
         self.beta = beta
         self.slope = nn.Parameter(torch.ones(1))
 
     def forward(self, x):
+        """Apply the scaled sigmoid."""
         return self.beta * torch.sigmoid(self.slope * x)
 
 
@@ -65,6 +67,12 @@ def fft_highpass(x: torch.Tensor, cutoff_hz: float, sample_rate: int = 16000) ->
 
 
 class MetricDiscriminator(nn.Module):
+    """CNN that predicts the normalized PESQ of an estimate against its reference.
+
+    Input: the compressed magnitudes of reference and estimate stacked as two channels (STFT ``n_fft`` /
+    ``hop_length``, magnitude ** ``power``). Four strided conv blocks with spectral normalization, global max
+    pooling and two linear layers end in a learnable sigmoid. With ``highpass_hz`` both signals are high-passed first.
+    """
     def __init__(self, channels: int = 16, n_fft: int = 400, hop_length: int = 100, power: float = 0.3,
                  highpass_hz: float = 0.0, sample_rate: int = 16000):
         super().__init__()
@@ -98,6 +106,7 @@ class MetricDiscriminator(nn.Module):
 
 
 def generator_loss(disc: MetricDiscriminator, ref: torch.Tensor, est: torch.Tensor) -> torch.Tensor:
+    """Generator term: (D(ref, est) - 1)^2, i.e. push the predicted PESQ of the estimate to the maximum."""
     return F.mse_loss(disc(ref, est), torch.ones(ref.shape[0], device=ref.device))
 
 

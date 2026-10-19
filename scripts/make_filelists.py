@@ -14,6 +14,7 @@ import sys
 
 
 def list_pairs(data_dir, split, ext):
+    """Sorted (clean, noisy) relative paths of a split; fails if a clean file has no noisy pair."""
     clean_dir = os.path.join(data_dir, split, "clean")
     noisy_dir = os.path.join(data_dir, split, "noisy")
     names = sorted(f for f in os.listdir(clean_dir) if f.endswith(ext))
@@ -24,12 +25,14 @@ def list_pairs(data_dir, split, ext):
 
 
 def write(path, pairs):
+    """Write ``clean|noisy`` lines."""
     with open(path, "w", encoding="utf-8") as fh:
         fh.writelines(f"{c}|{n}\n" for c, n in pairs)
     print(f"[INFO] {path}: {len(pairs)} pairs")
 
 
 def main():
+    """Write train.csv, val.csv (held-out speakers) and test.csv."""
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--data_dir", default="/home/fred/DATASETS/VoiceBank-DEMAND-16k")
     parser.add_argument("--out_dir", default="filelists")

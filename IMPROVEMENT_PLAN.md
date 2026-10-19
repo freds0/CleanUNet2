@@ -1,112 +1,112 @@
-# Plano de ablação: condicionamento e fusão CleanSpecNet → CleanUNet
+# Ablation plan: CleanSpecNet → CleanUNet conditioning and fusion
 
-*Autor: Claude (Opus 5.5) · 2026‑10‑13, atualizado em 2026‑10‑16 · branch `feature/mamba` · detalha os Grupos A (fusão) e B (CleanSpecNet) de `IMPROVEMENTS_CLAUDE.md`*
+*Author: Claude (Opus 5.5) · 2026-10-13, updated 2026-10-19 · branch `feature/mamba` · details Groups A (fusion) and B (CleanSpecNet) of `IMPROVEMENTS_CLAUDE.md`*
 
-| Marca | Significado |
+| Marker | Meaning |
 |---|---|
-| ✔ | Medido neste repositório |
-| ◇ | Estimativa, a confirmar |
-| ⚑ | Já existe no código ou na configuração |
+| ✔ | Measured in this repository |
+| ◇ | Estimate, to be confirmed |
+| ⚑ | Already exists in the code or the configuration |
 
 ---
 
-## 0. Resumo
+## 0. Summary
 
-**Estado em 2026‑10‑19, 15h.** A fila Y (14.9) terminou: verificações sem treino e um conjunto novo com 80 locutores não vistos (vctk_unseen), que confirma os resultados do teste. A fila X (14.8) terminou em 2026‑10‑16 às 10:53, sem falhas, e a análise complementar (14.8.2) revisou a justificativa do S30hp. Ela cobriu o streaming com valor inicial, o DNSMOS, uma página de escuta e o discriminador restrito à banda acima de 100 Hz (S30hp). A fila W (seção 14: melhor sistema e modelo mais simples e robusto) terminou às 04:43: resultados em 14.4–14.6 e análise em 14.7.
+**Status on 2026-10-19, 15:00.** Queue Y (14.9) finished: training-free checks and a new set with 80 unseen speakers (vctk_unseen), which confirms the test results. Queue X (14.8) finished on 2026-10-16 at 10:53 with no failures, and the complementary analysis (14.8.2) revised the case for S30hp. Queue X covered streaming with a scale prior, DNSMOS, a listening page and the metric discriminator restricted to the band above 100 Hz (S30hp). Queue W (section 14: best system and simplest robust model) finished at 04:43: results in 14.4–14.6 and analysis in 14.7.
 
-- **Melhor sistema (A):** a mistura sem treino da soup do **S30** com o ramo espectral bidirecional **W5** (w = 0,25, escolhido na val_unseen) dá **PESQ 3,375** no teste. Com as 3 sementes do S30 separadas, dá **3,372 ± 0,009**.
-  - São +0,164 sobre o RX_C3 (3,212) e +0,212 sobre o K0extfull (3,164).
-  - STOI 0,956, SI‑SDR 18,85 dB, COVL 4,15. Tem 60,9M parâmetros e só funciona offline.
-  - Não depende da polaridade e tem a menor cauda de falhas: 0,4% dos arquivos ficam mais de 0,1 abaixo do K0extfull.
-  - **Para uso, a versão com o S30hp (14.8, X4)** dá PESQ 3,326, mas tem o maior PESQ sem < 100 Hz (3,469) e o maior SI‑SDR (19,00 dB) de todos os sistemas, além de DNSMOS OVRL 3,219 contra 3,206.
-- **Modelo simples e robusto (B):** a **soup do S30** dá **3,335** no teste (3 sementes: 3,328 ± 0,011).
-  - É uma única rede só de onda, com 41,4M parâmetros, sem fusão e compatível com streaming.
-  - Receita: o K0 com ruído externo, mais o discriminador métrico (peso 0,3), a inversão de polaridade do par de treino (p = 0,5) e 30 épocas.
-  - Ressalva: o ganho vem de uma perda que mira o PESQ. STOI, SI‑SDR, segSNR e WSS não melhoram (14.5).
-  - **Para uso, a soup do S30hp (14.8, X4):** o mesmo, com o discriminador só acima de 100 Hz.
-    - PESQ 3,280 (−0,055).
-    - O mesmo PESQ‑NB do S30 (+0,001): o ganho na banda da fala é igual.
-    - SI‑SDR +0,21 dB, segSNR +0,28 e WSS −0,19 sobre o S30, com o SI‑SDR igual ao do controle. No vctk_unseen (14.9), o SI‑SDR (+0,17 dB) e o segSNR (+0,25) se repetem em 98–100% dos 80 locutores; o WSS, não (−0,01).
-    - O +0,017 de PESQ sem < 100 Hz sobre o S30 é a métrica que o S30hp otimiza e não se confirma no PESQ‑NB (14.8.2).
-    - DNSMOS OVRL +0,016 sobre o S30 e metade da variância entre sementes.
-- **Polaridade (14.3):** os modelos treinados com o babble do MUSAN quase deixam de funcionar com a entrada invertida (K0extfull: 3,18 → 1,82; RX_C3: 3,22 → 1,96). Inverter o par de treino com p = 0,5 corrige isso sem custo. Dar sinal aleatório aos locutores do babble não corrige.
-- **O RX_C3 deixa de ser recomendado.** Ele perde para a soup do S30 por 0,124, depende da polaridade, e colocá‑lo no ensemble piora o resultado.
-- **Streaming:** o S30 perde 0,25 no teste em streaming. Quase toda a perda vem do aquecimento da escala causal da entrada (14.7.4).
-  - No primeiro segundo, a escala estimada fica cerca de 3× pequena.
-  - Com escala fixa ou com valor inicial, o streaming da soup do S30 vai de 3,164 para 3,335 ou 3,325 na val_unseen, sem treino. O offline dá 3,348.
-  - **Confirmado no teste (14.8, X1):** com valor inicial, o streaming dá 3,323, contra 3,335 offline e 3,085 antes. A opção está em `cleanunet/streaming.py` (`prior_std`, `prior_frames`).
-- **Análise (14.7):**
-  - A val_unseen ordena os sistemas como o teste: Spearman 0,978 em 52 sistemas. A val antiga dá 0,66.
-  - Quase 60% do ganho do discriminador métrico (+0,099 de +0,170) e toda a perda de SI‑SDR estão abaixo de 100 Hz. O filtro de entrada do PESQ‑WB ainda deixa passar a faixa de 50–100 Hz.
-  - Sem essa faixa na referência e na saída, o S30 ganha +0,078 sobre o controle e +0,053 sobre o RX_C3, e a mistura mantém +0,040 sobre o S30. A ordem dos sistemas não muda.
-- **Fila X (14.8):**
-  - **DNSMOS:** não confirma o ganho do discriminador.
-    - S30 − controle dá OVRL −0,026 e BAK −0,037.
-    - A diferença vem da faixa < 100 Hz: o mesmo conteúdo que o PESQ‑WB premia soa ao DNSMOS como ruído de fundo.
-    - O DNSMOS está no teto: o controle já empata com a referência limpa.
-  - **S30hp:** separa os dois efeitos do discriminador.
-    - Mantém o ganho na banda da fala: PESQ‑NB +0,067 sobre o controle, igual ao do S30 (+0,066). Sem < 100 Hz dá +0,094 contra +0,077, mas essa diferença não se confirma (14.8.2).
-    - Corta ~60% do efeito abaixo de 100 Hz. O resto vem do corte suave do filtro.
-  - **Análise complementar (14.8.2):**
-    - O PESQ‑NB (300–3400 Hz) confirma o ganho do discriminador na banda da fala, igual no S30 e no S30hp.
-    - O teste e a val_unseen têm 2 locutores cada. A parte do ganho abaixo de 100 Hz varia 5× entre os 4 locutores (0,03 a 0,15); os outros efeitos têm o mesmo sinal nos 4.
-  - **Recomendação:** S30 e S30 + W5 para o número de benchmark (PESQ‑WB); S30hp e S30hp + W5 para uso.
-  - **Escuta:** a página (X5) está publicada e ainda não tem respostas (conferido em 2026‑10‑19). O bloco B decide se a faixa de 50–100 Hz é audível.
-- **Fila Y (14.9):**
-  - **80 locutores não vistos (vctk_unseen):** os números ficam a ≤ 0,03 dos do teste, com a mesma ordem. O ganho do discriminador no PESQ‑NB (+0,055) aparece em 100% dos locutores, igual no S30 e no S30hp. A mistura com o W5 melhora todas as métricas em 85–100% dos locutores.
-  - **O S30hp não ganha PESQ do S30 em banda nenhuma** (PESQ‑NB −0,001; sem < 100 Hz +0,008, em 51% dos locutores). Ganha SI‑SDR e segSNR.
-  - **Peso da mistura do S30hp + W5:** w = 0,25, como no S30. **Mistura com o ramo causal (Bext):** só +0,011 a +0,018 no teste, um terço do W5; a mistura em streaming cai para prioridade baixa.
+- **Best system (A):** the training-free blend of the **S30** soup with the bidirectional spectral branch **W5** (w = 0.25, chosen on val_unseen) gives **PESQ 3.375** on the test set. With the 3 S30 seeds separately, it gives **3.372 ± 0.009**.
+  - That is +0.164 over RX_C3 (3.212) and +0.212 over K0extfull (3.164).
+  - STOI 0.956, SI-SDR 18.85 dB, COVL 4.15. It has 60.9M parameters and runs offline only.
+  - It does not depend on polarity and has the smallest failure tail: 0.4% of the files end up more than 0.1 below K0extfull.
+  - **For use, the version with S30hp (14.8, X4)** gives PESQ 3.326, but has the highest PESQ without < 100 Hz (3.469) and the highest SI-SDR (19.00 dB) of all systems, plus DNSMOS OVRL 3.219 against 3.206.
+- **Simple, robust model (B):** the **S30 soup** gives **3.335** on the test set (3 seeds: 3.328 ± 0.011).
+  - It is a single waveform-only network with 41.4M parameters, no fusion, and streaming-compatible.
+  - Recipe: K0 with external noise, plus the metric discriminator (weight 0.3), polarity inversion of the training pair (p = 0.5) and 30 epochs.
+  - Caveat: the gain comes from a loss that targets PESQ. STOI, SI-SDR, segSNR and WSS do not improve (14.5).
+  - **For use, the S30hp soup (14.8, X4):** the same, with the discriminator only above 100 Hz.
+    - PESQ 3.280 (−0.055).
+    - The same PESQ-NB as S30 (+0.001): the speech-band gain is the same.
+    - SI-SDR +0.21 dB, segSNR +0.28 and WSS −0.19 over S30, with SI-SDR equal to the control's. On vctk_unseen (14.9), SI-SDR (+0.17 dB) and segSNR (+0.25) repeat for 98–100% of the 80 speakers; WSS does not (−0.01).
+    - The +0.017 PESQ without < 100 Hz over S30 is the metric S30hp optimizes, and PESQ-NB does not confirm it (14.8.2).
+    - DNSMOS OVRL +0.016 over S30 and half the variance between seeds.
+- **Polarity (14.3):** models trained with MUSAN babble nearly stop working on inverted input (K0extfull: 3.18 → 1.82; RX_C3: 3.22 → 1.96). Inverting the training pair with p = 0.5 fixes this at no cost. Giving the babble talkers a random sign does not.
+- **RX_C3 is no longer recommended.** It loses to the S30 soup by 0.124, depends on polarity, and adding it to the ensemble makes the result worse.
+- **Streaming:** S30 loses 0.25 on the test set in streaming. Almost all of the loss comes from the warm-up of the causal input scale (14.7.4).
+  - In the first second, the estimated scale is about 3× too small.
+  - With a fixed scale or a prior, streaming of the S30 soup goes from 3.164 to 3.335 or 3.325 on val_unseen, without training. Offline gives 3.348.
+  - **Confirmed on the test set (14.8, X1):** with the prior, streaming gives 3.323, against 3.335 offline and 3.085 before. The option is in `cleanunet/streaming.py` (`prior_std`, `prior_frames`).
+- **Analysis (14.7):**
+  - val_unseen ranks systems like the test set: Spearman 0.978 over 52 systems. The old val gives 0.66.
+  - Almost 60% of the metric-discriminator gain (+0.099 of +0.170) and all of its SI-SDR loss sit below 100 Hz. The PESQ-WB input filter still lets the 50–100 Hz band through.
+  - Without that band in the reference and the output, S30 gains +0.078 over the control and +0.053 over RX_C3, and the blend keeps +0.040 over S30. The ranking of the systems does not change.
+- **Queue X (14.8):**
+  - **DNSMOS:** it does not confirm the discriminator gain.
+    - S30 − control gives OVRL −0.026 and BAK −0.037.
+    - The difference comes from the < 100 Hz band: the same content that PESQ-WB rewards sounds like background noise to DNSMOS.
+    - DNSMOS is at its ceiling: the control already ties with the clean reference.
+  - **S30hp:** it separates the two effects of the discriminator.
+    - It keeps the speech-band gain: PESQ-NB +0.067 over the control, the same as S30 (+0.066). Without < 100 Hz it gives +0.094 against +0.077, but that difference does not hold up (14.8.2).
+    - It removes ~60% of the effect below 100 Hz. The rest comes from the soft cutoff of the filter.
+  - **Complementary analysis (14.8.2):**
+    - PESQ-NB (300–3400 Hz) confirms the discriminator's speech-band gain, the same for S30 and S30hp.
+    - The test set and val_unseen have 2 speakers each. The part of the gain below 100 Hz varies 5× between the 4 speakers (0.03 to 0.15); the other effects have the same sign for all 4.
+  - **Recommendation:** S30 and S30 + W5 for the benchmark number (PESQ-WB); S30hp and S30hp + W5 for use.
+  - **Listening test:** the page (X5) is published and still has no answers (checked on 2026-10-19). Block B decides whether the 50–100 Hz band is audible.
+- **Queue Y (14.9):**
+  - **80 unseen speakers (vctk_unseen):** the numbers are within ≤ 0.03 of the test set, with the same ranking. The discriminator's PESQ-NB gain (+0.055) appears for 100% of the speakers, the same for S30 and S30hp. The blend with W5 improves every metric for 85–100% of the speakers.
+  - **S30hp gains no PESQ over S30 in any band** (PESQ-NB −0.001; without < 100 Hz +0.008, for 51% of the speakers). It gains SI-SDR and segSNR.
+  - **Blend weight of S30hp + W5:** w = 0.25, as for S30. **Blend with the causal branch (Bext):** only +0.011 to +0.018 on the test set, a third of W5; the streaming blend drops to low priority.
 
-Resumo da fila V (2026‑10‑15):
+Summary of queue V (2026-10-15):
 
-- **Resposta do V1:** uma mistura sem treino do K0extfull com o Bext (w = 0,25) dá **3,209 ± 0,005** no teste, empatada com o RX_C3 (3,212 ± 0,008). A fusão aprendida não acrescenta nada no ruído novo; o sistema offline recomendado passa a ser a mistura.
-- **Análise complementar (12.11):** o RX_C3 tem uma cauda de falhas que a mistura não tem: 5,9% dos arquivos ficam mais de 0,1 abaixo do K0extfull, contra 0,5%. Essa cauda não aparece no SI‑SDR nem no STOI. O PESQ de arquivos isolados é instável, mas as médias não mudam com um PESQ robusto. A média das formas de onda do RX_C3 e da mistura dá **3,238** no teste e 3,253 na val_unseen.
-- **V2–V7:** condition dropout não reduziu a dependência; nenhuma fusão de streaming nem a destilação passou do δ_min; nenhum ramo espectral novo passou do limiar (o bidirecional chegou mais perto); a receita só `noise` rendeu +0,007 no teste; com 30 épocas o K0ext melhora +0,018 e o RX_C3 nada.
+- **Answer of V1:** a training-free blend of K0extfull with Bext (w = 0.25) gives **3.209 ± 0.005** on the test set, tied with RX_C3 (3.212 ± 0.008). The learned fusion adds nothing on new noise; the recommended offline system becomes the blend.
+- **Complementary analysis (12.11):** RX_C3 has a failure tail that the blend does not have: 5.9% of the files end up more than 0.1 below K0extfull, against 0.5%. This tail does not show in SI-SDR or STOI. The PESQ of single files is unstable, but the means do not change with a robust PESQ. The waveform average of RX_C3 and the blend gives **3.238** on the test set and 3.253 on val_unseen.
+- **V2–V7:** condition dropout did not reduce the dependency; no streaming fusion and no distillation passed δ_min; no new spectral branch passed the threshold (the bidirectional one came closest); the `noise`-only recipe gave +0.007 on the test set; with 30 epochs K0ext improves by +0.018 and RX_C3 not at all.
 
-Resumo anterior à fila V:
+Summary before queue V:
 
-- **Melhor resultado no teste:** **PESQ 3,212 ± 0,008** (3 sementes) ✔, com o híbrido **RX_C3**: P3 + S5 + P8, ramo espectral Bext e treino com ruído externo (MUSAN).
-  - São +0,048 sobre o controle só de onda com o mesmo treino (K0extfull, 3,164) e +0,127 sobre o controle antigo (K0full, 3,085).
-  - O ganho aparece nas 3 sementes, nos 5 ruídos do teste e em todas as faixas de SNR.
-  - O RX_C3 só funciona offline (S5 e P8), tem 53,8M parâmetros (contra 41,4M) e dependência 2,06: com a condição de outro arquivo, o PESQ cai 2 pontos.
-- **Maior ganho isolado:** treinar o ramo de onda com ruído externo rende +0,079 no teste, sem custo na inferência ✔.
-- **Streaming:** a única fusão compatível com streaming (P3) perde 0,013 no teste, mesmo com o Bext ✔. O melhor modelo para streaming continua sendo só de onda (K0ext).
-- **O que destravou a fusão:** um ramo espectral que generaliza para ruído novo. Com o B++, treinado só com o VB‑DEMAND, os híbridos perderam (P3: −0,074) ou empataram (C3: −0,014) no teste (Fase 6) ✔.
-- **Lição de método:** contra o controle, a validação antiga (com os mesmos 10 tipos de ruído do treino) errou o sinal do resultado do teste em 4 de 5 comparações. A val_unseen (ruído não visto) acertou as 5 ✔.
-  - A seleção passa a usar a val_unseen (seção 3.4).
-  - Os rankings das Fases 1–4 não valem para ruído novo.
-- **Pergunta em aberto mais importante:** quanto do ganho do RX_C3 vem da fusão aprendida e quanto viria de uma simples mistura dos dois modelos, sem treino? É o experimento V1 (seção 13). **Respondida: nada (seção 12.9).**
+- **Best test result:** **PESQ 3.212 ± 0.008** (3 seeds) ✔, with the **RX_C3** hybrid: P3 + S5 + P8, spectral branch Bext and training with external noise (MUSAN).
+  - That is +0.048 over the waveform-only control with the same training (K0extfull, 3.164) and +0.127 over the old control (K0full, 3.085).
+  - The gain appears for all 3 seeds, all 5 test noises and every SNR range.
+  - RX_C3 runs offline only (S5 and P8), has 53.8M parameters (against 41.4M) and a dependency of 2.06: with the condition of another file, PESQ drops by 2 points.
+- **Largest single gain:** training the waveform branch with external noise gives +0.079 on the test set, at no inference cost ✔.
+- **Streaming:** the only streaming-compatible fusion (P3) loses 0.013 on the test set, even with Bext ✔. The best streaming model is still waveform-only (K0ext).
+- **What unlocked the fusion:** a spectral branch that generalizes to new noise. With B++, trained only on VB-DEMAND, the hybrids lost (P3: −0.074) or tied (C3: −0.014) on the test set (Phase 6) ✔.
+- **Methodological lesson:** against the control, the old validation set (with the same 10 noise types as training) got the sign of the test result wrong in 4 of 5 comparisons. val_unseen (unseen noise) got all 5 right ✔.
+  - Selection now uses val_unseen (section 3.4).
+  - The rankings of Phases 1–4 do not hold for new noise.
+- **Most important open question:** how much of the RX_C3 gain comes from the learned fusion, and how much would a simple training-free blend of the two models give? This is experiment V1 (section 13). **Answered: nothing (section 12.9).**
 
-**Plano original (2026‑10‑13):**
+**Original plan (2026-10-13):**
 
-- **Problema.** O CleanUNet2‑Mamba híbrido empata com o modelo só de onda no teste: PESQ 3,096 contra 3,095 ✔. O ramo espectral acrescenta 11M parâmetros e dobra o tempo de inferência sem trazer ganho.
-- **Causa provável.** Toda a saída do CleanSpecNet chega ao CleanUNet como um **ganho escalar sobre a forma de onda**. Esse ganho é gerado por um FiLM de 8 parâmetros, que o treino deixa quase em zero ✔ (seção 1.2).
-- **Achado da implementação.** O próprio CleanSpecNet quase não limpa: a magnitude que ele estima, ressintetizada com a fase ruidosa, fica perto do áudio ruidoso ✔ (seções 1.4 e 6.1). Sem um ramo espectral bom, nenhuma fusão tem o que transmitir.
-- **Objetivo.** Encontrar uma forma de fusão que faça o híbrido superar o modelo só de onda, com triagem por treinos curtos de ~10 min por variante ◇, e **melhorar a arquitetura do CleanSpecNet** (trilha N, seção 6) para que ele traga informação útil.
-- **Método:**
-  1. Um **protocolo curto comum** (seção 3): parte dos dois ramos já treinados, treina só a fusão com os ramos congelados e depois tudo junto por 5 épocas.
-  2. **Um eixo por vez**, cada fase partindo da vencedora da anterior: onde injetar (Fase 1), o que injetar (Fase 2), como combinar (Fase 3) e como treinar (Fase 4).
-  3. Toda variante é comparada com um **controle só de onda que recebe exatamente o mesmo treino extra**. Outros controles separam "informação do CleanSpecNet" de "parâmetros a mais": espectro ruidoso, condição embaralhada e oráculo.
-  4. Em paralelo à fusão, a **trilha N** melhora o CleanSpecNet: primeiro medido sozinho (barato), depois dentro do híbrido. O melhor ramo espectral (B++) passa a valer da Fase 2 em diante.
-  5. Os finalistas são confirmados com 3 sementes e o protocolo completo. O conjunto de teste é usado uma única vez, no fim.
-- **Custo:** ~75 execuções, ~21 h de GPU no total ◇ (cerca de três noites de fila). Quase todas as variantes dispensam o `SpecUpsampler`. Sem ele, o passo do híbrido custa ~1,3× o do modelo só de onda ✔, em vez de ~8×.
+- **Problem.** The hybrid CleanUNet2-Mamba ties with the waveform-only model on the test set: PESQ 3.096 against 3.095 ✔. The spectral branch adds 11M parameters and doubles inference time with no gain.
+- **Probable cause.** The whole output of CleanSpecNet reaches CleanUNet as a **scalar gain on the waveform**. That gain is produced by an 8-parameter FiLM, which training leaves almost at zero ✔ (section 1.2).
+- **Implementation finding.** CleanSpecNet itself barely cleans: the magnitude it estimates, resynthesized with the noisy phase, stays close to the noisy audio ✔ (sections 1.4 and 6.1). Without a good spectral branch, no fusion has anything to pass on.
+- **Goal.** Find a form of fusion that makes the hybrid beat the waveform-only model, screened with short ~10 min trainings per variant ◇, and **improve the CleanSpecNet architecture** (track N, section 6) so that it brings useful information.
+- **Method:**
+  1. A **common short protocol** (section 3): it starts from the two trained branches, trains only the fusion with the branches frozen, then everything together for 5 epochs.
+  2. **One axis at a time**, each phase starting from the winner of the previous one: where to inject (Phase 1), what to inject (Phase 2), how to combine (Phase 3) and how to train (Phase 4).
+  3. Every variant is compared with a **waveform-only control that gets exactly the same extra training**. Other controls separate "information from CleanSpecNet" from "more parameters": noisy spectrum, shuffled condition and oracle.
+  4. In parallel with the fusion, **track N** improves CleanSpecNet: first measured alone (cheap), then inside the hybrid. The best spectral branch (B++) is used from Phase 2 on.
+  5. The finalists are confirmed with 3 seeds and the full protocol. The test set is used only once, at the end.
+- **Cost:** ~75 runs, ~21 GPU hours in total ◇ (about three nights of queue). Almost every variant does without the `SpecUpsampler`. Without it, a hybrid step costs ~1.3× a waveform-only step ✔, instead of ~8×.
 
 ---
 
-## 1. Ponto de partida
+## 1. Starting point
 
-### 1.1 Resultados no teste (824 arquivos) ✔
+### 1.1 Test results (824 files) ✔
 
-| Modelo | Início | Parâm. | PESQ‑WB | STOI | SI‑SDR | COVL |
+| Model | Init | Params | PESQ-WB | STOI | SI-SDR | COVL |
 |---|---|---|---|---|---|---|
-| Só onda, Mamba E8 (estágio A) | DNS | 41,4M | 3,095 | 0,953 | 18,57 | 3,90 |
-| Híbrido Mamba, estágios A→B→C1→C2 | DNS | 52,6M | 3,096 | 0,954 | 18,57 | 3,91 |
-| Híbrido Mamba, um único treino | DNS | 52,6M | 3,089 | 0,954 | 18,55 | 3,89 |
-| Só onda, Mamba | zero, 30 ép. | 41,4M | 2,668 | 0,938 | 16,61 | 3,46 |
-| Híbrido Mamba | zero, 30 ép. | 52,6M | 2,650 | 0,939 | 16,38 | 3,45 |
-| Híbrido Transformer (E0) | zero, 30 ép. | 58,6M | 2,595 | 0,938 | 16,20 | 3,38 |
+| Waveform-only, Mamba E8 (stage A) | DNS | 41.4M | 3.095 | 0.953 | 18.57 | 3.90 |
+| Mamba hybrid, stages A→B→C1→C2 | DNS | 52.6M | 3.096 | 0.954 | 18.57 | 3.91 |
+| Mamba hybrid, single training | DNS | 52.6M | 3.089 | 0.954 | 18.55 | 3.89 |
+| Waveform-only, Mamba | scratch, 30 ep. | 41.4M | 2.668 | 0.938 | 16.61 | 3.46 |
+| Mamba hybrid | scratch, 30 ep. | 52.6M | 2.650 | 0.939 | 16.38 | 3.45 |
+| Transformer hybrid (E0) | scratch, 30 ep. | 58.6M | 2.595 | 0.938 | 16.20 | 3.38 |
 
-### 1.2 Por que o condicionamento atual não funciona ✔
+### 1.2 Why the current conditioning does not work ✔
 
 ```
 |STFT| (513 x T) -> CleanSpecNet -> S_hat (513 x T)
@@ -115,346 +115,346 @@ Resumo anterior à fila V:
   -> CleanUNet(x')
 ```
 
-1. **Gargalo de informação.** A média em frequência deixa um único canal, então nenhuma banda recebe peso próprio.
-2. **Operador fraco.** Um ganho escalar sobre a forma de onda não filtra frequências: só muda o volume ao longo do tempo.
-3. **Pesos perto de zero.** Depois do treino, o RMS dos pesos do `film_gen` vai de 0,005 (estágio C2) a 0,06 (treino do zero), e o do bias é 0,02. (A inicialização zerada em si não trava o aprendizado: a última camada recebe gradiente desde o 1º passo, e as anteriores logo depois.)
-4. **Evidência direta.** O estágio C1 (só a "cola" treina, com os ramos congelados) terminou com PESQ de validação 2,7548, praticamente o ponto de partida (2,755).
+1. **Information bottleneck.** The mean over frequency leaves a single channel, so no band gets its own weight.
+2. **Weak operator.** A scalar gain on the waveform does not filter frequencies: it only changes the volume over time.
+3. **Weights near zero.** After training, the RMS of the `film_gen` weights goes from 0.005 (stage C2) to 0.06 (training from scratch), and that of the bias is 0.02. (The zero initialization itself does not block learning: the last layer gets a gradient from the 1st step, and the earlier ones soon after.)
+4. **Direct evidence.** Stage C1 (only the "glue" trains, with the branches frozen) ended with a validation PESQ of 2.7548, practically the starting point (2.755).
 
-### 1.3 Fatos de arquitetura que orientam a fusão ✔
+### 1.3 Architecture facts that guide the fusion ✔
 
-| Ponto do CleanUNet E8 | Stride (amostras) | Taxa | Canais |
+| Point of CleanUNet E8 | Stride (samples) | Rate | Channels |
 |---|---|---|---|
-| encoder nível 1 | 2 | 8 kHz | 64 |
-| encoder nível 2 | 4 | 4 kHz | 128 |
-| encoder nível 3 | 8 | 2 kHz | 256 |
-| encoder nível 4 | 16 | 1 kHz | 512 |
-| encoder níveis 5–8 | 32–256 | 500–62,5 Hz | 768 |
-| gargalo | 256 | 62,5 Hz | 768 → 512 (3 camadas Mamba) → 768 |
+| encoder level 1 | 2 | 8 kHz | 64 |
+| encoder level 2 | 4 | 4 kHz | 128 |
+| encoder level 3 | 8 | 2 kHz | 256 |
+| encoder level 4 | 16 | 1 kHz | 512 |
+| encoder levels 5–8 | 32–256 | 500–62.5 Hz | 768 |
+| bottleneck | 256 | 62.5 Hz | 768 → 512 (3 Mamba layers) → 768 |
 
-- **Hop da STFT (256) = stride total do U‑Net (2⁸).** O quadro *j* da STFT e o token *j* do gargalo andam juntos. Num nível de stride 2^ℓ, cada quadro cobre 256/2^ℓ posições.
-- **`spec_hidden`**, a saída do backbone do CleanSpecNet, tem 512 dimensões: o mesmo `d_model` do gargalo.
-- **Lookahead.** O token *j* vê as amostras [256j, 256j+766), ou seja 48 ms. Com `alignment: center`, o quadro *j* usa [256j−384, 256j+640).
-  - Fundir o quadro *j* no token *j* **não aumenta** o lookahead.
-  - Fundir o quadro *j*+1 aumenta em ~8 ms.
-  - Com `alignment: causal`, o quadro *j* usa só [256j−768, 256j+256).
-- **Custo por passo** (forward + backward, batch 2):
+- **STFT hop (256) = total U-Net stride (2⁸).** STFT frame *j* and bottleneck token *j* move together. At a level of stride 2^ℓ, each frame covers 256/2^ℓ positions.
+- **`spec_hidden`**, the output of the CleanSpecNet backbone, has 512 dimensions: the same `d_model` as the bottleneck.
+- **Lookahead.** Token *j* sees the samples [256j, 256j+766), i.e. 48 ms. With `alignment: center`, frame *j* uses [256j−384, 256j+640).
+  - Fusing frame *j* into token *j* **does not increase** the lookahead.
+  - Fusing frame *j*+1 increases it by ~8 ms.
+  - With `alignment: causal`, frame *j* uses only [256j−768, 256j+256).
+- **Cost per step** (forward + backward, batch 2):
 
-  | Variante | Tempo |
+  | Variant | Time |
   |---|---|
-  | Só onda | 18 ms |
-  | Só CleanSpecNet | 6 ms |
-  | Híbrido sem upsampler | 24 ms |
-  | Híbrido completo | 145 ms |
+  | Waveform-only | 18 ms |
+  | CleanSpecNet only | 6 ms |
+  | Hybrid without upsampler | 24 ms |
+  | Full hybrid | 145 ms |
 
-- **Tempo por época, incluindo a validação:** só onda 0,85 min; híbrido completo 6,5 min; só CleanSpecNet ~0,2 min.
+- **Time per epoch, including validation:** waveform-only 0.85 min; full hybrid 6.5 min; CleanSpecNet only ~0.2 min.
 
-### 1.4 Achado da implementação: o CleanSpecNet treinado quase não limpa ✔
+### 1.4 Implementation finding: the trained CleanSpecNet barely cleans ✔
 
-Medido com `scripts/diagnose_spec_branch.py` em 30 arquivos de validação. O erro é |·|^0,3 da magnitude contra a limpa, num domínio comum a todos os modelos. "+ fase ruidosa" é o PESQ da magnitude estimada ressintetizada com a fase do áudio ruidoso.
+Measured with `scripts/diagnose_spec_branch.py` on 30 validation files. The error is |·|^0.3 of the magnitude against the clean one, in a domain common to all models. "+ noisy phase" is the PESQ of the estimated magnitude resynthesized with the phase of the noisy audio.
 
-| Sistema | Erro de magnitude | Erro em SNR ≥ 12,5 dB | PESQ (+ fase ruidosa) |
+| System | Magnitude error | Error at SNR ≥ 12.5 dB | PESQ (+ noisy phase) |
 |---|---|---|---|
-| Áudio ruidoso | 0,137 | 0,081 | 1,57 (o próprio sinal) |
-| Ramo de onda (estágio A) | **0,047** | 0,037 | 2,84 (saída do modelo) |
-| CleanSpecNet do estágio B (10 épocas) | 0,117 | 0,116 | 1,14 |
-| Magnitude limpa (oráculo) | 0 | 0 | 3,31 |
+| Noisy audio | 0.137 | 0.081 | 1.57 (the signal itself) |
+| Waveform branch (stage A) | **0.047** | 0.037 | 2.84 (model output) |
+| CleanSpecNet of stage B (10 epochs) | 0.117 | 0.116 | 1.14 |
+| Clean magnitude (oracle) | 0 | 0 | 3.31 |
 
-Na métrica log1p, os CleanSpecNet de todos os híbridos já treinados (C2, DNS, do zero, E0) ficaram entre 0,058 e 0,067, contra 0,064 do áudio ruidoso, e todos dão PESQ ~1,2 com a fase ruidosa. Isso quer dizer:
-- **O ramo espectral nunca teve informação útil a oferecer ao ramo de onda**, o que explica boa parte do empate da seção 1.1.
-- Em SNR alto ele **piora** a entrada: o erro fica acima do do áudio ruidoso.
+In the log1p metric, the CleanSpecNets of all hybrids trained so far (C2, DNS, scratch, E0) ended between 0.058 and 0.067, against 0.064 for the noisy audio, and all give PESQ ~1.2 with the noisy phase. This means:
+- **The spectral branch never had useful information to offer the waveform branch**, which explains much of the tie in section 1.1.
+- At high SNR it makes the input **worse**: its error is above that of the noisy audio.
 
-Causas prováveis:
-- **Saída direta sem atalho da entrada:** a rede precisa reconstruir as 513 bandas a partir de um gargalo de 64 canais.
-- **Compressão log1p quase linear:** as magnitudes normalizadas são pequenas, então o log1p praticamente não comprime e as bandas de baixa energia quase não pesam na perda.
-- **Generalização para sequências longas:** num teste rápido com saída por máscara, o erro crescia nos trechos além de 2 s (a duração dos recortes de treino); processado em blocos de 2 s, o erro caía.
+Probable causes:
+- **Direct output without a shortcut from the input:** the network must rebuild the 513 bands from a 64-channel bottleneck.
+- **Almost linear log1p compression:** the normalized magnitudes are small, so log1p barely compresses and the low-energy bands hardly weigh in the loss.
+- **Generalization to long sequences:** in a quick test with mask output, the error grew in the stretches beyond 2 s (the length of the training crops); processed in 2 s blocks, the error dropped.
 
-**Consequência para o plano:** o D0 deixou de ser "treinar o B por mais tempo" e passou a ser uma **comparação de 7 candidatos de CleanSpecNet** (Fase 0, seção 5), e a arquitetura do CleanSpecNet ganhou uma trilha própria (seção 6). As opções implementadas são `cleanspecnet_params.output_mode` (`direct`, `residual`, `mask`) e `spectrogram.compression` (`log1p`, `pow` com expoente 0,3). O B+ é escolhido pelo PESQ da magnitude estimada com a fase ruidosa, em utterances inteiras.
+**Consequence for the plan:** D0 stopped being "train B for longer" and became a **comparison of 7 CleanSpecNet candidates** (Phase 0, section 5), and the CleanSpecNet architecture got its own track (section 6). The implemented options are `cleanspecnet_params.output_mode` (`direct`, `residual`, `mask`) and `spectrogram.compression` (`log1p`, `pow` with exponent 0.3). B+ is chosen by the PESQ of the estimated magnitude with the noisy phase, on whole utterances.
 
-### 1.5 O que os resultados ensinam sobre a triagem ✔
+### 1.5 What the results teach about screening ✔
 
-- **Diferenças abaixo de 0,02 não são confiáveis.** Treinados do zero, o híbrido Mamba ficou à frente do modelo só de onda na validação (2,284 contra 2,277) e atrás no teste (2,650 contra 2,668).
-- **O ranking no início de um treino do zero engana.** Na época 10 de 30, o híbrido Mamba era o 3º de 4 na validação e terminou em 1º. Por isso a triagem usa ajuste fino a partir de ramos já treinados, e não treinos curtos do zero.
-- **No fim do cosseno, a validação é estável.** Nas 3 últimas épocas do estágio C2, o PESQ de validação variou 0,002. Usar o checkpoint **final** (LR → 0), e não a "melhor época", evita escolher o máximo de uma série ruidosa.
-- **Treinos curtos são válidos neste protocolo.** Toda variante começa exatamente igual ao estágio A, porque a fusão é iniciada como identidade. A diferença entre variantes mede só o que a fusão acrescenta.
-- **Variância entre sementes ✔.** δ_min ficou em 0,02 em todos os casos.
+- **Differences below 0.02 are not reliable.** Trained from scratch, the Mamba hybrid was ahead of the waveform-only model on validation (2.284 against 2.277) and behind on the test set (2.650 against 2.668).
+- **The ranking early in a training from scratch is misleading.** At epoch 10 of 30, the Mamba hybrid was 3rd of 4 on validation and finished 1st. That is why screening uses fine-tuning from trained branches, not short trainings from scratch.
+- **At the end of the cosine schedule, validation is stable.** In the last 3 epochs of stage C2, the validation PESQ varied by 0.002. Using the **final** checkpoint (LR → 0), rather than the "best epoch", avoids picking the maximum of a noisy series.
+- **Short trainings are valid in this protocol.** Every variant starts exactly equal to stage A, because the fusion is initialized as the identity. The difference between variants measures only what the fusion adds.
+- **Variance between seeds ✔.** δ_min was 0.02 in every case.
 
-  | Controle | val | val_unseen | teste |
+  | Control | val | val_unseen | test |
   |---|---|---|---|
-  | K0 (protocolo curto) | σ = 0,005 | σ = 0,001 | — |
-  | K0ext (protocolo curto) | σ = 0,004 | σ = 0,002 | — |
-  | K0full (protocolo completo) | σ = 0,002 | σ = 0,001 | σ = 0,007 |
-  | K0extfull (protocolo completo) | σ = 0,004 | σ = 0,004 | σ = 0,008 |
+  | K0 (short protocol) | σ = 0.005 | σ = 0.001 | — |
+  | K0ext (short protocol) | σ = 0.004 | σ = 0.002 | — |
+  | K0full (full protocol) | σ = 0.002 | σ = 0.001 | σ = 0.007 |
+  | K0extfull (full protocol) | σ = 0.004 | σ = 0.004 | σ = 0.008 |
 
-- **A validação antiga não prevê ruído novo ✔** (atualização de 2026‑10‑15). Ela tem os mesmos 10 tipos de ruído do treino.
-  - Nas 50 variantes curtas, a ordem dela foi oposta à da val_unseen (Spearman −0,62).
-  - Contra o controle, ela errou o sinal do teste em 4 de 5 comparações.
-- **A val_unseen acerta o sinal, mas não o tamanho.** Acertou o sinal nas 5 comparações, mas exagerou as perdas da Fase 6: −0,16 nela, contra −0,07 e −0,01 no teste.
-- **Para ordenar híbridos entre si, as duas validações concordaram com o teste:** C3 ficou acima de P3 na Fase 6 e na Fase RT.
+- **The old validation set does not predict new noise ✔** (update of 2026-10-15). It has the same 10 noise types as training.
+  - Over the 50 short variants, its ranking was the opposite of val_unseen's (Spearman −0.62).
+  - Against the control, it got the sign of the test set wrong in 4 of 5 comparisons.
+- **val_unseen gets the sign right, but not the size.** It got the sign right in all 5 comparisons, but exaggerated the losses of Phase 6: −0.16 on it, against −0.07 and −0.01 on the test set.
+- **To rank hybrids against each other, both validation sets agreed with the test set:** C3 was above P3 in Phase 6 and in Phase RT.
 
 ---
 
-## 2. Hipóteses
+## 2. Hypotheses
 
-| # | Hipótese | Teste | Fase |
+| # | Hypothesis | Test | Phase |
 |---|---|---|---|
-| H1 | O condicionamento atual não carrega informação: trocar a condição pela de outro arquivo não muda o resultado | D3 | 0 |
-| H2 | Injetar features por canal na taxa de quadros (gargalo) permite aproveitar o CleanSpecNet: ganho sobre o controle **e** dependência da condição > 0 | P3, P4 | 1 |
-| H3 | Injetar nos níveis finos (encoder, decoder, atalhos) ajuda mais em SNR baixo, onde importa a informação por banda | P1, P2, P6, P7, por faixa de SNR | 1 |
-| H4 | O que o ramo espectral *removeu* (a máscara Ŝ − log1p\|X\|) é mais útil que o espectro limpo estimado | S2 × S3 | 2 |
-| H5 | O ganho cresce com a qualidade do CleanSpecNet, e o oráculo (espectro limpo verdadeiro) dá o teto | Q1, Q2, K3 | 2 |
-| H6 | Uma fusão que depende também do conteúdo do CleanUNet (concatenação, atenção cruzada) supera o FiLM, que depende só da condição | O1–O7 | 3 |
-| H7 | O benefício é maior quando o ramo de onda é mais fraco (treino do zero, modelo E6) | Z1, Z2 | 5 |
-| H8 | O front‑end de 64 canais do CleanSpecNet é um gargalo de informação: alargá‑lo reduz o erro de magnitude, sobretudo em SNR alto | N1a, N1b | N |
-| H9 | Modelar a frequência com pesos compartilhados (dual‑path TF ou sub‑banda) dá um salto de qualidade do ramo espectral com menos parâmetros | N2, N3 | N |
-| H10 | Um CleanSpecNet melhor sozinho aumenta o ganho do híbrido (relação monótona entre o PESQ isolado e o Δ sobre o K0) | N‑d, Q1, Q2 | N |
-| H11 | Treinar com sequências mais longas elimina a deriva do erro depois de 2 s | N7a | N |
+| H1 | The current conditioning carries no information: replacing the condition with that of another file does not change the result | D3 | 0 |
+| H2 | Injecting per-channel features at the frame rate (bottleneck) makes CleanSpecNet useful: a gain over the control **and** a condition dependency > 0 | P3, P4 | 1 |
+| H3 | Injecting at the fine levels (encoder, decoder, skips) helps more at low SNR, where per-band information matters | P1, P2, P6, P7, per SNR range | 1 |
+| H4 | What the spectral branch *removed* (the mask Ŝ − log1p\|X\|) is more useful than the estimated clean spectrum | S2 × S3 | 2 |
+| H5 | The gain grows with the quality of CleanSpecNet, and the oracle (true clean spectrum) gives the ceiling | Q1, Q2, K3 | 2 |
+| H6 | A fusion that also depends on the CleanUNet content (concatenation, cross-attention) beats FiLM, which depends only on the condition | O1–O7 | 3 |
+| H7 | The benefit is larger when the waveform branch is weaker (training from scratch, E6 model) | Z1, Z2 | 5 |
+| H8 | The 64-channel front end of CleanSpecNet is an information bottleneck: widening it reduces the magnitude error, especially at high SNR | N1a, N1b | N |
+| H9 | Modelling frequency with shared weights (dual-path TF or sub-band) gives the spectral branch a quality jump with fewer parameters | N2, N3 | N |
+| H10 | A better stand-alone CleanSpecNet increases the hybrid's gain (monotonic relation between stand-alone PESQ and Δ over K0) | N-d, Q1, Q2 | N |
+| H11 | Training with longer sequences removes the error drift after 2 s | N7a | N |
 
 ---
 
-## 3. Protocolo curto (PC)
+## 3. Short protocol (PC)
 
-### 3.1 Ponto de partida
-- **Ramo de onda:** estágio A (`logs/stageA_cleanunet_mamba/checkpoints/best-epoch016-pesq2.755.ckpt`, PESQ de validação 2,755) ✔.
-- **Ramo espectral: B+**, o melhor dos 7 candidatos do D0 (seção 1.4), retreinado por 100 épocas (~20 min ◇). As configurações dele (modo de saída e compressão) valem para todas as variantes; ficam gravadas em `results/abl/bplus.json`.
-- **Fusão iniciada como identidade**, com a última camada zerada. No passo 0, toda variante reproduz o estágio A exatamente (verificado por teste unitário).
-- **`conditioning_type: none`:** sem `SpecUpsampler` e sem FiLM na forma de onda. A exceção são as variantes que usam o condicionamento original (F0 = K1).
+### 3.1 Starting point
+- **Waveform branch:** stage A (`logs/stageA_cleanunet_mamba/checkpoints/best-epoch016-pesq2.755.ckpt`, validation PESQ 2.755) ✔.
+- **Spectral branch: B+**, the best of the 7 D0 candidates (section 1.4), retrained for 100 epochs (~20 min ◇). Its settings (output mode and compression) apply to every variant; they are stored in `results/abl/bplus.json`.
+- **Fusion initialized as the identity**, with the last layer zeroed. At step 0, every variant reproduces stage A exactly (verified by a unit test).
+- **`conditioning_type: none`:** no `SpecUpsampler` and no FiLM on the waveform. The exception is the variants that use the original conditioning (F0 = K1).
 
-### 3.2 Etapas
+### 3.2 Stages
 
-| Etapa | O que treina | Duração | LR | Perda |
+| Stage | What trains | Length | LR | Loss |
 |---|---|---|---|---|
-| PC‑1: aquecimento da fusão | só a fusão (ramos congelados) | 1000 passos (~1,5 época) | 1e‑3, warmup de 5%, cosseno | onda (L1 + MR‑STFT) |
-| PC‑2: treino conjunto | tudo | 5 épocas (3375 passos) | fusão 1e‑4; ramos 2e‑5 (`lr_scale` 0,2); cosseno até 1% | híbrida: onda + 1,0 × L1 espectral do CleanSpecNet |
+| PC-1: fusion warm-up | only the fusion (branches frozen) | 1000 steps (~1.5 epochs) | 1e-3, 5% warm-up, cosine | waveform (L1 + MR-STFT) |
+| PC-2: joint training | everything | 5 epochs (3375 steps) | fusion 1e-4; branches 2e-5 (`lr_scale` 0.2); cosine down to 1% | hybrid: waveform + 1.0 × spectral L1 of CleanSpecNet |
 
-Batch 16, segmentos de 2 s e a augmentação de `base.yaml`.
+Batch 16, 2 s segments and the augmentation of `base.yaml`.
 
-**Custo por variante** ◇, sem o upsampler:
+**Cost per variant** ◇, without the upsampler:
 
-| Parte | Tempo |
+| Part | Time |
 |---|---|
-| PC‑1 | ~2 min |
-| PC‑2 | ~6 min |
-| Avaliações (normal e com a condição embaralhada) | ~2 min |
+| PC-1 | ~2 min |
+| PC-2 | ~6 min |
+| Evaluations (normal and with the shuffled condition) | ~2 min |
 | **Total** | **~10 min** |
 
-Com o upsampler original (só a referência F0), a variante leva ~45 min, ou ~15 min com o A0 do `IMPROVEMENTS_CLAUDE.md`.
+With the original upsampler (only the F0 reference), a variant takes ~45 min, or ~15 min with A0 from `IMPROVEMENTS_CLAUDE.md`.
 
-### 3.3 Controles
+### 3.3 Controls
 
-| ID | Controle | Pergunta |
+| ID | Control | Question |
 |---|---|---|
-| K0 | Só onda (estágio A) com o mesmo PC‑2: LR 2e‑5, 5 épocas, perda de onda. **3 sementes** | Quanto rende só o treino extra? Qual é o desvio‑padrão entre sementes (σ)? |
-| K1 = F0 | Híbrido atual (FiLM na forma de onda), com o PC completo | Onde fica o condicionamento atual no mesmo protocolo? |
-| K2 | Melhor fusão alimentada com o espectro **ruidoso** (CleanSpecNet desligado) | O ganho vem da limpeza feita pelo CleanSpecNet ou só de uma visão tempo‑frequência da entrada? |
-| K3 | Melhor fusão alimentada com o espectro **limpo verdadeiro** (oráculo, no treino e na avaliação) | Qual é o teto dessa forma de fusão? |
-| — | Condição de **outro arquivo** na avaliação (sem treino extra) | O modelo depende de fato da condição? |
+| K0 | Waveform-only (stage A) with the same PC-2: LR 2e-5, 5 epochs, waveform loss. **3 seeds** | How much does the extra training alone give? What is the standard deviation between seeds (σ)? |
+| K1 = F0 | Current hybrid (FiLM on the waveform), with the full PC | Where does the current conditioning stand under the same protocol? |
+| K2 | Best fusion fed with the **noisy** spectrum (CleanSpecNet off) | Does the gain come from the cleaning done by CleanSpecNet, or just from a time-frequency view of the input? |
+| K3 | Best fusion fed with the **true clean** spectrum (oracle, for training and evaluation) | What is the ceiling of this form of fusion? |
+| — | Condition of **another file** at evaluation (no extra training) | Does the model really depend on the condition? |
 
-### 3.4 Métricas e regra de decisão
-- **Métrica principal:** PESQ‑WB de validação (770 arquivos, falantes p226/p287, utterances inteiras), do checkpoint **final** do PC‑2.
-- **Atualização (2026‑10‑15): a métrica principal passa a ser o PESQ‑WB na val_unseen.**
-  - A val_unseen usa os mesmos 770 arquivos limpos, misturados com 5 ambientes do DEMAND que o VB‑DEMAND não usa: field, hallway, park, river e washing.
-  - A validação antiga fica como guarda.
-  - O motivo está na seção 1.5.
-  - O teste já foi usado duas vezes (Fases 6 e RT). Daqui em diante ele fica só para a confirmação final.
-- **Métricas de guarda:**
-  - SI‑SDR: não pode cair mais de 0,3 dB em relação ao K0;
+### 3.4 Metrics and decision rule
+- **Main metric:** validation PESQ-WB (770 files, speakers p226/p287, whole utterances) of the **final** PC-2 checkpoint.
+- **Update (2026-10-15): the main metric becomes PESQ-WB on val_unseen.**
+  - val_unseen uses the same 770 clean files, mixed with 5 DEMAND environments that VB-DEMAND does not use: field, hallway, park, river and washing.
+  - The old validation set stays as a guard.
+  - The reason is in section 1.5.
+  - The test set has already been used twice (Phases 6 and RT). From now on it is kept for the final confirmation only.
+- **Guard metrics:**
+  - SI-SDR: may not drop by more than 0.3 dB relative to K0;
   - STOI.
-- **Diagnósticos, registrados para toda variante:**
-  - **dependência** = PESQ(normal) − PESQ(com a condição de outro arquivo, cortada ou repetida até o comprimento certo);
-  - PESQ por SNR de entrada: 0, 5, 10 e 15 dB, os SNRs do conjunto de treino;
-  - parâmetros extras, ms por passo, memória de pico e lookahead.
-- **Limiar:** δ_min = max(0,02; 2σ), com σ medido no K0 (Fase 0).
-- **Promoção em dois passos:**
-  1. Roda 1 semente. Se Δ = PESQ − média(K0) ≥ δ_min **e** a dependência ≥ 0,02, roda a 2ª semente.
-  2. Promove se a média das duas sementes ≥ δ_min **e** o intervalo de 95% do bootstrap pareado por arquivo (contra o K0) excluir zero.
-- **Empate** (diferença < δ_min): fica a variante mais barata em parâmetros, tempo e lookahead.
-- **Comparações múltiplas:** com ~50 variantes avaliadas na mesma validação, o maior Δ obtido só por acaso fica perto de 2,5σ ◇. Por isso, nada entra no relatório final sem passar pela Fase 6.
+- **Diagnostics, recorded for every variant:**
+  - **dependency** = PESQ(normal) − PESQ(with the condition of another file, cropped or repeated to the right length);
+  - PESQ per input SNR: 0, 5, 10 and 15 dB, the SNRs of the training set;
+  - extra parameters, ms per step, peak memory and lookahead.
+- **Threshold:** δ_min = max(0.02, 2σ), with σ measured on K0 (Phase 0).
+- **Two-step promotion:**
+  1. Run 1 seed. If Δ = PESQ − mean(K0) ≥ δ_min **and** the dependency ≥ 0.02, run a 2nd seed.
+  2. Promote if the mean of the two seeds ≥ δ_min **and** the 95% interval of the per-file paired bootstrap (against K0) excludes zero.
+- **Tie** (difference < δ_min): keep the cheapest variant in parameters, time and lookahead.
+- **Multiple comparisons:** with ~50 variants evaluated on the same validation set, the largest Δ obtained by chance alone is around 2.5σ ◇. That is why nothing enters the final report without passing Phase 6.
 
 ---
 
-## 4. Espaço de design
+## 4. Design space
 
-**Pontos de injeção, nomeados pelo stride:**
+**Injection points, named by their stride:**
 
-| Nome | Onde fica |
+| Name | Where it is |
 |---|---|
-| `enc_s{2…256}` | saída de um bloco do encoder |
-| `skip_s*` | conexão de atalho (skip) |
-| `bott_pre` | depois de `tsfm_conv1`, antes do Mamba; é onde age o `bottleneck_hook` atual ⚑ |
-| `bott_post` | depois do Mamba, antes de `tsfm_conv2` |
-| `dec_s*` | entrada de um bloco do decoder, já somado o atalho |
-| `out` | saída; fusão tardia no domínio tempo‑frequência |
+| `enc_s{2…256}` | output of an encoder block |
+| `skip_s*` | skip connection |
+| `bott_pre` | after `tsfm_conv1`, before the Mamba layers; this is where the current `bottleneck_hook` acts ⚑ |
+| `bott_post` | after the Mamba layers, before `tsfm_conv2` |
+| `dec_s*` | input of a decoder block, after adding the skip |
+| `out` | output; late fusion in the time-frequency domain |
 
-| Eixo | Opções | Padrão (até ser decidido) |
+| Axis | Options | Default (until decided) |
 |---|---|---|
-| **Onde (P)** | entrada (atual); níveis finos do encoder; `bott_pre`; `bott_post`; decoder grosso ou fino; atalhos; `out` | decidido na Fase 1 |
-| **O quê (S)** | `spec_hidden` (512); Ŝ (513 bandas); máscara Ŝ − log1p\|X\|; concatenação; estimativa no tempo iSTFT(Ŝ, fase ruidosa). Controles: ruidoso, oráculo | `spec_hidden` |
-| **Como (O)** | operadores O1–O9 da tabela abaixo | O2 (FiLM limitado) |
-| **Gerador (G)** | só `Linear`; tronco causal (Conv k=3 → GELU → Conv 1×1, 256 canais) + uma cabeça por ponto; tronco maior | tronco de 256 canais + cabeças |
-| **Reamostragem (R)** | repetir o quadro; interpolação linear entre os quadros *j*−1 e *j* (não aumenta o lookahead); `ConvTranspose1d` aprendida | repetir |
-| **Alinhamento (L)** | deslocamento de −1, 0 ou +1 quadro; STFT `center` ou `causal` | 0, `center` |
-| **Treino (T)** | aquecimento de 0, 1000 ou 3000 passos; LR da fusão; gradiente no CleanSpecNet (stop‑gradient, peso λ_spec); inicialização | 1000 passos; LR 1e‑3 / 1e‑4; ponta a ponta com λ_spec = 1; só a última camada zerada |
+| **Where (P)** | input (current); fine encoder levels; `bott_pre`; `bott_post`; coarse or fine decoder; skips; `out` | decided in Phase 1 |
+| **What (S)** | `spec_hidden` (512); Ŝ (513 bands); mask Ŝ − log1p\|X\|; concatenation; time-domain estimate iSTFT(Ŝ, noisy phase). Controls: noisy, oracle | `spec_hidden` |
+| **How (O)** | operators O1–O9 in the table below | O2 (bounded FiLM) |
+| **Generator (G)** | `Linear` only; causal trunk (Conv k=3 → GELU → Conv 1×1, 256 channels) + one head per point; larger trunk | 256-channel trunk + heads |
+| **Resampling (R)** | repeat the frame; linear interpolation between frames *j*−1 and *j* (does not increase the lookahead); learned `ConvTranspose1d` | repeat |
+| **Alignment (L)** | shift of −1, 0 or +1 frame; STFT `center` or `causal` | 0, `center` |
+| **Training (T)** | warm-up of 0, 1000 or 3000 steps; fusion LR; gradient into CleanSpecNet (stop-gradient, weight λ_spec); initialization | 1000 steps; LR 1e-3 / 1e-4; end to end with λ_spec = 1; only the last layer zeroed |
 
-### 4.1 Operadores
+### 4.1 Operators
 
-Notação: *h* são as features do CleanUNet no ponto (B, C, T_ℓ); *c* é a condição reamostrada para T_ℓ; *g* é o gerador; Z(·) é uma camada com pesos zerados na inicialização.
+Notation: *h* are the CleanUNet features at the point (B, C, T_ℓ); *c* is the condition resampled to T_ℓ; *g* is the generator; Z(·) is a layer whose weights are zero at initialization.
 
-| ID | Operador | Fórmula | Começa como identidade? | Referência |
+| ID | Operator | Formula | Starts as the identity? | Reference |
 |---|---|---|---|---|
-| O0 | FiLM escalar na forma de onda (atual) | x' = (1+γ)·x + β, um γ e um β por amostra | sim (gerador todo zerado) | CleanUNet2 |
-| O1 | FiLM por canal | h' = (1+γ)⊙h + β, com [γ; β] = Z(g(c)) | sim | FiLM (Perez et al., 2018) |
-| O2 | FiLM limitado | h' = (1 + tanh γ)⊙h + β | sim | — |
-| O3 | adaLN‑Zero | h' = h + α⊙[(1+γ)⊙Norm(h) + β], com α, γ, β = Z(g(c)) | sim | DiT (Peebles & Xie, 2023) |
-| O4 | Soma com zero‑conv | h' = h + Z(g(c)) | sim | ControlNet (Zhang et al., 2023) |
-| O5 | Concatenação + MLP residual | h' = h + Z(MLP([h; g(c)])) | sim | — |
-| O6 | Atenção cruzada com porta, só na taxa de quadros | h' = h + tanh(a)·Attn(q = h, kv = c dos quadros j−W…j), a = 0 no início | sim | Flamingo (porta tanh); HT‑Demucs (atenção entre os ramos) |
-| O7 | Troca bidirecional entre as pilhas Mamba dos dois ramos | a cada camada: h_onda += Z(f(h_spec)) e h_spec += Z(f(h_onda)) | sim | Hybrid Demucs / HT‑Demucs |
-| O8 | Fusão tardia no domínio TF | ŷ' = iSTFT(M⊙STFT(ŷ)), com M = 1 + tanh(Z(rede([log\|Y\|, Ŝ, log\|X\|]))) | sim | — |
-| O9 | Porta nos atalhos | skip' = skip⊙(1 + tanh(Z(g(c)))) | sim | Attention U‑Net (Oktay et al., 2018) |
+| O0 | Scalar FiLM on the waveform (current) | x' = (1+γ)·x + β, one γ and one β per sample | yes (whole generator zeroed) | CleanUNet2 |
+| O1 | Per-channel FiLM | h' = (1+γ)⊙h + β, with [γ; β] = Z(g(c)) | yes | FiLM (Perez et al., 2018) |
+| O2 | Bounded FiLM | h' = (1 + tanh γ)⊙h + β | yes | — |
+| O3 | adaLN-Zero | h' = h + α⊙[(1+γ)⊙Norm(h) + β], with α, γ, β = Z(g(c)) | yes | DiT (Peebles & Xie, 2023) |
+| O4 | Addition with a zero conv | h' = h + Z(g(c)) | yes | ControlNet (Zhang et al., 2023) |
+| O5 | Concatenation + residual MLP | h' = h + Z(MLP([h; g(c)])) | yes | — |
+| O6 | Gated cross-attention, at the frame rate only | h' = h + tanh(a)·Attn(q = h, kv = c of frames j−W…j), a = 0 at the start | yes | Flamingo (tanh gate); HT-Demucs (attention between branches) |
+| O7 | Two-way exchange between the Mamba stacks of the two branches | at every layer: h_wave += Z(f(h_spec)) and h_spec += Z(f(h_wave)) | yes | Hybrid Demucs / HT-Demucs |
+| O8 | Late fusion in the TF domain | ŷ' = iSTFT(M⊙STFT(ŷ)), with M = 1 + tanh(Z(net([log\|Y\|, Ŝ, log\|X\|]))) | yes | — |
+| O9 | Gate on the skips | skip' = skip⊙(1 + tanh(Z(g(c)))) | yes | Attention U-Net (Oktay et al., 2018) |
 
-Diferenças que motivam a Fase 3:
-- **O1 e O2** modulam *h* só em função da condição.
-- **O5 e O6** combinam *h* e *c*, então a correção pode depender do que o CleanUNet já extraiu (H6).
-- **O7** também deixa o CleanSpecNet usar as features do ramo de onda.
+Differences that motivate Phase 3:
+- **O1 and O2** modulate *h* as a function of the condition only.
+- **O5 and O6** combine *h* and *c*, so the correction can depend on what CleanUNet has already extracted (H6).
+- **O7** also lets CleanSpecNet use the features of the waveform branch.
 
 ---
 
-## 5. Fases e experimentos
+## 5. Phases and experiments
 
-### Fase 0: infraestrutura, diagnósticos e piso de ruído (~1,7 h ◇)
+### Phase 0: infrastructure, diagnostics and noise floor (~1.7 h ◇)
 
-| ID | O quê | Custo | Para que serve |
+| ID | What | Cost | Purpose |
 |---|---|---|---|
-| D0 | 7 candidatos de CleanSpecNet, 30 épocas cada: saída {direta, residual, máscara} × compressão {log1p, pow 0,3}, mais máscara/pow com recortes de 4 s. Escolha pelo PESQ da magnitude estimada + fase ruidosa (validação inteira). O vencedor é retreinado por 100 épocas (B+) | ~1 h | Ramo espectral usado em todo o plano (seção 1.4) |
-| D1 | Qualidade do ramo espectral sozinho: iSTFT(expm1(Ŝ) · fase ruidosa) para B e B+. Teto: magnitude limpa com fase ruidosa | ~5 min, sem treino | Situa o CleanSpecNet entre o áudio ruidoso e o oráculo |
-| D2 | Complementaridade. (a) Erro de log‑magnitude por banda e por SNR para o ruidoso, Ŝ e \|STFT(ŷ_A)\|. (b) Teto "melhor dos dois em cada bin", com a fase de ŷ_A. (c) Mistura sem treino exp((1−w)·log\|Y_A\| + w·log\|Ŝ\|), w ∈ {0,25; 0,5} | ~10 min, sem treino | Se Ŝ não for melhor que a saída do ramo de onda em nenhuma região, a fusão tem pouco a acrescentar. Informa P8 |
-| D3 | Dependência dos híbridos já treinados (C2, DNS, do zero): avaliar com a condição embaralhada e com a fusão desligada | ~5 min | Testa H1 (esperado: ΔPESQ ≈ 0) |
-| K0 | Controle só onda no PC‑2, sementes 1, 2 e 3 | 3 × ~5 min | σ e δ_min |
-| K1 | F0 (híbrido atual) com o PC completo | ~45 min (~15 com A0) | Referência |
-| I0 | Sanidade: no passo 0, toda variante nova reproduz o estágio A | testes unitários | Garante a comparação justa |
+| D0 | 7 CleanSpecNet candidates, 30 epochs each: output {direct, residual, mask} × compression {log1p, pow 0.3}, plus mask/pow with 4 s crops. Selection by the PESQ of the estimated magnitude + noisy phase (whole validation set). The winner is retrained for 100 epochs (B+) | ~1 h | Spectral branch used throughout the plan (section 1.4) |
+| D1 | Quality of the spectral branch alone: iSTFT(expm1(Ŝ) · noisy phase) for B and B+. Ceiling: clean magnitude with noisy phase | ~5 min, no training | Places CleanSpecNet between the noisy audio and the oracle |
+| D2 | Complementarity. (a) Log-magnitude error per band and per SNR for the noisy audio, Ŝ and \|STFT(ŷ_A)\|. (b) "Best of the two in each bin" ceiling, with the phase of ŷ_A. (c) Training-free blend exp((1−w)·log\|Y_A\| + w·log\|Ŝ\|), w ∈ {0.25, 0.5} | ~10 min, no training | If Ŝ is not better than the waveform-branch output in any region, fusion has little to add. Informs P8 |
+| D3 | Dependency of the hybrids already trained (C2, DNS, scratch): evaluate with the shuffled condition and with the fusion turned off | ~5 min | Tests H1 (expected: ΔPESQ ≈ 0) |
+| K0 | Waveform-only control with PC-2, seeds 1, 2 and 3 | 3 × ~5 min | σ and δ_min |
+| K1 | F0 (current hybrid) with the full PC | ~45 min (~15 with A0) | Reference |
+| I0 | Sanity: at step 0, every new variant reproduces stage A | unit tests | Guarantees a fair comparison |
 
-### Fase 1: onde injetar (~2 h ◇)
+### Phase 1: where to inject (~2 h ◇)
 
-Fixos nesta fase: sinal `spec_hidden`, operador O2, tronco de 256 canais, repetição de quadros, deslocamento 0.
+Fixed in this phase: signal `spec_hidden`, operator O2, 256-channel trunk, frame repetition, shift 0.
 
-| ID | Pontos | Parâm. extras ◇ | Hipótese ou motivo |
+| ID | Points | Extra params ◇ | Hypothesis or reason |
 |---|---|---|---|
-| P1 | `enc_s2` | ~0,5M | O 1º conv do encoder é um banco de filtros aprendido: um ganho por canal ali equivale a um ganho por banda |
-| P2 | `enc_s2`, `s4`, `s8`, `s16` | ~1,0M | H3 |
-| P3 | `bott_pre` ⚑ (o `BottleneckFusion` atual, sem o FiLM na onda) | ~0,7M | H2; a variante mais barata |
-| P4 | `bott_post` | ~0,7M | A informação entra depois da modelagem temporal e vai direto ao decoder |
-| P5 | `dec_s256`, `s128`, `s64`, `s32` | ~2,0M | Decoder, níveis grossos |
-| P6 | `dec_s16`, `s8`, `s4`, `s2` | ~1,0M | H3; níveis que reconstroem os detalhes finos |
-| P7 | Porta nos 8 atalhos (O9) | ~1,5M | O ruído vaza pelos atalhos, que o gargalo não controla |
-| P8 | `out`: fusão tardia TF (O8) | ~1,5M | Usa a complementaridade medida no D2. A STFT/iSTFT eleva o lookahead total para ~112 ms (1790 amostras), então só vale offline |
-| P9 | Combinação dos 2 melhores entre P1 e P8 | — | Os ganhos se somam? |
+| P1 | `enc_s2` | ~0.5M | The 1st encoder conv is a learned filter bank: a per-channel gain there amounts to a per-band gain |
+| P2 | `enc_s2`, `s4`, `s8`, `s16` | ~1.0M | H3 |
+| P3 | `bott_pre` ⚑ (the current `BottleneckFusion`, without the waveform FiLM) | ~0.7M | H2; the cheapest variant |
+| P4 | `bott_post` | ~0.7M | The information enters after the temporal modelling and goes straight to the decoder |
+| P5 | `dec_s256`, `s128`, `s64`, `s32` | ~2.0M | Decoder, coarse levels |
+| P6 | `dec_s16`, `s8`, `s4`, `s2` | ~1.0M | H3; the levels that rebuild fine detail |
+| P7 | Gate on the 8 skips (O9) | ~1.5M | Noise leaks through the skips, which the bottleneck does not control |
+| P8 | `out`: late TF fusion (O8) | ~1.5M | Uses the complementarity measured in D2. The STFT/iSTFT raises the total lookahead to ~112 ms (1790 samples), so it is offline only |
+| P9 | Combination of the 2 best among P1 to P8 | — | Do the gains add up? |
 
-### Fase 2: o que injetar (~2 h ◇), no melhor ponto P\*
+### Phase 2: what to inject (~2 h ◇), at the best point P\*
 
-| ID | Condição | Pergunta |
+| ID | Condition | Question |
 |---|---|---|
-| S1 | `spec_hidden` (vencedora da Fase 1) | — |
-| S2 | Ŝ (513 bandas, com projeção aprendida) | Features internas ou saída do CleanSpecNet? |
-| S3 | Máscara m = Ŝ − log1p\|X\| | H4 |
-| S4 | [`spec_hidden`; m] | As duas se complementam? |
-| S5 | Estimativa no tempo, iSTFT(magnitude do CleanSpecNet · e^{j∠X}), injetada no 1º nível do encoder por uma conv strided própria com saída zerada. Não é um 2º canal de `encoder.0.0`, para poder treinar no PC‑1 com o CleanUNet congelado | Um sinal físico, na taxa de amostras, funciona melhor? A iSTFT eleva o lookahead total para ~112 ms |
-| K2 | log1p\|X\| (ruidoso, CleanSpecNet desligado) | Controle: só a visão tempo‑frequência |
-| K3 | log1p\|S\| limpo (oráculo), mesma projeção de S2 | Teto (H5) |
-| Q1 | S1 com o CleanSpecNet B (10 épocas) no lugar do B+ | Ganho em função da qualidade do ramo espectral (H5) |
-| Q2 | S1 com o CleanSpecNet bidirecional (`cleanunet2_mamba_e8_bidir` ⚑, treinado como o B+) | Teto prático offline; +~20 min para treinar o ramo |
+| S1 | `spec_hidden` (winner of Phase 1) | — |
+| S2 | Ŝ (513 bands, with a learned projection) | Internal features or the output of CleanSpecNet? |
+| S3 | Mask m = Ŝ − log1p\|X\| | H4 |
+| S4 | [`spec_hidden`; m] | Do the two complement each other? |
+| S5 | Time-domain estimate, iSTFT(CleanSpecNet magnitude · e^{j∠X}), injected at the 1st encoder level through its own strided conv with a zeroed output. It is not a 2nd channel of `encoder.0.0`, so that it can train in PC-1 with CleanUNet frozen | Does a physical signal at the sample rate work better? The iSTFT raises the total lookahead to ~112 ms |
+| K2 | log1p\|X\| (noisy, CleanSpecNet off) | Control: just the time-frequency view |
+| K3 | Clean log1p\|S\| (oracle), same projection as S2 | Ceiling (H5) |
+| Q1 | S1 with the CleanSpecNet of stage B (10 epochs) instead of B+ | Gain as a function of the spectral-branch quality (H5) |
+| Q2 | S1 with the bidirectional CleanSpecNet (`cleanunet2_mamba_e8_bidir` ⚑, trained like B+) | Practical offline ceiling; +~20 min to train the branch |
 
-Se a trilha N (seção 6) rodar antes, a Fase 2 usa o B++ no lugar do B+, e o Q1 e o Q2 ficam incorporados ao N‑d.
+If track N (section 6) runs first, Phase 2 uses B++ instead of B+, and Q1 and Q2 are folded into N-d.
 
-### Fase 3: como combinar (~2,5 h ◇), com P\* e S\*
+### Phase 3: how to combine (~2.5 h ◇), with P\* and S\*
 
-| ID | Variante | Condição para rodar |
+| ID | Variant | Condition to run |
 |---|---|---|
-| O1 | FiLM por canal, sem limite | — |
-| O3 | adaLN‑Zero | — |
-| O4 | Soma com zero‑conv | — |
-| O5 | Concatenação + MLP residual | — |
-| O6 | Atenção cruzada causal com porta, janela W = 8 quadros (128 ms) | P\* na taxa de quadros |
-| O7 | Troca bidirecional entre as pilhas Mamba (exploratória; ~150 linhas de código) | P\* no gargalo |
-| G1 | Gerador só com `Linear` | — |
-| G3 | Tronco de 512 canais, k = 5 | — |
-| R2 | Interpolação linear entre os quadros *j*−1 e *j* | P\* com níveis finos (risco de modulação audível a 62,5 Hz) |
-| R3 | `ConvTranspose1d` depthwise aprendida | P\* com níveis finos |
-| L−1, L+1 | Deslocamento de −1 ou +1 quadro (+1 acrescenta ~8 ms de lookahead) | P\* na taxa de quadros |
-| Lc | STFT `causal` | Mede o custo de deixar o ramo espectral pronto para streaming |
+| O1 | Per-channel FiLM, unbounded | — |
+| O3 | adaLN-Zero | — |
+| O4 | Addition with a zero conv | — |
+| O5 | Concatenation + residual MLP | — |
+| O6 | Gated causal cross-attention, window W = 8 frames (128 ms) | P\* at the frame rate |
+| O7 | Two-way exchange between the Mamba stacks (exploratory; ~150 lines of code) | P\* in the bottleneck |
+| G1 | `Linear`-only generator | — |
+| G3 | 512-channel trunk, k = 5 | — |
+| R2 | Linear interpolation between frames *j*−1 and *j* | P\* with fine levels (risk of audible modulation at 62.5 Hz) |
+| R3 | Learned depthwise `ConvTranspose1d` | P\* with fine levels |
+| L−1, L+1 | Shift of −1 or +1 frame (+1 adds ~8 ms of lookahead) | P\* at the frame rate |
+| Lc | `causal` STFT | Measures the cost of making the spectral branch streaming-ready |
 
-### Fase 4: como treinar a fusão (~1,3 h ◇)
+### Phase 4: how to train the fusion (~1.3 h ◇)
 
-| ID | Variante | Pergunta |
+| ID | Variant | Question |
 |---|---|---|
-| T1 | Sem aquecimento (direto ao PC‑2) | O PC‑1 é necessário? |
-| T2 | Aquecimento de 3000 passos | Mais aquecimento ajuda? |
-| T3 | LR da fusão de 5e‑4 no PC‑2 | A fusão aprende devagar demais? |
-| T4 | Stop‑gradient na condição: o CleanSpecNet treina só pela perda espectral | O gradiente da onda ajuda ou atrapalha o CleanSpecNet? |
-| T5 | λ_spec = 0: o CleanSpecNet vira um extrator de features livre | A perda espectral é necessária? |
-| T6 | λ_spec = 0,3 | Ponto intermediário |
-| T7 | Última camada com inicialização aleatória pequena (N(0; 10⁻³)) em vez de zero (`zero_init: small`) | O gradiente imediato no tronco acelera o aprendizado da fusão? |
-| T8 | Currículo de oráculo no PC‑1: usa a condição limpa com probabilidade p, de 0,5 a 0 (exploratória) | Ensina a fusão a ler a condição antes de a condição real ficar ruidosa |
+| T1 | No warm-up (straight to PC-2) | Is PC-1 needed? |
+| T2 | 3000-step warm-up | Does more warm-up help? |
+| T3 | Fusion LR of 5e-4 in PC-2 | Does the fusion learn too slowly? |
+| T4 | Stop-gradient on the condition: CleanSpecNet trains only through the spectral loss | Does the waveform gradient help or hurt CleanSpecNet? |
+| T5 | λ_spec = 0: CleanSpecNet becomes a free feature extractor | Is the spectral loss needed? |
+| T6 | λ_spec = 0.3 | Intermediate point |
+| T7 | Last layer with a small random initialization (N(0, 10⁻³)) instead of zero (`zero_init: small`) | Does an immediate gradient into the trunk speed up learning of the fusion? |
+| T8 | Oracle curriculum in PC-1: use the clean condition with probability p, from 0.5 to 0 (exploratory) | Teaches the fusion to read the condition before the real condition gets noisy |
 
-### Fase 5: regimes com ramo de onda mais fraco (~2 h ◇)
+### Phase 5: regimes with a weaker waveform branch (~2 h ◇)
 
-| ID | Experimento | Custo ◇ | Observação |
+| ID | Experiment | Cost ◇ | Note |
 |---|---|---|---|
-| Z1 | Do zero, 30 épocas: melhor fusão × só onda (✔ val 2,277 / teste 2,668) × híbrido F0 (✔ val 2,284 / teste 2,650) | ~40 min (1,2 min/época) | Treino longo de propósito, porque rankings no início de um treino do zero enganam (1.5) |
-| Z2 | E6 (27,2M parâmetros, lookahead de 12 ms): estágio A‑E6 partindo do DNS E6 (20 épocas), depois PC com a melhor fusão × PC‑controle | ~40 min | Exige STFT `causal` (lookahead ≤ 16 ms). Com a STFT centrada, o lookahead passaria de 12 para ~40 ms |
-| Z3 | (Opcional) modelo leve `cleanunet_mamba_light` do zero, com e sem fusão | ~30 min | Verificar antes a compatibilidade entre o hop e o stride total |
+| Z1 | From scratch, 30 epochs: best fusion × waveform-only (✔ val 2.277 / test 2.668) × F0 hybrid (✔ val 2.284 / test 2.650) | ~40 min (1.2 min/epoch) | Deliberately long training, because rankings early in a training from scratch are misleading (1.5) |
+| Z2 | E6 (27.2M parameters, 12 ms lookahead): stage A-E6 from the DNS E6 (20 epochs), then PC with the best fusion × PC control | ~40 min | Needs the `causal` STFT (lookahead ≤ 16 ms). With the centred STFT, the lookahead would go from 12 to ~40 ms |
+| Z3 | (Optional) lightweight model `cleanunet_mamba_light` from scratch, with and without fusion | ~30 min | Check the compatibility between the hop and the total stride first |
 
-### Fase 6: confirmação (~3 h ◇)
+### Phase 6: confirmation (~3 h ◇)
 
-- **Quem:** as 2 melhores configurações e o K0.
-- **Protocolo completo:** estágio C1 (2000 passos) + estágio C2 (10 épocas) a partir de A + B+, com **3 sementes** cada.
-- **Teste** (824 arquivos), uma única vez:
-  - média ± desvio entre sementes;
-  - Wilcoxon pareado por arquivo, com correção de Holm;
-  - resultados por faixa de SNR;
-  - dependência da condição;
-  - parâmetros, RTF e lookahead.
-- **Se a variante for causal:** registrar o lookahead total. O streaming do híbrido ainda não existe (E3 do `IMPROVEMENTS_CLAUDE.md`).
+- **Who:** the 2 best configurations and K0.
+- **Full protocol:** stage C1 (2000 steps) + stage C2 (10 epochs) from A + B+, with **3 seeds** each.
+- **Test set** (824 files), only once:
+  - mean ± standard deviation between seeds;
+  - per-file paired Wilcoxon test, with Holm correction;
+  - results per SNR range;
+  - condition dependency;
+  - parameters, RTF and lookahead.
+- **If the variant is causal:** record the total lookahead. Streaming of the hybrid does not exist yet (E3 of `IMPROVEMENTS_CLAUDE.md`).
 
-### Fases acrescentadas durante a execução (C, U, R e RT) ✔
+### Phases added during execution (C, U, R and RT) ✔
 
-| Fase | O quê | Por quê |
+| Phase | What | Why |
 |---|---|---|
-| C | Combinações offline sobre o P3, no protocolo curto: C1 = P3 + S5, C2 = P3 + P8, C3 = P3 + S5 + P8 | S5 e P8 empataram com o P3 (Fase 2 e N‑x). Os ganhos se somam? |
-| 6 com `--finalists auto` | P3 + B++ e o melhor offline da Fase C (C3), com 3 sementes, o protocolo completo e o teste | Confirmação |
-| U | Toda execução com resultado na validação é reavaliada, sem treino, na **val_unseen** (`scripts/make_val_unseen.py`): os falantes p226/p287 misturados com os 5 ambientes do DEMAND que o VB‑DEMAND não usa, nos SNRs do teste | Os ganhos da validação não apareceram no teste |
-| R | Ramo espectral treinado com **ruído externo**, depois o K0ext e os híbridos RX com o mesmo ruído (detalhes abaixo) | Um ramo espectral que generaliza faz a fusão generalizar? |
-| RT | RX_S5P8 (S5 + P8 sem o P3) no protocolo curto; depois o protocolo completo da Fase 6, com 3 sementes, para K0extfull, RX_P3 e RX_C3, avaliados no teste, na val e na val_unseen | Confirmação da Fase R no teste |
+| C | Offline combinations on top of P3, in the short protocol: C1 = P3 + S5, C2 = P3 + P8, C3 = P3 + S5 + P8 | S5 and P8 tied with P3 (Phase 2 and N-x). Do the gains add up? |
+| 6 with `--finalists auto` | P3 + B++ and the best offline configuration of Phase C (C3), with 3 seeds, the full protocol and the test set | Confirmation |
+| U | Every run with a validation result is re-evaluated, without training, on **val_unseen** (`scripts/make_val_unseen.py`): speakers p226/p287 mixed with the 5 DEMAND environments VB-DEMAND does not use, at the test SNRs | The validation gains did not show up on the test set |
+| R | Spectral branch trained with **external noise**, then K0ext and the RX hybrids with the same noise (details below) | Does a spectral branch that generalizes make the fusion generalize? |
+| RT | RX_S5P8 (S5 + P8 without P3) in the short protocol; then the full protocol of Phase 6, with 3 seeds, for K0extfull, RX_P3 and RX_C3, evaluated on test, val and val_unseen | Confirmation of Phase R on the test set |
 
-**Ruído externo (`noise_bank.py`, opção `data.ext_noise`):**
-- Com probabilidade p, o ruído do recorte é trocado por um trecho do MUSAN (CC BY 4.0).
-- O SNR é sorteado entre −5 e 20 dB, com o nível de fala medido pela P.56.
-- O trecho vem de três fontes, com pesos 0,6 / 0,25 / 0,15:
-  - `noise`: 6,2 h;
-  - babble de 3 a 7 falantes, montado a partir de `speech` (60 h);
+**External noise (`noise_bank.py`, option `data.ext_noise`):**
+- With probability p, the noise of the crop is replaced by an excerpt from MUSAN (CC BY 4.0).
+- The SNR is drawn between −5 and 20 dB, with the speech level measured per P.56.
+- The excerpt comes from three sources, with weights 0.6 / 0.25 / 0.15:
+  - `noise`: 6.2 h;
+  - babble of 3 to 7 talkers, built from `speech` (60 h);
   - `music`: 43 h.
-- Os ambientes do DEMAND ficam de fora: tanto os 5 do teste quanto os 5 da val_unseen.
+- The DEMAND environments are left out: both the 5 of the test set and the 5 of val_unseen.
 
-**Fase R, passo a passo:**
-1. Treina dois ramos espectrais, com p = 0,5 e p = 0,8, e escolhe pela média do PESQ isolado na val e na val_unseen.
-2. Retreina o vencedor por 100 épocas. Esse é o **Bext**.
-3. Treina o K0ext: o K0 com o mesmo ruído, 3 sementes.
-4. Treina os híbridos RX_P3, RX_S5 e RX_C3, com o Bext e o mesmo ruído.
-5. Treina o RX_P3vb: com o Bext, mas só com os dados do VB‑DEMAND.
+**Phase R, step by step:**
+1. Train two spectral branches, with p = 0.5 and p = 0.8, and pick by the mean stand-alone PESQ on val and val_unseen.
+2. Retrain the winner for 100 epochs. This is **Bext**.
+3. Train K0ext: K0 with the same noise, 3 seeds.
+4. Train the hybrids RX_P3, RX_S5 and RX_C3, with Bext and the same noise.
+5. Train RX_P3vb: with Bext, but only with the VB-DEMAND data.
 
 ---
 
-## 6. Trilha N: arquitetura do CleanSpecNet
+## 6. Track N: CleanSpecNet architecture
 
-O D1 (seção 1.4) mostrou que a fusão não tem o que transmitir enquanto o CleanSpecNet não limpar. Esta trilha melhora o ramo espectral **em si**. Cada variante é medida primeiro sozinha (treino de ~10 min e avaliação de ~2 min) e só as melhores entram no híbrido.
+D1 (section 1.4) showed that the fusion has nothing to pass on as long as CleanSpecNet does not clean. This track improves the spectral branch **itself**. Each variant is first measured alone (~10 min of training and ~2 min of evaluation), and only the best ones go into the hybrid.
 
-**Estado em 2026‑10‑13:** N0–N9 implementados e testados (`tests/test_specnet.py`, 28 testes). O N10 não foi implementado, porque depende de baixar os dados do DNS. A trilha roda automaticamente com `scripts/run_ablation.py --phases N Nd` (seção 6.5).
+**Status on 2026-10-13:** N0–N9 implemented and tested (`tests/test_specnet.py`, 28 tests). N10 was not implemented, because it depends on downloading the DNS data. The track runs automatically with `scripts/run_ablation.py --phases N Nd` (section 6.5).
 
-**Atualização em 2026‑10‑15:**
-- A trilha foi executada em 13/10, e os resultados estão na seção 12.2. O B++ é o N1b com 100 épocas.
-- O ramo espectral com ruído externo (Bext, Fase R) usa a mesma arquitetura.
-- O N10 continua sem implementação. O ruído externo veio do MUSAN, não do DNS.
+**Update on 2026-10-15:**
+- The track ran on 10/13, and the results are in section 12.2. B++ is N1b with 100 epochs.
+- The spectral branch with external noise (Bext, Phase R) uses the same architecture.
+- N10 is still not implemented. The external noise came from MUSAN, not from DNS.
 
-### 6.1 Diagnóstico da arquitetura atual ✔
+### 6.1 Diagnosis of the current architecture ✔
 
 ```
 compressed |X| (513 x T)
@@ -466,141 +466,141 @@ compressed |X| (513 x T)
   = 11.2M parameters (Mamba version)
 ```
 
-| Problema | Evidência | Consequência |
+| Problem | Evidence | Consequence |
 |---|---|---|
-| **Gargalo de 64 canais antes da modelagem temporal.** Cada quadro de 513 bandas vira 64 números já no 1º bloco; o backbone de 512 dimensões recebe uma projeção de posto ≤ 64 | código ✔ | A estrutura harmônica fina não passa: com 15,6 Hz por banda, os harmônicos de uma voz com F0 de 100–300 Hz ficam a cada ~6–20 bandas. A saída tende a um envelope suave |
-| **Frequência tratada como canais.** Não há pesos compartilhados ao longo da frequência: um padrão (harmônico, formante) precisa ser aprendido em cada posição separadamente | código ✔ | Pouca eficiência de dados, num corpus de só 9,4 h |
-| **82% dos parâmetros no backbone**, que só recebe a projeção de 64 dimensões | contagem ✔ | Capacidade mal distribuída |
-| **Saída direta** e **compressão log1p quase linear** | seção 1.4 ✔ | Tratados pelo D0 (modos `residual`/`mask`, compressão `pow`) |
-| **Só magnitude**, sem fase na entrada nem na saída | código ✔ | O ramo não gera um sinal completo sozinho; a fase ruidosa limita o S5 e o P8 |
-| **Deriva em sequências longas** (variante com máscara, 3 épocas) | seção 1.4 ✔ | O erro cresce depois de 2 s, a duração dos recortes de treino |
-| **Janela de 64 ms** (n_fft 1024) | configuração ✔ | Boa resolução em frequência, mas espalha transientes no tempo (pré‑eco) |
+| **64-channel bottleneck before the temporal modelling.** Each 513-band frame becomes 64 numbers in the 1st block; the 512-dimensional backbone receives a projection of rank ≤ 64 | code ✔ | The fine harmonic structure does not get through: at 15.6 Hz per band, the harmonics of a voice with F0 of 100–300 Hz are every ~6–20 bands. The output tends to a smooth envelope |
+| **Frequency treated as channels.** There are no weights shared along frequency: a pattern (harmonic, formant) has to be learned at each position separately | code ✔ | Poor data efficiency, on a corpus of only 9.4 h |
+| **82% of the parameters in the backbone**, which only receives the 64-dimensional projection | count ✔ | Badly distributed capacity |
+| **Direct output** and **almost linear log1p compression** | section 1.4 ✔ | Handled by D0 (`residual`/`mask` modes, `pow` compression) |
+| **Magnitude only**, no phase at the input or the output | code ✔ | The branch cannot produce a complete signal on its own; the noisy phase limits S5 and P8 |
+| **Drift on long sequences** (mask variant, 3 epochs) | section 1.4 ✔ | The error grows after 2 s, the length of the training crops |
+| **64 ms window** (n_fft 1024) | configuration ✔ | Good frequency resolution, but it smears transients in time (pre-echo) |
 
-**Primeiro resultado do D0** (30 arquivos de validação). É o mesmo CleanSpecNet, com LR 5e‑4 e 30 épocas em vez de 1e‑4 e 10:
+**First result of D0** (30 validation files). It is the same CleanSpecNet, with LR 5e-4 and 30 epochs instead of 1e-4 and 10:
 
-| Sistema | Erro de magnitude | PESQ | STOI | SI‑SDR |
+| System | Magnitude error | PESQ | STOI | SI-SDR |
 |---|---|---|---|---|
-| Áudio ruidoso | 0,137 | 1,57 | 0,858 | 6,87 |
-| CleanSpecNet B antigo + fase ruidosa | 0,117 | 1,14 | 0,674 | −3,13 |
-| D0 `direct_log1p` + fase ruidosa | 0,093 | 1,79 | 0,826 | 6,15 |
-| Ramo de onda (estágio A) | 0,047 | 2,84 | 0,928 | 17,71 |
-| Magnitude limpa + fase ruidosa (teto) | 0 | 3,31 | 0,974 | 18,93 |
+| Noisy audio | 0.137 | 1.57 | 0.858 | 6.87 |
+| Old CleanSpecNet B + noisy phase | 0.117 | 1.14 | 0.674 | −3.13 |
+| D0 `direct_log1p` + noisy phase | 0.093 | 1.79 | 0.826 | 6.15 |
+| Waveform branch (stage A) | 0.047 | 2.84 | 0.928 | 17.71 |
+| Clean magnitude + noisy phase (ceiling) | 0 | 3.31 | 0.974 | 18.93 |
 
-Mais treino ajuda, mas o resultado continua perto do áudio ruidoso, com STOI e SI‑SDR até abaixo dele. O problema é estrutural, não só de otimização.
+More training helps, but the result stays close to the noisy audio, with STOI and SI-SDR even below it. The problem is structural, not just optimization.
 
-### 6.2 Propostas
+### 6.2 Proposals
 
-| ID | Proposta | Mudança | Hipótese | Implementação | Treino ◇ |
+| ID | Proposal | Change | Hypothesis | Implementation | Training ◇ |
 |---|---|---|---|---|---|
-| N0 | Modo de saída e compressão | `direct`/`residual`/`mask` × `log1p`/`pow` | Atalho da entrada + compressão eficaz | ✔ feito (D0, em execução) | ~10 min por candidato |
-| N1a | Front‑end mais largo | `conv_hidden_dim` 64 → 256 e `num_conv_layers` 5 → 2 | H8 | ⚑ só configuração | ~10 min |
-| N1b | Codificador por quadro | Trocar os blocos conv por `Linear(513 → 512)` + conv causal depthwise no tempo | H8, versão mais simples | ✔ `frontend: linear` | ~10 min |
-| N2 | **Dual‑path tempo‑frequência com Mamba** | Encoder 2D (B, C, F, T) com redução de 4× em frequência; 4 blocos com Mamba **causal no tempo** (por banda) e Mamba **bidirecional na frequência** (por quadro, o que não fere a causalidade); decoder 2D com atalhos do encoder e máscara limitada. 16 canais na resolução cheia e 64 nos níveis reduzidos | H9; 0,98M parâmetros ✔ | ✔ `cleanunet/tf_mamba.py` | ~2 min/época ✔ (~60 min) |
-| N3 | Banda cheia + sub‑banda | Modelo atual (com N1) + um modelo pequeno, compartilhado entre bandas, que vê a banda *f* ± *k* e a saída da banda cheia; a saída é uma correção da estimativa de banda cheia, zerada no início | H9, alternativa mais leve | ✔ `cleanunet/subband.py` | ~1 min/época ✔ (~30 min) |
-| N4 | Saída com fase | Decoder de magnitude (máscara) + decoder de fase (atan2 de duas saídas). Perdas: magnitude, espectro complexo, fase anti‑wrapping (instantânea, atraso de grupo e frequência instantânea, ponderadas pela magnitude limpa) e consistência | O ramo passa a gerar um sinal completo; o S5 passa a usar a fase prevista | ✔ `predict_phase: true` + `loss.spec_terms` | — |
-| N5 | Entrada com fase | [\|X\|^0,3, cos∠X, sin∠X] | A fase ruidosa carrega pistas temporais (atraso de grupo, frequência instantânea) | ✔ `input_features: mag_phase`. No modelo 1‑D, a 1ª conv passa a ter 3 × 513 canais: 19,4M parâmetros em vez de 11,2M | — |
-| N6a | Janela de 32 ms | n_fft = win = 512 e hop 256 (257 bandas): continua 1 quadro por token | Menos pré‑eco e menos bandas (mais barato). O quadro passa a olhar só 384 amostras à frente, em vez de 640 | ⚑ só configuração | ~8 min |
-| N6b | Hop de 128 | n_fft 512 e hop 128; a fusão agrega 2 quadros por token | Melhor resolução temporal no ramo espectral | ✔ média dos quadros dentro de cada posição (`fusion.py`) | ~15 min |
-| N7a | Sequências longas | Recortes de 6 s formados por 3 utterances concatenadas (crossfade de 10 ms); 10 épocas com batch 6, ≈ o mesmo volume de áudio de 30 épocas de recortes de 2 s | H11 | ✔ `data.concat_utterances` | ~15 min |
-| N7b | Normalização causal da entrada | Divide a magnitude pela média acumulada no tempo (média em frequência), como no FullSubNet | Estatísticas estáveis ao longo do tempo | ✔ `input_norm: cumulative` | ~10 min |
-| N8a | Perda no tempo | L1 + MR‑STFT de iSTFT(\|Ŝ\|·e^{j∠X}) contra o sinal limpo (peso 0,2), somadas ao L1 espectral | Otimiza diretamente o que o D1 mede | ✔ `loss.spec_terms: {l1: 1, wave: 0.2}` | ~12 min |
-| N8b | Perdas complexa e de consistência | Junto com o N4: `{l1: 1, phase: 0.3, complex: 0.1, consistency: 0.1}` (+ `wave: 0.2` se o N8a ajudar) | — | ✔ | — |
-| N9 | Escala | Dois pontos por arquitetura: 1‑D (8 camadas; d = 256), TF (6 blocos; 96 canais), sub‑banda (3 camadas; d = 64) | Redistribuir a capacidade depois de N1/N2 | ✔ `--with_nc` | 2 × 10–60 min |
-| N10 | Mais dados (opcional) | Pré‑treinar o CleanSpecNet no DNS Challenge, de onde já veio o ramo de onda | A assimetria de dados entre os ramos (centenas de horas × 9,4 h) limita o espectral | download grande ◇ | horas |
+| N0 | Output mode and compression | `direct`/`residual`/`mask` × `log1p`/`pow` | Input shortcut + effective compression | ✔ done (D0, running) | ~10 min per candidate |
+| N1a | Wider front end | `conv_hidden_dim` 64 → 256 and `num_conv_layers` 5 → 2 | H8 | ⚑ configuration only | ~10 min |
+| N1b | Per-frame encoder | Replace the conv blocks with `Linear(513 → 512)` + a causal depthwise conv over time | H8, simpler version | ✔ `frontend: linear` | ~10 min |
+| N2 | **Dual-path time-frequency Mamba** | 2-D encoder (B, C, F, T) with a 4× reduction in frequency; 4 blocks with Mamba **causal in time** (per band) and Mamba **bidirectional in frequency** (per frame, which does not break causality); 2-D decoder with skips from the encoder and a bounded mask. 16 channels at full resolution and 64 at the reduced levels | H9; 0.98M parameters ✔ | ✔ `cleanunet/tf_mamba.py` | ~2 min/epoch ✔ (~60 min) |
+| N3 | Full band + sub-band | Current model (with N1) + a small model shared across bands, which sees band *f* ± *k* and the full-band output; the output is a correction of the full-band estimate, zero at the start | H9, lighter alternative | ✔ `cleanunet/subband.py` | ~1 min/epoch ✔ (~30 min) |
+| N4 | Output with phase | Magnitude decoder (mask) + phase decoder (atan2 of two outputs). Losses: magnitude, complex spectrum, anti-wrapping phase (instantaneous, group delay and instantaneous frequency, weighted by the clean magnitude) and consistency | The branch produces a complete signal; S5 uses the predicted phase | ✔ `predict_phase: true` + `loss.spec_terms` | — |
+| N5 | Input with phase | [\|X\|^0.3, cos∠X, sin∠X] | The noisy phase carries temporal cues (group delay, instantaneous frequency) | ✔ `input_features: mag_phase`. In the 1-D model, the 1st conv gets 3 × 513 channels: 19.4M parameters instead of 11.2M | — |
+| N6a | 32 ms window | n_fft = win = 512 and hop 256 (257 bands): still 1 frame per token | Less pre-echo and fewer bands (cheaper). The frame looks only 384 samples ahead, instead of 640 | ⚑ configuration only | ~8 min |
+| N6b | Hop of 128 | n_fft 512 and hop 128; the fusion aggregates 2 frames per token | Better time resolution in the spectral branch | ✔ mean of the frames within each position (`fusion.py`) | ~15 min |
+| N7a | Long sequences | 6 s crops made of 3 concatenated utterances (10 ms crossfade); 10 epochs with batch 6, ≈ the same amount of audio as 30 epochs of 2 s crops | H11 | ✔ `data.concat_utterances` | ~15 min |
+| N7b | Causal input normalization | Divide the magnitude by its running mean over time (mean over frequency), as in FullSubNet | Statistics stable over time | ✔ `input_norm: cumulative` | ~10 min |
+| N8a | Time-domain loss | L1 + MR-STFT of iSTFT(\|Ŝ\|·e^{j∠X}) against the clean signal (weight 0.2), added to the spectral L1 | Directly optimizes what D1 measures | ✔ `loss.spec_terms: {l1: 1, wave: 0.2}` | ~12 min |
+| N8b | Complex and consistency losses | Together with N4: `{l1: 1, phase: 0.3, complex: 0.1, consistency: 0.1}` (+ `wave: 0.2` if N8a helps) | — | ✔ | — |
+| N9 | Scale | Two points per architecture: 1-D (8 layers; d = 256), TF (6 blocks; 96 channels), sub-band (3 layers; d = 64) | Redistribute capacity after N1/N2 | ✔ `--with_nc` | 2 × 10–60 min |
+| N10 | More data (optional) | Pretrain CleanSpecNet on the DNS Challenge, where the waveform branch already came from | The data asymmetry between the branches (hundreds of hours × 9.4 h) limits the spectral branch | large download ◇ | hours |
 
-Referências para N2–N5: SEMamba (Chao et al., SLT 2024), MP‑SENet (Lu et al., Interspeech 2023), FullSubNet (Hao et al., ICASSP 2021), DPCRN (Le et al., Interspeech 2021) e TF‑GridNet (Wang et al., 2023).
+References for N2–N5: SEMamba (Chao et al., SLT 2024), MP-SENet (Lu et al., Interspeech 2023), FullSubNet (Hao et al., ICASSP 2021), DPCRN (Le et al., Interspeech 2021) and TF-GridNet (Wang et al., 2023).
 
-**Notas de desenho:**
-- **Causalidade.** No N2 e no N3, a frequência pode ser bidirecional, porque só usa o quadro atual. O tempo continua causal, então o ramo segue compatível com streaming. O teste de causalidade (perturbar quadros futuros e conferir os passados) vale para todas as variantes.
-- **Interface com a fusão.** Uma variante 2D (N2) precisa de um vetor por quadro para o `spec_hidden`. Proposta ◇: média em ~16 sub‑bandas e projeção de C·16 para 512. Os sinais `spec` e `mask` funcionam sem mudança.
-- **Alinhamento.** O N6a mantém hop 256, ou seja, 1 quadro por token. O N6b exige agregar quadros na fusão.
+**Design notes:**
+- **Causality.** In N2 and N3, frequency can be bidirectional, because it only uses the current frame. Time stays causal, so the branch remains streaming-compatible. The causality test (perturb future frames and check the past ones) applies to every variant.
+- **Interface with the fusion.** A 2-D variant (N2) needs one vector per frame for `spec_hidden`. Proposal ◇: mean over ~16 sub-bands and a projection from C·16 to 512. The `spec` and `mask` signals work unchanged.
+- **Alignment.** N6a keeps hop 256, i.e. 1 frame per token. N6b requires aggregating frames in the fusion.
 
-### 6.3 Protocolo da trilha (PN)
+### 6.3 Track protocol (PN)
 
-1. **Treino isolado** do CleanSpecNet, como no estágio B: 30 épocas, LR 5e‑4 com cosseno, perda espectral (mais os termos do N8 quando for o caso) e as configurações de saída e compressão do B+.
-2. **Avaliação isolada** nos 770 arquivos de validação (~2 min), com `scripts/diagnose_spec_branch.py`:
-   - PESQ, STOI e SI‑SDR da magnitude estimada com a fase ruidosa (no N4, também com a fase prevista);
-   - erro de magnitude por banda e por faixa de SNR;
-   - **deriva**: erro depois de 4 s dividido pelo erro nos primeiros 2 s, nos arquivos com mais de 4 s;
-   - **complementaridade** com o estágio A: fração dos bins, ponderada pela energia, em que Ŝ fica mais perto do limpo que \|STFT(ŷ_A)\|, e o teto "melhor dos dois".
-3. **Promoção:** as 2 melhores pelo PESQ isolado vão para o teste no híbrido. Empate: decide a complementaridade, depois o custo.
-4. **Teste no híbrido (N‑d):** cada CleanSpecNet promovido entra na fusão vencedora da Fase 1, com o protocolo curto da seção 3, e é comparado com o K0 e com a mesma fusão usando o B+. **Este é o critério final**: um CleanSpecNet melhor sozinho só interessa se aumentar o ganho do híbrido.
+1. **Stand-alone training** of CleanSpecNet, as in stage B: 30 epochs, LR 5e-4 with cosine decay, spectral loss (plus the N8 terms where relevant) and the output and compression settings of B+.
+2. **Stand-alone evaluation** on the 770 validation files (~2 min), with `scripts/diagnose_spec_branch.py`:
+   - PESQ, STOI and SI-SDR of the estimated magnitude with the noisy phase (for N4, also with the predicted phase);
+   - magnitude error per band and per SNR range;
+   - **drift**: error after 4 s divided by the error in the first 2 s, on the files longer than 4 s;
+   - **complementarity** with stage A: the energy-weighted fraction of bins where Ŝ is closer to the clean signal than \|STFT(ŷ_A)\|, and the "best of the two" ceiling.
+3. **Promotion:** the 2 best by stand-alone PESQ move on to the hybrid test. Tie: complementarity decides, then cost.
+4. **Hybrid test (N-d):** each promoted CleanSpecNet goes into the winning fusion of Phase 1, with the short protocol of section 3, and is compared with K0 and with the same fusion using B+. **This is the final criterion**: a CleanSpecNet that is better alone only matters if it increases the hybrid's gain.
 
-**Metas na validação** ◇:
+**Targets on validation** ◇:
 
-| Medida | Melhor até agora | Meta |
+| Measure | Best so far | Target |
 |---|---|---|
-| PESQ isolado (+ fase ruidosa) | 1,79 | ≥ 2,3 |
-| Erro de magnitude por faixa de SNR | acima do ruidoso em SNR alto | abaixo do ruidoso em todas as faixas |
-| Deriva | > 1 (máscara, 3 épocas) | ≤ 1,1 |
-| Teto "melhor dos dois" | 3,13 com o B antigo (30 arquivos) | ≥ ramo de onda + 0,2 |
-| Ganho do híbrido sobre o K0 | — | ≥ δ_min, com dependência > 0,02 |
+| Stand-alone PESQ (+ noisy phase) | 1.79 | ≥ 2.3 |
+| Magnitude error per SNR range | above the noisy audio at high SNR | below the noisy audio in every range |
+| Drift | > 1 (mask, 3 epochs) | ≤ 1.1 |
+| "Best of the two" ceiling | 3.13 with the old B (30 files) | ≥ waveform branch + 0.2 |
+| Hybrid gain over K0 | — | ≥ δ_min, with dependency > 0.02 |
 
-### 6.4 Etapas
+### 6.4 Stages
 
-| Etapa | Variantes | GPU ◇ | Depende de |
+| Stage | Variants | GPU ◇ | Depends on |
 |---|---|---|---|
-| N‑a: configuração e mudanças pequenas | N1a, N1b, N6a, N7a, N7b, N8a, um fator por vez sobre o B+ | ~1,5 h | B+ (Fase 0) |
-| N‑b: arquiteturas novas | N2 e N3 com as melhores opções da N‑a; depois N4 + N5 sobre a melhor das duas | ~3 h | N‑a |
-| N‑c: escala e dados (opcional) | N9; o N10 se houver dados do DNS | ~0,5 h (+ N10) | N‑b |
-| N‑d: teste no híbrido | Os 2 melhores CleanSpecNets na fusão vencedora da Fase 1 (protocolo curto); repetir os 2–3 melhores pontos da Fase 1 com o novo ramo | ~1 h | Fase 1 e N‑b |
+| N-a: configuration and small changes | N1a, N1b, N6a, N7a, N7b, N8a, one factor at a time on top of B+ | ~1.5 h | B+ (Phase 0) |
+| N-b: new architectures | N2 and N3 with the best options of N-a; then N4 + N5 on the better of the two | ~3 h | N-a |
+| N-c: scale and data (optional) | N9; N10 if DNS data is available | ~0.5 h (+ N10) | N-b |
+| N-d: hybrid test | The 2 best CleanSpecNets in the winning fusion of Phase 1 (short protocol); repeat the 2–3 best points of Phase 1 with the new branch | ~1 h | Phase 1 and N-b |
 
-**Posição no cronograma:** depois da Fase 1 e antes da Fase 2. O melhor CleanSpecNet da trilha (**B++**) passa a ser o ramo espectral das Fases 2–6, e o Q1 e o Q2 da Fase 2 ficam incorporados ao N‑d.
+**Position in the schedule:** after Phase 1 and before Phase 2. The best CleanSpecNet of the track (**B++**) becomes the spectral branch of Phases 2–6, and Q1 and Q2 of Phase 2 are folded into N-d.
 
-### 6.5 Execução automática (`scripts/run_ablation.py --phases N Nd`)
+### 6.5 Automatic execution (`scripts/run_ablation.py --phases N Nd`)
 
-| Passo | Regra |
+| Step | Rule |
 |---|---|
-| Referência | O candidato vencedor do D0 com o **mesmo orçamento** das variantes N (30 épocas), avaliado pelo mesmo script |
-| N‑a | Cada opção é treinada sozinha sobre o B+. Uma opção é **mantida** se o PESQ isolado subir ≥ 0,05 sobre a referência |
-| N‑b | Se 2 ou mais opções forem mantidas, treina o modelo 1‑D com todas (`N_a_combo`). N2 e N3 recebem as opções genéricas mantidas (N6a, N7a, N7b, N8a); o N3 recebe também o melhor front‑end. N4 e N4+N5 são treinados sobre a melhor arquitetura até ali |
-| N‑c | Só com `--with_nc`: as duas variantes de escala da melhor arquitetura |
-| B++ | A melhor variante, se superar a referência em ≥ 0,05, é retreinada com 10/3 do seu orçamento (como o B+: 30 → 100 épocas) e gravada em `results/abl/bplusplus.json`. Caso contrário, o B++ é o próprio B+ |
-| N‑d | Os 3 melhores pontos da Fase 1 com o B++ (`--winner auto` escolhe a vencedora pelo PESQ de validação), mais o 2º melhor ramo espectral (checkpoint de 30 épocas, sem retreino) no ponto vencedor. Comparação com o K0 e com os mesmos pontos usando o B+ em `results/abl/phaseNd.md` |
+| Reference | The winning D0 candidate with the **same budget** as the N variants (30 epochs), evaluated by the same script |
+| N-a | Each option is trained alone on top of B+. An option is **kept** if the stand-alone PESQ rises by ≥ 0.05 over the reference |
+| N-b | If 2 or more options are kept, train the 1-D model with all of them (`N_a_combo`). N2 and N3 get the generic options that were kept (N6a, N7a, N7b, N8a); N3 also gets the best front end. N4 and N4+N5 are trained on the best architecture so far |
+| N-c | Only with `--with_nc`: the two scale variants of the best architecture |
+| B++ | The best variant, if it beats the reference by ≥ 0.05, is retrained with 10/3 of its budget (like B+: 30 → 100 epochs) and stored in `results/abl/bplusplus.json`. Otherwise B++ is B+ itself |
+| N-d | The 3 best points of Phase 1 with B++ (`--winner auto` picks the winner by validation PESQ), plus the 2nd best spectral branch (30-epoch checkpoint, no retraining) at the winning point. Comparison with K0 and with the same points using B+ in `results/abl/phaseNd.md` |
 
-Resultados isolados ficam em `results/abl/N/<variante>/diagnostics.json`, com PESQ, STOI e SI‑SDR, erro por banda e por faixa de SNR, deriva e complementaridade.
+Stand-alone results are in `results/abl/N/<variant>/diagnostics.json`, with PESQ, STOI and SI-SDR, error per band and per SNR range, drift and complementarity.
 
 ---
 
-## 7. Árvore de decisão
+## 7. Decision tree
 
-| Observação | Conclusão | Próximo passo |
+| Observation | Conclusion | Next step |
 |---|---|---|
-| D3: dependência ≈ 0 nos híbridos atuais | H1 confirmada | Seguir para a Fase 1 |
-| Alguma variante da Fase 1 ≥ δ_min, com dependência > 0 | A fusão certa funciona | Fases 2–4 refinam a vencedora |
-| Nenhuma variante passa, mas o oráculo K3 dá ≥ +0,1 | O limite é a qualidade do CleanSpecNet, não a fusão | Trilha N (seção 6), depois repetir os melhores pontos da Fase 1 e a Fase 2 com o B++ |
-| Nenhuma variante passa e o K3 dá < +0,05 | Neste dataset, o ramo de onda (E8 + DNS) já extrai essa informação sozinho | Fase 5. Se também falhar: relatar o resultado negativo e simplificar (remover o ramo espectral, ou usá‑lo só como professor, E1) |
-| K2 (espectro ruidoso) ≈ melhor variante | O ganho vem da visão tempo‑frequência, não da limpeza feita pelo CleanSpecNet | Trocar o CleanSpecNet por um codificador TF leve |
-| Ganho só em SNR baixo | Útil, mas o VB‑DEMAND tem pouco SNR baixo | Avaliar também em dados mais difíceis (teste do DNS) |
-| O B+ já atinge PESQ isolado ≥ 2,3 | O D0 resolveu o essencial | Trilha N reduzida: N‑d e, se sobrar tempo, o N2 |
-| O PESQ isolado sobe muito (N2/N3), mas o ganho do híbrido continua < δ_min | O ramo espectral ficou bom, mas não traz informação nova ou a fusão não a aproveita | Olhar a complementaridade (D2). Se for alta: Fase 3 (operadores) e P8. Se for baixa: o ramo de onda já sabe o mesmo |
-| Nenhuma variante da trilha N passa de PESQ isolado ~2 | O limite está fora da arquitetura | Revisar STFT, normalização e perda (N6–N8) e conferir o pipeline antes de tentar arquiteturas maiores |
-| Os ganhos na validação não aparecem no teste (Fase 6) ✔ | A validação tem os mesmos ruídos do treino, e a fusão confia demais num ramo espectral que só viu o VB‑DEMAND | Validar com ruído não visto (Fase U); treinar o ramo espectral e o híbrido com ruído externo (Fase R) |
-| Com ruído externo, o híbrido ganha nas duas validações ✔ | A fusão funciona quando o ramo espectral generaliza | Confirmar no teste (Fase RT) |
-| A mistura sem treino K0ext + Bext empata com o RX_C3 (V1) | A fusão aprendida não se justifica | Sistema offline = K0ext + Bext + mistura. Pesquisa de fusão só para o que a mistura não faz: streaming e destilação (V6) |
-| O RX_C3 supera a mistura por ≥ δ_min na val_unseen (V1) | A fusão aprendida acrescenta algo | Seguir com o RX_C3: condition dropout (V2) e ramo espectral melhor (V4) |
+| D3: dependency ≈ 0 in the current hybrids | H1 confirmed | Go on to Phase 1 |
+| Some Phase-1 variant ≥ δ_min, with dependency > 0 | The right fusion works | Phases 2–4 refine the winner |
+| No variant passes, but the K3 oracle gives ≥ +0.1 | The limit is the quality of CleanSpecNet, not the fusion | Track N (section 6), then repeat the best points of Phase 1 and Phase 2 with B++ |
+| No variant passes and K3 gives < +0.05 | On this dataset, the waveform branch (E8 + DNS) already extracts that information by itself | Phase 5. If it also fails: report the negative result and simplify (remove the spectral branch, or use it only as a teacher, E1) |
+| K2 (noisy spectrum) ≈ best variant | The gain comes from the time-frequency view, not from the cleaning done by CleanSpecNet | Replace CleanSpecNet with a light TF encoder |
+| Gain only at low SNR | Useful, but VB-DEMAND has little low-SNR material | Also evaluate on harder data (DNS test set) |
+| B+ already reaches stand-alone PESQ ≥ 2.3 | D0 solved the essentials | Reduced track N: N-d and, if time allows, N2 |
+| Stand-alone PESQ rises a lot (N2/N3), but the hybrid gain stays < δ_min | The spectral branch got good, but brings no new information or the fusion does not use it | Look at the complementarity (D2). If high: Phase 3 (operators) and P8. If low: the waveform branch already knows the same |
+| No track-N variant passes a stand-alone PESQ of ~2 | The limit lies outside the architecture | Revisit STFT, normalization and loss (N6–N8) and check the pipeline before trying larger architectures |
+| The validation gains do not show up on the test set (Phase 6) ✔ | The validation set has the same noises as training, and the fusion over-trusts a spectral branch that only saw VB-DEMAND | Validate with unseen noise (Phase U); train the spectral branch and the hybrid with external noise (Phase R) |
+| With external noise, the hybrid gains on both validation sets ✔ | Fusion works when the spectral branch generalizes | Confirm on the test set (Phase RT) |
+| The training-free blend K0ext + Bext ties with RX_C3 (V1) | The learned fusion is not justified | Offline system = K0ext + Bext + blend. Fusion research only for what the blend cannot do: streaming and distillation (V6) |
+| RX_C3 beats the blend by ≥ δ_min on val_unseen (V1) | The learned fusion adds something | Continue with RX_C3: condition dropout (V2) and a better spectral branch (V4) |
 
-**Caminho seguido (13 a 15/10):**
-1. O D3 mostrou dependência ≈ 0 nos híbridos antigos, o que confirmou a H1.
-2. A Fase 1, com o B+, deu ganhos abaixo de δ_min.
-3. A trilha N produziu o B++.
-4. O N‑d deu +0,06 na validação.
-5. As Fases 2–4 só deram empates.
-6. A Fase C chegou a +0,12 na validação, com o C3.
-7. A Fase 6 mostrou que esse ganho não se transfere ao teste.
-8. A Fase U construiu e aplicou a validação com ruído não visto.
-9. A Fase R treinou com ruído externo.
-10. A Fase RT confirmou o RX_C3 no teste: +0,048 sobre o K0extfull.
+**Path taken (10/13 to 10/15):**
+1. D3 showed dependency ≈ 0 in the old hybrids, which confirmed H1.
+2. Phase 1, with B+, gave gains below δ_min.
+3. Track N produced B++.
+4. N-d gave +0.06 on validation.
+5. Phases 2–4 gave only ties.
+6. Phase C reached +0.12 on validation, with C3.
+7. Phase 6 showed that this gain does not transfer to the test set.
+8. Phase U built and applied the validation set with unseen noise.
+9. Phase R trained with external noise.
+10. Phase RT confirmed RX_C3 on the test set: +0.048 over K0extfull.
 
 ---
 
-## 8. Implementação
+## 8. Implementation
 
-**Estado em 2026‑10‑15:**
-- Todas as fases estão implementadas e foram executadas: 0–6, N, N‑d, N‑x, C, U, R e RT.
-- A suíte de testes coleta 115 testes:
+**Status on 2026-10-15:**
+- All phases are implemented and have been run: 0–6, N, N-d, N-x, C, U, R and RT.
+- The test suite collects 115 tests:
 
-  | Arquivo | Testes |
+  | File | Tests |
   |---|---|
   | `test_fusion.py` | 36 |
   | `test_specnet.py` | 30 |
@@ -610,56 +610,56 @@ Resultados isolados ficam em `results/abl/N/<variante>/diagnostics.json`, com PE
   | `test_noise_bank.py` | 4 |
   | `test_val_unseen.py` | 3 |
 
-- Nada foi commitado ainda no `feature/mamba`.
+- Nothing had been committed on `feature/mamba` yet.
 
-(Até 2026‑10‑13, as Fases 0 e 1 estavam na fila e a trilha N começava automaticamente depois delas.)
+(Until 2026-10-13, Phases 0 and 1 were in the queue and track N started automatically after them.)
 
-| Para | Comando |
+| To | Command |
 |---|---|
-| Rodar as Fases 0 e 1 (já em execução) | `setsid nohup python scripts/run_ablation.py --phases 0 1 > logs/abl/queue.log 2>&1 &` |
-| Rodar as Fases 2–4 depois de escolher a vencedora | `python scripts/run_ablation.py --phases 2 3 4 --winner P3_bott_pre [--signal mask] [--operator adaln_zero]` |
-| Rodar a trilha N e o teste no híbrido | `python scripts/run_ablation.py --phases N Nd --winner auto [--with_nc]` |
-| Rodar a Fase 6 | `python scripts/run_ablation.py --phases 6 --finalists <id1> <id2>` (ou `--finalists auto --winner P3_bott_pre`) |
-| Rodar as combinações offline | `python scripts/run_ablation.py --phases C --winner P3_bott_pre` |
-| Reavaliar tudo na val_unseen | `python scripts/run_ablation.py --phases U` (relatórios `results/abl/U_*.md`) |
-| Rodar o treino com ruído externo e a confirmação | `python scripts/run_ablation.py --phases R RT --winner P3_bott_pre` (relatórios `results/abl/phaseR*.md`, `phaseRT*.md`) |
-| Gerar a val_unseen | `python scripts/make_val_unseen.py` (escreve `val_unseen/` no diretório do dataset e `filelists/val_unseen.csv`) |
-| Ver os comandos sem executar | acrescentar `--dry_run` |
-| Comparar com o K0 | `python scripts/compare_runs.py --ref results/abl/K0_s{1,2,3} --runs 'results/abl/P*'` (a fila já grava `results/abl/phase<N>.md`) |
-| Diagnosticar ramos espectrais | `python scripts/diagnose_spec_branch.py --wave_ckpt <A> --spec_ckpt nome=<ckpt> ...` |
-| Avaliar a dependência da condição | `python evaluate.py --checkpoint <ckpt> --filelist filelists/val.csv --fast --condition shuffle\|off` |
+| Run Phases 0 and 1 (already running) | `setsid nohup python scripts/run_ablation.py --phases 0 1 > logs/abl/queue.log 2>&1 &` |
+| Run Phases 2–4 after choosing the winner | `python scripts/run_ablation.py --phases 2 3 4 --winner P3_bott_pre [--signal mask] [--operator adaln_zero]` |
+| Run track N and the hybrid test | `python scripts/run_ablation.py --phases N Nd --winner auto [--with_nc]` |
+| Run Phase 6 | `python scripts/run_ablation.py --phases 6 --finalists <id1> <id2>` (or `--finalists auto --winner P3_bott_pre`) |
+| Run the offline combinations | `python scripts/run_ablation.py --phases C --winner P3_bott_pre` |
+| Re-evaluate everything on val_unseen | `python scripts/run_ablation.py --phases U` (reports `results/abl/U_*.md`) |
+| Run the external-noise training and its confirmation | `python scripts/run_ablation.py --phases R RT --winner P3_bott_pre` (reports `results/abl/phaseR*.md`, `phaseRT*.md`) |
+| Generate val_unseen | `python scripts/make_val_unseen.py` (writes `val_unseen/` in the dataset directory and `filelists/val_unseen.csv`) |
+| See the commands without running them | add `--dry_run` |
+| Compare with K0 | `python scripts/compare_runs.py --ref results/abl/K0_s{1,2,3} --runs 'results/abl/P*'` (the queue already writes `results/abl/phase<N>.md`) |
+| Diagnose spectral branches | `python scripts/diagnose_spec_branch.py --wave_ckpt <A> --spec_ckpt name=<ckpt> ...` |
+| Evaluate the condition dependency | `python evaluate.py --checkpoint <ckpt> --filelist filelists/val.csv --fast --condition shuffle\|off` |
 
-Onde ficam os resultados:
-- checkpoints e logs em `logs/abl/<id>_pc1|_pc2/`;
-- avaliações em `results/abl/<id>/val` e `val_shuffle`, com a definição da variante em `variant.json`;
-- a fila é reiniciável: passos concluídos são pulados e treinos interrompidos retomam do `last.ckpt`.
+Where the results are:
+- checkpoints and logs in `logs/abl/<id>_pc1|_pc2/`;
+- evaluations in `results/abl/<id>/val` and `val_shuffle`, with the variant definition in `variant.json`;
+- the queue is restartable: completed steps are skipped and interrupted trainings resume from `last.ckpt`.
 
-### 8.1 Arquivos (implementados)
+### 8.1 Files (implemented)
 
-| Arquivo | Mudança |
+| File | Change |
 |---|---|
-| `cleanunet/fusion.py` (novo) | `CondTrunk` (tronco causal na taxa de quadros); `FusionPoint` com os operadores `film`, `film_tanh`, `adaln_zero`, `add`, `gate`, `concat_mlp`, `xattn`; reamostragem `repeat`/`linear`/`convT` e `shift`; `FusionHub` (ganchos por ponto); `InputEstimateFusion` (S5); `BranchExchange` (O7, pilhas Mamba em lockstep) |
-| `cleanunet/postfilter.py` (novo) | O8: máscara limitada no domínio da STFT sobre a saída do CleanUNet |
-| `cleanunet/cleanunet.py` | `fusion_points()`; `forward(..., hooks=None, bottleneck_runner=None)` com ganchos em `enc_s*`, `skip_s*`, `bott_pre`, `bott_post`, `dec_s*`. O `bottleneck_hook` continua (= `bott_pre`) ⚑ |
-| `cleanunet/cleanspecnet.py` | `output_mode: direct \| residual \| mask`; `forward` dividido em `encode()` e `head()` (necessário para o O7) |
-| `cleanunet/spectral.py` | `complex_stft`, `istft` (overlap‑add próprio, inverte a STFT com erro < 1e‑6) e `decompress` |
-| `cleanunet/cleanunet2.py` | `conditioning_type: none` (sem upsampler nem FiLM na onda); bloco `fusion:`; sinais `spec_hidden`, `spec`, `mask`, `noisy_spec`, `oracle_spec`, `oracle_mask` (ou uma lista); `forward(..., clean=, cond_noisy=, cond_clean=, fusion_enabled=)`; `oracle_prob` para o currículo T8 |
-| `lightning_modules/cleanunet_module.py` | Passa `clean` ao modelo; perda espectral só quando o CleanSpecNet roda; `fusion_curriculum: {oracle_prob, steps}`. O `lr_scale` já aceita `fusion_hub`, `postfilter`, `input_estimate`, `exchange` ⚑ |
-| `config_utils.py` | Overrides `model.architecture.<chave>=...` aplicados depois de resolver o YAML da arquitetura |
-| `evaluate.py` | `--condition {normal,shuffle,off}`; `--fast`; arquitetura lida do checkpoint Lightning; SNR de entrada por arquivo no `metrics.csv` e resumo por faixa de SNR |
-| `scripts/run_ablation.py` (novo) | Fila reiniciável das Fases 0–6 (espera memória livre na GPU, retoma após OOM) |
-| `scripts/diagnose_spec_branch.py` (novo) | D0 (escolha do B+), D1 e D2 |
-| `scripts/compare_runs.py` (novo) | Δ pareado por arquivo contra o K0, bootstrap de 95%, Wilcoxon + Holm, dependência, Δ por faixa de SNR |
+| `cleanunet/fusion.py` (new) | `CondTrunk` (causal trunk at the frame rate); `FusionPoint` with the operators `film`, `film_tanh`, `adaln_zero`, `add`, `gate`, `concat_mlp`, `xattn`; resampling `repeat`/`linear`/`convT` and `shift`; `FusionHub` (per-point hooks); `InputEstimateFusion` (S5); `BranchExchange` (O7, Mamba stacks in lockstep) |
+| `cleanunet/postfilter.py` (new) | O8: bounded mask in the STFT domain on the CleanUNet output |
+| `cleanunet/cleanunet.py` | `fusion_points()`; `forward(..., hooks=None, bottleneck_runner=None)` with hooks at `enc_s*`, `skip_s*`, `bott_pre`, `bott_post`, `dec_s*`. `bottleneck_hook` remains (= `bott_pre`) ⚑ |
+| `cleanunet/cleanspecnet.py` | `output_mode: direct \| residual \| mask`; `forward` split into `encode()` and `head()` (needed for O7) |
+| `cleanunet/spectral.py` | `complex_stft`, `istft` (own overlap-add, inverts the STFT with an error < 1e-6) and `decompress` |
+| `cleanunet/cleanunet2.py` | `conditioning_type: none` (no upsampler and no waveform FiLM); `fusion:` block; signals `spec_hidden`, `spec`, `mask`, `noisy_spec`, `oracle_spec`, `oracle_mask` (or a list); `forward(..., clean=, cond_noisy=, cond_clean=, fusion_enabled=)`; `oracle_prob` for the T8 curriculum |
+| `lightning_modules/cleanunet_module.py` | Passes `clean` to the model; spectral loss only when CleanSpecNet runs; `fusion_curriculum: {oracle_prob, steps}`. `lr_scale` already accepts `fusion_hub`, `postfilter`, `input_estimate`, `exchange` ⚑ |
+| `config_utils.py` | Overrides `model.architecture.<key>=...` applied after resolving the architecture YAML |
+| `evaluate.py` | `--condition {normal,shuffle,off}`; `--fast`; architecture read from the Lightning checkpoint; per-file input SNR in `metrics.csv` and a summary per SNR range |
+| `scripts/run_ablation.py` (new) | Restartable queue of Phases 0–6 (waits for free GPU memory, resumes after OOM) |
+| `scripts/diagnose_spec_branch.py` (new) | D0 (choice of B+), D1 and D2 |
+| `scripts/compare_runs.py` (new) | Per-file paired Δ against K0, 95% bootstrap, Wilcoxon + Holm, dependency, Δ per SNR range |
 | `configs/model/fusion/*.yaml` | `base.yaml`, `base_e6.yaml`, `F0_waveform_film`, `P1`–`P8`, `S5_input_estimate`, `O7_exchange` |
 | `configs/ablation/*.yaml` | `stageB_plus` (D0/B+), `pc1`, `pc2`, `k0` |
-| `tests/test_fusion.py` (novo) | Identidade no início para 21 variantes; gradiente na fusão no 1º passo; lookahead de 766 amostras preservado com a geometria E8; oráculo e condição de outro arquivo; inversão da STFT; carga dos ramos pré‑treinados |
-| `noise_bank.py` (novo) | Nível de fala ativa pela P.56 (`active_speech_power`), `mix_at_snr` e `NoiseBank`: trechos de `noise`, babble e `music` do MUSAN, com pesos |
-| `dataset.py`, `lightning_modules/data_module.py` | `data.ext_noise: {dir, p, snr_db, weights, babble_talkers}` (só no treino; padrão desligado) |
-| `scripts/make_val_unseen.py` (novo) | Val_unseen: falantes da validação com os 5 ambientes do DEMAND que o VB‑DEMAND não usa, nos SNRs do teste (P.56, semente 0) |
-| `scripts/run_ablation.py` | Fases C, U, R e RT; `--finalists auto`; `variant(..., splits=...)`; tabelas de média ± desvio por configuração (`phase*_seeds*.md`) |
-| `tests/test_noise_bank.py`, `tests/test_val_unseen.py` (novos) | Nível de fala ativa (P.56) ignora as pausas; mistura no SNR pedido; o `NoiseBank` sorteia todas as fontes no comprimento pedido e recusa fonte ausente; o dataset troca o ruído só nos recortes de treino; Spearman da Fase U |
+| `tests/test_fusion.py` (new) | Identity at the start for 21 variants; gradient into the fusion at the 1st step; 766-sample lookahead preserved with the E8 geometry; oracle and condition from another file; STFT inversion; loading of the pretrained branches |
+| `noise_bank.py` (new) | P.56 active speech level (`active_speech_power`), `mix_at_snr` and `NoiseBank`: excerpts of MUSAN `noise`, babble and `music`, with weights |
+| `dataset.py`, `lightning_modules/data_module.py` | `data.ext_noise: {dir, p, snr_db, weights, babble_talkers}` (training only; off by default) |
+| `scripts/make_val_unseen.py` (new) | val_unseen: the validation speakers with the 5 DEMAND environments VB-DEMAND does not use, at the test SNRs (P.56, seed 0) |
+| `scripts/run_ablation.py` | Phases C, U, R and RT; `--finalists auto`; `variant(..., splits=...)`; tables of mean ± standard deviation per configuration (`phase*_seeds*.md`) |
+| `tests/test_noise_bank.py`, `tests/test_val_unseen.py` (new) | The P.56 active speech level ignores pauses; mixing at the requested SNR; `NoiseBank` draws every source at the requested length and refuses a missing source; the dataset replaces the noise only in training crops; Spearman of Phase U |
 
-### 8.2 Configuração: cada variante é só um YAML
+### 8.2 Configuration: each variant is just a YAML
 
 ```yaml
 # configs/model/fusion/p3_hidden_film.yaml
@@ -699,1226 +699,1226 @@ optim:
   lr_scale: {clean_unet: 0.2, clean_spec_net: 0.2}
 ```
 
-Cada execução recebe `model.architecture=../model/fusion/<id>.yaml`, as opções do B+ (`model.architecture.cleanspecnet_params.output_mode=...`, `model.architecture.spectrogram.compression=...`), `seed=<n>` e os diretórios próprios pela linha de comando; `scripts/run_ablation.py` monta tudo isso. O K0 usa `configs/ablation/k0.yaml` (só onda, 5 épocas, LR 2e‑5, perda de onda).
+Each run gets `model.architecture=../model/fusion/<id>.yaml`, the B+ options (`model.architecture.cleanspecnet_params.output_mode=...`, `model.architecture.spectrogram.compression=...`), `seed=<n>` and its own directories on the command line; `scripts/run_ablation.py` assembles all of this. K0 uses `configs/ablation/k0.yaml` (waveform-only, 5 epochs, LR 2e-5, waveform loss).
 
-### 8.3 Arquivos da trilha N (implementados)
+### 8.3 Files of track N (implemented)
 
-| Arquivo | Mudança | Propostas |
+| File | Change | Proposals |
 |---|---|---|
-| `cleanunet/cleanspecnet.py` | `frontend: conv \| linear`; `feature_groups` (entrada com fase); `input_norm: none \| cumulative`; `predict_phase`; `run()` devolve `spec`, `hidden` e `phase`; funções comuns de saída e normalização | N0, N1b, N4, N5, N7b |
-| `cleanunet/tf_mamba.py` (novo) | `TFMambaSpecNet`: encoder/decoder 2D causais no tempo, blocos Mamba tempo (causal) + frequência (bidirecional), `hidden` por sub‑bandas | N2 |
-| `cleanunet/subband.py` (novo) | `SubbandSpecNet`: banda cheia (CleanSpecNet 1‑D) + sub‑banda compartilhada entre bandas | N3 |
-| `cleanunet/cleanunet2.py` | `cleanspecnet_params.architecture: conv1d \| tf_mamba \| subband`; `cleanspecnet_params.input_features: mag \| mag_phase`; `spec_features()`, `spec_branch()`, `spec_to_wave()`, `target_stft()`; saída `phase` | N2–N5 |
+| `cleanunet/cleanspecnet.py` | `frontend: conv \| linear`; `feature_groups` (input with phase); `input_norm: none \| cumulative`; `predict_phase`; `run()` returns `spec`, `hidden` and `phase`; shared output and normalization functions | N0, N1b, N4, N5, N7b |
+| `cleanunet/tf_mamba.py` (new) | `TFMambaSpecNet`: 2-D encoder/decoder causal in time, Mamba blocks over time (causal) + frequency (bidirectional), `hidden` per sub-band | N2 |
+| `cleanunet/subband.py` (new) | `SubbandSpecNet`: full band (1-D CleanSpecNet) + a sub-band model shared across bands | N3 |
+| `cleanunet/cleanunet2.py` | `cleanspecnet_params.architecture: conv1d \| tf_mamba \| subband`; `cleanspecnet_params.input_features: mag \| mag_phase`; `spec_features()`, `spec_branch()`, `spec_to_wave()`, `target_stft()`; `phase` output | N2–N5 |
 | `losses.py` | `anti_wrapping`, `phase_losses` | N4 |
-| `lightning_modules/cleanunet_module.py` | `loss.spec_terms: {l1, mse, wave, phase, complex, consistency}` (padrão `{l1: 1}` = perda original) | N4, N8 |
+| `lightning_modules/cleanunet_module.py` | `loss.spec_terms: {l1, mse, wave, phase, complex, consistency}` (default `{l1: 1}` = the original loss) | N4, N8 |
 | `dataset.py`, `lightning_modules/data_module.py` | `data.concat_utterances`, `data.crossfade` | N7a |
-| `cleanunet/fusion.py` | Média dos quadros dentro de cada posição quando hop < stride | N6b |
-| `scripts/diagnose_spec_branch.py` | STFT própria de cada modelo; deriva; complementaridade; ressíntese com a fase prevista | protocolo PN |
-| `scripts/run_ablation.py` | Fases `N` e `Nd`; B++ nas Fases 2–6; `--winner auto`; `--with_nc` | protocolo PN |
-| `configs/model/cleanunet2_mamba_e8_tfspec.yaml`, `cleanunet2_mamba_e8_subband.yaml` | Presets com o N2 e o N3 | N2, N3 |
-| `tests/test_specnet.py` (novo) | Causalidade no tempo de todas as variantes (com e sem fase), identidade inicial dos modos residual e sub‑banda, números de bandas arbitrários, normalização acumulada, perdas de fase, termos da perda espectral (com gradiente na cabeça de fase), agregação de quadros na fusão e exemplos concatenados | todas |
+| `cleanunet/fusion.py` | Mean of the frames within each position when hop < stride | N6b |
+| `scripts/diagnose_spec_branch.py` | Each model's own STFT; drift; complementarity; resynthesis with the predicted phase | PN protocol |
+| `scripts/run_ablation.py` | Phases `N` and `Nd`; B++ in Phases 2–6; `--winner auto`; `--with_nc` | PN protocol |
+| `configs/model/cleanunet2_mamba_e8_tfspec.yaml`, `cleanunet2_mamba_e8_subband.yaml` | Presets with N2 and N3 | N2, N3 |
+| `tests/test_specnet.py` (new) | Causality in time of every variant (with and without phase), initial identity of the residual and sub-band modes, arbitrary band counts, cumulative normalization, phase losses, spectral-loss terms (with a gradient into the phase head), frame aggregation in the fusion and concatenated examples | all |
 
-**Custo medido por passo** (batch 16, 2 s, bf16, com outro treino na GPU) ✔:
+**Measured cost per step** (batch 16, 2 s, bf16, with another training on the GPU) ✔:
 
-| Ramo espectral | Parâmetros | ms/passo | Memória de pico |
+| Spectral branch | Parameters | ms/step | Peak memory |
 |---|---|---|---|
-| 1‑D atual (B+) | 11,2M | 13 | 0,5 GB |
-| N1a (front‑end de 256 canais) | 12,8M | 13 | 0,5 GB |
-| N1b (front‑end linear) | 10,3M | 11 | 0,5 GB |
-| N2 (dual‑path TF) | 0,98M | 173 | 6,3 GB |
-| N2 com fase (N4) | 1,0M | 194 | 6,8 GB |
-| N3 (sub‑banda) | 11,2M | 92 | 3,5 GB |
-| 1‑D com fase na entrada e na saída (N4 + N5) | 19,4M | 11 | 0,7 GB |
+| Current 1-D (B+) | 11.2M | 13 | 0.5 GB |
+| N1a (256-channel front end) | 12.8M | 13 | 0.5 GB |
+| N1b (linear front end) | 10.3M | 11 | 0.5 GB |
+| N2 (dual-path TF) | 0.98M | 173 | 6.3 GB |
+| N2 with phase (N4) | 1.0M | 194 | 6.8 GB |
+| N3 (sub-band) | 11.2M | 92 | 3.5 GB |
+| 1-D with phase at the input and the output (N4 + N5) | 19.4M | 11 | 0.7 GB |
 
-Nos modelos 1‑D, a época (~20 s) é dominada pela leitura dos dados, não pela rede.
+For the 1-D models, an epoch (~20 s) is dominated by data loading, not by the network.
 
 ---
 
-## 9. Orçamento
+## 9. Budget
 
-| Fase | Execuções | GPU ◇ |
+| Phase | Runs | GPU ◇ |
 |---|---|---|
-| 0 | D0–D3, K0 × 3, K1 | ~1,7 h (~1 h com A0) |
-| 1 | P1–P9, mais a 2ª semente das aprovadas | ~2 h |
+| 0 | D0–D3, K0 × 3, K1 | ~1.7 h (~1 h with A0) |
+| 1 | P1–P9, plus the 2nd seed of those that pass | ~2 h |
 | 2 | S2–S5, K2, K3, Q1, Q2 | ~2 h |
-| 3 | ~12 variantes | ~2,5 h |
-| 4 | T1–T8 | ~1,3 h |
+| 3 | ~12 variants | ~2.5 h |
+| 4 | T1–T8 | ~1.3 h |
 | 5 | Z1, Z2 (+ Z3) | ~2 h |
-| 6 | 3 configurações × 3 sementes, protocolo completo + teste | ~3 h |
-| N | N‑a (6 variantes), N‑b (3–5), retreino do B++, N‑d (4), N‑c (opcional) | ~6–8 h (o N2 custa ~1 h; o B++ com o N2 ~3,5 h) |
+| 6 | 3 configurations × 3 seeds, full protocol + test | ~3 h |
+| N | N-a (6 variants), N-b (3–5), retraining of B++, N-d (4), N-c (optional) | ~6–8 h (N2 costs ~1 h; B++ with N2 ~3.5 h) |
 | **Total** | **~75** | **~21 h** |
 
-Cada fase cabe numa fila noturna. As Fases 0 e 1 juntas levam ~4 h e já respondem à pergunta principal: existe alguma forma de fusão que funcione com o ramo espectral atual? A trilha N responde à pergunta seguinte: com um ramo espectral bom, a fusão passa a valer a pena?
+Each phase fits in an overnight queue. Phases 0 and 1 together take ~4 h and already answer the main question: is there any form of fusion that works with the current spectral branch? Track N answers the next question: with a good spectral branch, does fusion become worthwhile?
 
-**Executado ✔ (13/10 a 15/10, 10:16):**
-- 163 treinos, contando PC‑1 e PC‑2 separadamente, e 311 avaliações.
-- Cada fila coube em meio dia ou numa noite.
-- Uma variante curta levou ~7–10 min; uma semente do protocolo completo, ~10–15 min.
-- A GPU foi compartilhada com outro usuário. Só a Fase R passou ~2 h esperando memória livre.
-
----
-
-## 10. Riscos e cuidados
-
-- **Efeito pequeno.** Com o ramo de onda já em 3,09 depois do DNS e do ajuste fino, ganhos realistas devem ficar ≤ 0,05 ◇. Sementes, controles e a medida de dependência são indispensáveis. Medido ✔: o RX_C3 ganhou +0,048 sobre o K0extfull no teste.
-- **Seleção na validação.** Com muitas variantes, a validação acaba "usada" pela seleção. Só a Fase 6 (3 sementes + teste) vale para o relatório.
-  - **Aconteceu ✔, e de um jeito pior que o previsto.** O problema não foi só o acaso de muitas comparações: a validação tem os mesmos tipos de ruído do treino e premiou variantes que não generalizam (seção 1.5).
-- **Uso repetido do teste.** O teste já entrou em duas decisões (Fases 6 e RT). A seleção agora usa a val_unseen, e o teste fica para uma única confirmação final dos próximos finalistas.
-- **Dependência alta.** O RX_C3 perde 2 pontos de PESQ com a condição de outro arquivo. Se o ramo espectral falhar num ruído que não conhece, não há rede de segurança (V2, seção 13).
-- **Dados externos e comparação com a literatura.**
-  - O ramo de onda vem do DNS, e o K0ext e os RX usam MUSAN.
-  - Na comparação com números publicados no VB‑DEMAND, separar "só VB‑DEMAND" de "com dados externos".
-  - O K0full (3,085) é o controle sem ruído externo.
-- **Overfitting.** O VB‑DEMAND tem só 9,4 h de áudio. Módulos maiores (O6, O7, P5) podem decorar o treino; acompanhar a diferença entre treino e validação.
-- **Lookahead e latência.** Registrar para cada variante. P8, S5 (iSTFT) e L+1 aumentam o lookahead, então valem só para o modo offline ou precisam ser reportadas à parte.
-- **Artefatos de taxa de quadro.** Um γ constante por 16 ms nos níveis finos pode criar modulação audível a 62,5 Hz. Por isso existem as variantes R2/R3, e vale ouvir os exemplos que o treino já registra (`log_audio_examples`).
-- **GPU compartilhada.** A fila espera memória livre e retoma do `last.ckpt` (já implementado ⚑).
-- **Custo do N2/N3.** Sequências por banda (tempo) e por quadro (frequência) multiplicam o número de sequências do Mamba. Medir a época antes de enfileirar várias variantes; reduzir a frequência (4×) e as bandas (N6a) se for preciso.
-- **Ramo espectral bom, mas redundante.** Um CleanSpecNet forte pode aprender o mesmo que o ramo de onda. A taxa de complementaridade (protocolo PN) mostra isso antes do teste no híbrido.
-- **Comparabilidade.** O K0 e todas as variantes partem do mesmo checkpoint do estágio A, com o mesmo número de passos e o mesmo LR no ramo de onda.
+**Executed ✔ (10/13 to 10/15, 10:16):**
+- 163 trainings, counting PC-1 and PC-2 separately, and 311 evaluations.
+- Each queue fit in half a day or a night.
+- A short variant took ~7–10 min; one seed of the full protocol, ~10–15 min.
+- The GPU was shared with another user. Only Phase R spent ~2 h waiting for free memory.
 
 ---
 
-## 11. Relação com `IMPROVEMENTS_CLAUDE.md`
+## 10. Risks and precautions
 
-| Proposta de lá | Neste plano |
+- **Small effect.** With the waveform branch already at 3.09 after DNS and fine-tuning, realistic gains should be ≤ 0.05 ◇. Seeds, controls and the dependency measure are indispensable. Measured ✔: RX_C3 gained +0.048 over K0extfull on the test set.
+- **Selection on validation.** With many variants, the validation set ends up "used" by the selection. Only Phase 6 (3 seeds + test) counts for the report.
+  - **It happened ✔, and in a worse way than expected.** The problem was not just the chance of many comparisons: the validation set has the same noise types as training and rewarded variants that do not generalize (section 1.5).
+- **Repeated use of the test set.** The test set has already entered two decisions (Phases 6 and RT). Selection now uses val_unseen, and the test set is kept for a single final confirmation of the next finalists.
+- **High dependency.** RX_C3 loses 2 PESQ points with the condition of another file. If the spectral branch fails on a noise it does not know, there is no safety net (V2, section 13).
+- **External data and comparison with the literature.**
+  - The waveform branch comes from DNS, and K0ext and the RX models use MUSAN.
+  - When comparing with published VB-DEMAND numbers, separate "VB-DEMAND only" from "with external data".
+  - K0full (3.085) is the control without external noise.
+- **Overfitting.** VB-DEMAND has only 9.4 h of audio. Larger modules (O6, O7, P5) may memorize the training set; watch the gap between training and validation.
+- **Lookahead and latency.** Record them for every variant. P8, S5 (iSTFT) and L+1 increase the lookahead, so they are valid for offline use only or must be reported separately.
+- **Frame-rate artefacts.** A constant γ for 16 ms at the fine levels can create audible modulation at 62.5 Hz. That is why variants R2/R3 exist, and it is worth listening to the examples the training already logs (`log_audio_examples`).
+- **Shared GPU.** The queue waits for free memory and resumes from `last.ckpt` (already implemented ⚑).
+- **Cost of N2/N3.** Per-band (time) and per-frame (frequency) sequences multiply the number of Mamba sequences. Measure an epoch before queuing several variants; reduce frequency (4×) and the number of bands (N6a) if needed.
+- **Good but redundant spectral branch.** A strong CleanSpecNet may learn the same thing as the waveform branch. The complementarity rate (PN protocol) shows this before the hybrid test.
+- **Comparability.** K0 and every variant start from the same stage-A checkpoint, with the same number of steps and the same LR in the waveform branch.
+
+---
+
+## 11. Relation to `IMPROVEMENTS_CLAUDE.md`
+
+| Proposal there | In this plan |
 |---|---|
-| A1 (upsampler multicanal) | Substituída por P1 e S2 com O1: a mesma ideia, sem o upsampler |
-| A2 (fusão no gargalo) | P3/P4 com O1/O5 e L±1 |
-| A3 (fusão multiescala) | P2, P5, P6 |
-| A4 (pós‑filtro espectral) | P8 / O8 |
-| A5 (controles) | K0–K3 e a medida de dependência |
-| C4 (porta nos atalhos) | P7 / O9 |
-| B1 (saída residual ou por máscara) | N0. No D0, venceu a máscara com log1p |
-| B2 (backbone dual‑path TF com Mamba) | N2 |
-| B3 (representação da entrada) | N0 (compressão `pow`), N5 (fase), N6 (janela e hop) |
-| B4 (causalidade separada, versão bidirecional) | Q2; no N2, frequência bidirecional com tempo causal |
-| B5 (estimativa de fase) | N4 |
+| A1 (multi-channel upsampler) | Replaced by P1 and S2 with O1: the same idea, without the upsampler |
+| A2 (bottleneck fusion) | P3/P4 with O1/O5 and L±1 |
+| A3 (multi-scale fusion) | P2, P5, P6 |
+| A4 (spectral post-filter) | P8 / O8 |
+| A5 (controls) | K0–K3 and the dependency measure |
+| C4 (gated skips) | P7 / O9 |
+| B1 (residual or mask output) | N0. In D0, the mask with log1p won |
+| B2 (dual-path TF Mamba backbone) | N2 |
+| B3 (input representation) | N0 (`pow` compression), N5 (phase), N6 (window and hop) |
+| B4 (separate causality, bidirectional version) | Q2; in N2, bidirectional frequency with causal time |
+| B5 (phase estimation) | N4 |
 
-- O **A0** passa a ser necessário só para a referência F0 (K1), a única que ainda usa o upsampler original.
-- O Grupo B virou a trilha N (seção 6), que roda logo depois da Fase 1.
+- **A0** is now needed only for the F0 reference (K1), the only one that still uses the original upsampler.
+- Group B became track N (section 6), which runs right after Phase 1.
 
 ---
 
-## 12. Registro de resultados ✔
+## 12. Results log ✔
 
-Convenções desta seção:
-- Δ é a diferença de PESQ‑WB contra a média das sementes do controle indicado.
-- "Dep." é a dependência: PESQ normal menos PESQ com a condição de outro arquivo.
-- As tabelas completas, com intervalos de 95%, p de Holm e faixas de SNR, estão em `results/abl/*.md`.
+Conventions of this section:
+- Δ is the PESQ-WB difference against the mean of the seeds of the indicated control.
+- "Dep." is the dependency: normal PESQ minus PESQ with the condition of another file.
+- The full tables, with 95% intervals, Holm p-values and SNR ranges, are in `results/abl/*.md`.
 
-### 12.1 Fases 0 e 1: ramo espectral B+, protocolo curto, val antiga
+### 12.1 Phases 0 and 1: spectral branch B+, short protocol, old val
 
-- **K0** (3 sementes): 2,760 na val (σ = 0,005, então δ_min = 0,02) e 3,092 na val_unseen.
-- **D0 → B+:** o vencedor foi a saída por máscara com log1p, PESQ isolado (com a fase ruidosa) de 1,97. Os outros candidatos:
+- **K0** (3 seeds): 2.760 on val (σ = 0.005, hence δ_min = 0.02) and 3.092 on val_unseen.
+- **D0 → B+:** the winner was the mask output with log1p, stand-alone PESQ (with the noisy phase) of 1.97. The other candidates:
 
-  | Candidato | PESQ isolado |
+  | Candidate | Stand-alone PESQ |
   |---|---|
-  | `mask_pow` | 1,97 |
-  | `mask_pow` com recortes de 4 s | 1,94 |
-  | `residual_pow` | 1,92 |
-  | `direct_log1p` | 1,89 |
-  | `residual_log1p` | 1,75 |
-  | `direct_pow` | 1,31 |
+  | `mask_pow` | 1.97 |
+  | `mask_pow` with 4 s crops | 1.94 |
+  | `residual_pow` | 1.92 |
+  | `direct_log1p` | 1.89 |
+  | `residual_log1p` | 1.75 |
+  | `direct_pow` | 1.31 |
 
-- **D3 e K1:** a fusão original (F0) tem dependência 0,000 e Δ de −0,003. Isso confirma a H1.
-- **Fase 1:** com o B+, nenhum ponto chegou a δ_min.
+- **D3 and K1:** the original fusion (F0) has dependency 0.000 and Δ of −0.003. This confirms H1.
+- **Phase 1:** with B+, no point reached δ_min.
 
-| ID | Ponto | Δ val | Dep. |
+| ID | Point | Δ val | Dep. |
 |---|---|---|---|
-| P3 | `bott_pre` | +0,008 | 0,01 |
-| P2 | encoder fino | +0,007 | 0,01 |
-| P5 | decoder grosso | +0,004 | 0,04 |
-| P4 | `bott_post` | +0,004 | 0,02 |
-| P6 | decoder fino | +0,003 | 0,00 |
-| P8 | pós‑filtro TF | +0,003 | 1,18 |
-| P1 | `enc_s2` | −0,001 | 0,00 |
-| P7 | portas nos atalhos | −0,005 | 0,00 |
+| P3 | `bott_pre` | +0.008 | 0.01 |
+| P2 | fine encoder | +0.007 | 0.01 |
+| P5 | coarse decoder | +0.004 | 0.04 |
+| P4 | `bott_post` | +0.004 | 0.02 |
+| P6 | fine decoder | +0.003 | 0.00 |
+| P8 | TF post-filter | +0.003 | 1.18 |
+| P1 | `enc_s2` | −0.001 | 0.00 |
+| P7 | gates on the skips | −0.005 | 0.00 |
 
-A combinação de pontos (P9) foi feita depois, na Fase C.
+The combination of points (P9) was done later, in Phase C.
 
-### 12.2 Trilha N: ramo espectral sozinho, val antiga, magnitude estimada com a fase ruidosa
+### 12.2 Track N: spectral branch alone, old val, estimated magnitude with the noisy phase
 
-| Variante | PESQ isolado | Observação |
+| Variant | Stand-alone PESQ | Note |
 |---|---|---|
-| Referência: B+ com 30 épocas | 1,97 | |
-| N1a, front‑end de 256 canais | 2,34 | |
-| **N1b, front‑end linear** | **2,49** | Mantida |
-| N6a, janela de 32 ms | 2,09 | |
-| N7a, recortes de 6 s | 1,73 | |
-| N7b, normalização acumulada | 2,07 | |
-| N8a, perda no tempo | 1,89 | |
-| N‑a, opções combinadas | 2,48 | |
-| N2, dual‑path TF | 2,43 | 0,98M parâmetros, ~13× mais lento por passo |
-| N3, sub‑banda | 2,48 | |
-| N4, fase na saída | divergiu (NaN) | Corrigido com atan2 de gradiente limitado: N4fix 2,31 (2,07 com a fase prevista) |
-| N4 + N5, fase na entrada e na saída | 1,85 | N45fix 2,22 (2,27 com a fase prevista) |
-| **B++ = N1b com 100 épocas** | **2,556** | Ver abaixo |
+| Reference: B+ with 30 epochs | 1.97 | |
+| N1a, 256-channel front end | 2.34 | |
+| **N1b, linear front end** | **2.49** | Kept |
+| N6a, 32 ms window | 2.09 | |
+| N7a, 6 s crops | 1.73 | |
+| N7b, cumulative normalization | 2.07 | |
+| N8a, time-domain loss | 1.89 | |
+| N-a, combined options | 2.48 | |
+| N2, dual-path TF | 2.43 | 0.98M parameters, ~13× slower per step |
+| N3, sub-band | 2.48 | |
+| N4, phase at the output | diverged (NaN) | Fixed with a bounded-gradient atan2: N4fix 2.31 (2.07 with the predicted phase) |
+| N4 + N5, phase at the input and the output | 1.85 | N45fix 2.22 (2.27 with the predicted phase) |
+| **B++ = N1b with 100 epochs** | **2.556** | See below |
 
-Medidas do B++:
-- deriva de 0,97;
-- teto "melhor dos dois" de 3,145;
-- a mistura sem treino com o estágio A (w = 0,5) dá 2,864, +0,10 sobre o estágio A.
+Measurements of B++:
+- drift of 0.97;
+- "best of the two" ceiling of 3.145;
+- the training-free blend with stage A (w = 0.5) gives 2.864, +0.10 over stage A.
 
-Todas as metas do protocolo PN na validação foram atingidas (seção 6.3):
-- o PESQ isolado passou de 2,3;
-- o erro de magnitude ficou abaixo do ruidoso em todas as faixas de SNR;
-- a deriva ficou abaixo de 1,1;
-- o teto ficou 0,39 acima do ramo de onda;
-- no híbrido, o N‑d P3 deu +0,059, com dependência de 0,37.
+All the validation targets of the PN protocol were met (section 6.3):
+- the stand-alone PESQ passed 2.3;
+- the magnitude error was below the noisy audio's in every SNR range;
+- the drift was below 1.1;
+- the ceiling was 0.39 above the waveform branch;
+- in the hybrid, N-d P3 gave +0.059, with a dependency of 0.37.
 
-### 12.3 Híbridos com o B++: protocolo curto, 1 semente, Δ contra o K0
+### 12.3 Hybrids with B++: short protocol, 1 seed, Δ against K0
 
-| ID | O quê | Δ val | Δ val_unseen | Dep. (val) |
+| ID | What | Δ val | Δ val_unseen | Dep. (val) |
 |---|---|---|---|---|
-| K3 | Oráculo: espectro limpo no P3 | +0,267 | +0,208 | 1,09 |
-| C3 | P3 + S5 + P8 | +0,121 | −0,127 | 1,70 |
-| C1 | P3 + S5 | +0,073 | −0,128 | 1,15 |
-| S5 | Estimativa no tempo no `enc_s2` | +0,071 | −0,015 | 1,30 |
-| L+1 | P3 deslocado em +1 quadro | +0,066 | −0,109 | 0,39 |
-| C2 | P3 + P8 | +0,064 | −0,123 | 1,54 |
-| N‑d P2 | Encoder fino | +0,061 | −0,101 | 0,27 |
-| G1 / G3 | Gerador linear / tronco de 512 canais | +0,061 / +0,057 | −0,117 / −0,123 | 0,45 / 0,39 |
-| **N‑d P3** | `bott_pre`, a base das Fases 2–4 | +0,059 | −0,116 | 0,37 |
-| T1–T8 | Treino da fusão | +0,040 a +0,058 | −0,102 a −0,146 | 0,30 a 0,44 |
-| O1, O3, O4, O5 | Operadores | +0,045 a +0,055 | −0,114 a −0,134 | 0,36 a 0,45 |
-| S2 / S4 | Ŝ / [`spec_hidden`; máscara] | +0,055 / +0,053 | −0,073 / −0,141 | 0,24 / 0,36 |
-| N‑d P5 | Decoder grosso | +0,051 | −0,176 | 0,68 |
-| Q2 | CleanSpecNet bidirecional | +0,045 | −0,070 | 0,62 |
-| N‑x P8 | Pós‑filtro | +0,037 | −0,089 | 1,55 |
-| O6 | Atenção cruzada | +0,023 | −0,056 | 0,17 |
-| N‑d, 2º ramo | N‑a combinado (30 épocas) no P3 | +0,021 | −0,032 | 0,05 |
-| L−1 / Lc | −1 quadro / STFT causal | +0,018 / +0,012 | −0,118 / −0,056 | 0,25 / 0,17 |
-| S3 | Máscara | +0,016 | −0,025 | 0,06 |
-| O7 | Troca entre as pilhas Mamba | +0,001 | −0,021 | 0,02 |
-| K2 | Espectro ruidoso | −0,002 | −0,006 | 0,00 |
+| K3 | Oracle: clean spectrum at P3 | +0.267 | +0.208 | 1.09 |
+| C3 | P3 + S5 + P8 | +0.121 | −0.127 | 1.70 |
+| C1 | P3 + S5 | +0.073 | −0.128 | 1.15 |
+| S5 | Time-domain estimate at `enc_s2` | +0.071 | −0.015 | 1.30 |
+| L+1 | P3 shifted by +1 frame | +0.066 | −0.109 | 0.39 |
+| C2 | P3 + P8 | +0.064 | −0.123 | 1.54 |
+| N-d P2 | Fine encoder | +0.061 | −0.101 | 0.27 |
+| G1 / G3 | Linear generator / 512-channel trunk | +0.061 / +0.057 | −0.117 / −0.123 | 0.45 / 0.39 |
+| **N-d P3** | `bott_pre`, the base of Phases 2–4 | +0.059 | −0.116 | 0.37 |
+| T1–T8 | Fusion training | +0.040 to +0.058 | −0.102 to −0.146 | 0.30 to 0.44 |
+| O1, O3, O4, O5 | Operators | +0.045 to +0.055 | −0.114 to −0.134 | 0.36 to 0.45 |
+| S2 / S4 | Ŝ / [`spec_hidden`; mask] | +0.055 / +0.053 | −0.073 / −0.141 | 0.24 / 0.36 |
+| N-d P5 | Coarse decoder | +0.051 | −0.176 | 0.68 |
+| Q2 | Bidirectional CleanSpecNet | +0.045 | −0.070 | 0.62 |
+| N-x P8 | Post-filter | +0.037 | −0.089 | 1.55 |
+| O6 | Cross-attention | +0.023 | −0.056 | 0.17 |
+| N-d, 2nd branch | Combined N-a (30 epochs) at P3 | +0.021 | −0.032 | 0.05 |
+| L−1 / Lc | −1 frame / causal STFT | +0.018 / +0.012 | −0.118 / −0.056 | 0.25 / 0.17 |
+| S3 | Mask | +0.016 | −0.025 | 0.06 |
+| O7 | Exchange between the Mamba stacks | +0.001 | −0.021 | 0.02 |
+| K2 | Noisy spectrum | −0.002 | −0.006 | 0.00 |
 
-Nas 50 execuções curtas, a correlação de Spearman entre os Δ da val e os da val_unseen é de −0,62. Quem mais ganhou na val foi quem mais perdeu com ruído novo.
+Over the 50 short runs, the Spearman correlation between the Δ on val and those on val_unseen is −0.62. The variants that gained most on val lost most on new noise.
 
-### 12.4 Fase 6 (B++, só dados do VB‑DEMAND, protocolo completo, 3 sementes) e Fase 5
+### 12.4 Phase 6 (B++, VB-DEMAND data only, full protocol, 3 seeds) and Phase 5
 
-| Config. | val | val_unseen | Teste | Dep. (teste) |
+| Config. | val | val_unseen | Test | Dep. (test) |
 |---|---|---|---|---|
-| K0full | 2,767 | 3,099 | 3,085 ± 0,007 | — |
-| P3 + B++ | 2,822 (+0,055) | 2,940 (−0,158) | 3,011 ± 0,007 (−0,074) | 0,32 |
-| C3 + B++ | 2,893 (+0,126) | 2,944 (−0,154) | 3,071 ± 0,003 (−0,014) | 1,98 |
+| K0full | 2.767 | 3.099 | 3.085 ± 0.007 | — |
+| P3 + B++ | 2.822 (+0.055) | 2.940 (−0.158) | 3.011 ± 0.007 (−0.074) | 0.32 |
+| C3 + B++ | 2.893 (+0.126) | 2.944 (−0.154) | 3.071 ± 0.003 (−0.014) | 1.98 |
 
-Diagnóstico no teste:
-- Com a condição desligada, o P3 (semente 1) sobe de 3,018 para 3,107. A condição do B++ atrapalha no teste.
-- Da val para o teste, o B++ sozinho sobe +0,19 e o ramo de onda sobe +0,33.
-- Na val, os ganhos do P3 e do C3 se concentravam em babble (+0,15 e +0,29), em meeting e em ssn. O babble de treino é feito de vozes do VCTK.
-- No teste, o P3 perde nos 5 ruídos. O C3 perde 0,07 em SNR < 2,5 dB.
+Diagnosis on the test set:
+- With the condition turned off, P3 (seed 1) rises from 3.018 to 3.107. The B++ condition hurts on the test set.
+- From val to test, B++ alone rises by +0.19 and the waveform branch by +0.33.
+- On val, the gains of P3 and C3 were concentrated in babble (+0.15 and +0.29), meeting and ssn. The training babble is made of VCTK voices.
+- On the test set, P3 loses on all 5 noises. C3 loses 0.07 at SNR < 2.5 dB.
 
-Fase 5:
-- **Z1** (do zero, 30 épocas, teste): P3 + B++ fez 2,656, contra 2,668 do só onda e 2,650 do híbrido antigo. É um empate.
-- **Z2** (E6): +0,017 na val e −0,039 na val_unseen.
+Phase 5:
+- **Z1** (from scratch, 30 epochs, test): P3 + B++ scored 2.656, against 2.668 for waveform-only and 2.650 for the old hybrid. It is a tie.
+- **Z2** (E6): +0.017 on val and −0.039 on val_unseen.
 
-### 12.5 Fase R: ruído externo, protocolo curto
+### 12.5 Phase R: external noise, short protocol
 
-Ramo espectral sozinho, com a fase ruidosa:
+Spectral branch alone, with the noisy phase:
 
-| Ramo | val | val_unseen | Mistura sem treino com o estágio A, w = 0,5 (val / val_unseen) |
+| Branch | val | val_unseen | Training-free blend with stage A, w = 0.5 (val / val_unseen) |
 |---|---|---|---|
-| Estágio A (ramo de onda, referência) | 2,760 | 3,101 | — |
-| B++ (VB‑DEMAND, 100 épocas) | 2,556 | 2,627 | 2,864 / 3,039 |
-| R_ext50 (p = 0,5, 30 épocas) | 2,415 | 2,880 | 2,785 / 3,163 |
-| R_ext80 (p = 0,8, 30 épocas) | 2,379 | 2,867 | 2,765 / 3,157 |
-| **Bext = R_ext50 com 100 épocas** | 2,483 | **2,902** | 2,818 / **3,177** |
+| Stage A (waveform branch, reference) | 2.760 | 3.101 | — |
+| B++ (VB-DEMAND, 100 epochs) | 2.556 | 2.627 | 2.864 / 3.039 |
+| R_ext50 (p = 0.5, 30 epochs) | 2.415 | 2.880 | 2.785 / 3.163 |
+| R_ext80 (p = 0.8, 30 epochs) | 2.379 | 2.867 | 2.765 / 3.157 |
+| **Bext = R_ext50 with 100 epochs** | 2.483 | **2.902** | 2.818 / **3.177** |
 
-O Bext na val_unseen, comparado com o estágio A:
-- O erro de log‑magnitude fica perto: 0,047 contra 0,043.
-- O Bext fica mais perto do sinal limpo em 61% dos bins, ponderados pela energia.
-- O teto "melhor dos dois" chega a 3,443, ou +0,34.
-- A mistura com w = 0,25 dá 3,168.
+Bext on val_unseen, compared with stage A:
+- The log-magnitude error is close: 0.047 against 0.043.
+- Bext is closer to the clean signal in 61% of the bins, weighted by energy.
+- The "best of the two" ceiling reaches 3.443, i.e. +0.34.
+- The blend with w = 0.25 gives 3.168.
 
-O K0ext (3 sementes), contra o K0, faz −0,011 na val e +0,077 na val_unseen. O ganho vem sobretudo de park e washing.
+K0ext (3 seeds), against K0, scores −0.011 on val and +0.077 on val_unseen. The gain comes mostly from park and washing.
 
-Híbridos (1 semente), com Δ contra o K0ext:
+Hybrids (1 seed), with Δ against K0ext:
 
-| ID | O quê | Δ val | Δ val_unseen | Dep. (val / val_unseen) |
+| ID | What | Δ val | Δ val_unseen | Dep. (val / val_unseen) |
 |---|---|---|---|---|
-| RX_C3 | P3 + S5 + P8 | +0,079 | +0,052 | 1,56 / 1,95 |
-| RX_S5P8 (Fase RT) | S5 + P8, sem o P3 | +0,063 | +0,023 | 1,61 / 1,99 |
-| RX_S5 | S5 | +0,044 | +0,029 | 1,17 / 1,53 |
-| RX_P3 | P3 | +0,024 | +0,012 | 0,09 / 0,11 |
-| RX_P3vb | P3 com o Bext, mas o híbrido treinado só com o VB‑DEMAND (Δ contra o K0) | +0,019 | +0,002 | 0,06 / 0,03 |
+| RX_C3 | P3 + S5 + P8 | +0.079 | +0.052 | 1.56 / 1.95 |
+| RX_S5P8 (Phase RT) | S5 + P8, without P3 | +0.063 | +0.023 | 1.61 / 1.99 |
+| RX_S5 | S5 | +0.044 | +0.029 | 1.17 / 1.53 |
+| RX_P3 | P3 | +0.024 | +0.012 | 0.09 / 0.11 |
+| RX_P3vb | P3 with Bext, but the hybrid trained only on VB-DEMAND (Δ against K0) | +0.019 | +0.002 | 0.06 / 0.03 |
 
-Por tipo de ruído, o RX_C3 ganha:
-- nos 5 ambientes da val_unseen, de +0,04 a +0,06;
-- nos 10 ruídos da val, de +0,04 (car) a +0,15 (babble).
+Per noise type, RX_C3 gains:
+- on the 5 val_unseen environments, from +0.04 to +0.06;
+- on the 10 val noises, from +0.04 (car) to +0.15 (babble).
 
-O C3 com o B++ perdia nos 5 da val_unseen.
+C3 with B++ lost on all 5 val_unseen environments.
 
-### 12.6 Fase RT: ruído externo e Bext, protocolo completo, 3 sementes
+### 12.6 Phase RT: external noise and Bext, full protocol, 3 seeds
 
-| Config. | Parâm. | val | val_unseen | **Teste** | STOI | SI‑SDR | CSIG | CBAK | COVL | Dep. (teste) |
+| Config. | Params | val | val_unseen | **Test** | STOI | SI-SDR | CSIG | CBAK | COVL | Dep. (test) |
 |---|---|---|---|---|---|---|---|---|---|---|
-| K0full (VB‑DEMAND) | 41,4M | 2,767 | 3,099 | 3,085 ± 0,007 | 0,953 | 18,48 | 4,57 | 3,66 | 3,89 | — |
-| K0extfull | 41,4M | 2,754 | 3,185 | 3,164 ± 0,008 | 0,953 | 18,72 | 4,61 | 3,71 | 3,96 | — |
-| RX_P3 | 52,4M | 2,777 | 3,181 | 3,151 ± 0,005 | 0,953 | 18,64 | 4,60 | 3,70 | 3,95 | 0,22 |
-| **RX_C3** | 53,8M | 2,830 | 3,220 | **3,212 ± 0,008** | 0,954 | 18,96 | 4,64 | 3,75 | 4,01 | 2,06 |
+| K0full (VB-DEMAND) | 41.4M | 2.767 | 3.099 | 3.085 ± 0.007 | 0.953 | 18.48 | 4.57 | 3.66 | 3.89 | — |
+| K0extfull | 41.4M | 2.754 | 3.185 | 3.164 ± 0.008 | 0.953 | 18.72 | 4.61 | 3.71 | 3.96 | — |
+| RX_P3 | 52.4M | 2.777 | 3.181 | 3.151 ± 0.005 | 0.953 | 18.64 | 4.60 | 3.70 | 3.95 | 0.22 |
+| **RX_C3** | 53.8M | 2.830 | 3.220 | **3.212 ± 0.008** | 0.954 | 18.96 | 4.64 | 3.75 | 4.01 | 2.06 |
 
-**RX_C3 contra o K0extfull, no teste: +0,048.**
-- Por semente: +0,056, +0,048 e +0,039, todas com p de Holm < 1e‑30.
-- Por ruído: de +0,044 a +0,054 em cada um dos 5.
-- Por SNR: o menor ganho é em SNR ≥ 12,5 dB (+0,02 a +0,03). Em SNR < 2,5 dB o ganho é de +0,03 a +0,05; com o B++, o C3 perdia 0,07 nessa faixa.
+**RX_C3 against K0extfull, on the test set: +0.048.**
+- Per seed: +0.056, +0.048 and +0.039, all with Holm p < 1e-30.
+- Per noise: from +0.044 to +0.054 on each of the 5.
+- Per SNR: the smallest gain is at SNR ≥ 12.5 dB (+0.02 to +0.03). At SNR < 2.5 dB the gain is +0.03 to +0.05; with B++, C3 lost 0.07 in that range.
 
-**RX_P3 contra o K0extfull: −0,013.**
-- Por semente: −0,008, −0,014 e −0,017, significativo só em uma.
-- Perde nos 5 ruídos.
+**RX_P3 against K0extfull: −0.013.**
+- Per seed: −0.008, −0.014 and −0.017, significant for only one.
+- It loses on all 5 noises.
 
-**K0extfull contra o K0full: +0,079.** Ganha nos 5 ruídos do teste, de +0,06 a +0,10.
+**K0extfull against K0full: +0.079.** It gains on all 5 test noises, from +0.06 to +0.10.
 
-### 12.7 Validações contra o teste
+### 12.7 Validation sets against the test set
 
-| Comparação | Δ val | Δ val_unseen | Δ teste |
+| Comparison | Δ val | Δ val_unseen | Δ test |
 |---|---|---|---|
-| P3 + B++ − K0full (Fase 6) | +0,055 | −0,158 | −0,074 |
-| C3 + B++ − K0full (Fase 6) | +0,126 | −0,154 | −0,014 |
-| K0extfull − K0full | −0,013 | +0,086 | +0,079 |
-| RX_P3 − K0extfull | +0,022 | −0,004 | −0,013 |
-| RX_C3 − K0extfull | +0,076 | +0,035 | +0,048 |
-| K0 receita `noise` − K0extfull (VF) | +0,008 | +0,015 | +0,007 |
-| Mistura K0extfull + Bext − RX_C3 (V1) | −0,019 | +0,009 | −0,002 |
+| P3 + B++ − K0full (Phase 6) | +0.055 | −0.158 | −0.074 |
+| C3 + B++ − K0full (Phase 6) | +0.126 | −0.154 | −0.014 |
+| K0extfull − K0full | −0.013 | +0.086 | +0.079 |
+| RX_P3 − K0extfull | +0.022 | −0.004 | −0.013 |
+| RX_C3 − K0extfull | +0.076 | +0.035 | +0.048 |
+| K0 `noise` recipe − K0extfull (VF) | +0.008 | +0.015 | +0.007 |
+| Blend K0extfull + Bext − RX_C3 (V1) | −0.019 | +0.009 | −0.002 |
 
-### 12.8 Análise (2026‑10‑15)
+### 12.8 Analysis (2026-10-15)
 
-1. **A diversidade de ruído foi a alavanca principal, mais que a arquitetura.**
-   - Sozinho, o ruído externo no ramo de onda rendeu +0,079 no teste. Isso é mais do que qualquer variante de fusão das Fases 1–4, e nenhuma delas se sustentou com ruído novo.
-   - O ramo espectral precisou do mesmo remédio: o PESQ isolado na val_unseen foi de 2,63 para 2,90.
-   - O híbrido também precisa de ruído diverso no próprio treino. O RX_P3vb usa o Bext, mas foi treinado só com o VB‑DEMAND, e ficou em +0,002.
-2. **A fusão só ajuda quando o ramo espectral generaliza, e o ganho vem das fusões offline.**
-   - S5 e P8 usam a estimativa do ramo espectral diretamente.
-   - O P3 sozinho perde no teste, mas dentro do C3 contribui: sem ele, o C3 perde 0,017 na val e 0,029 na val_unseen (1 semente).
-3. **Os dois ramos se complementam muito, e a fusão aproveita pouco disso.** Na val_unseen, contra o estágio A:
-   - o Bext é mais preciso em 61% dos bins;
-   - o teto "melhor dos dois" fica +0,34 acima do ramo de onda;
-   - o oráculo K3 dá +0,21;
-   - o RX_C3 tira +0,035 sobre o K0extfull.
-4. **Pelos números que já existem, uma mistura sem treino rende tanto quanto a fusão aprendida.**
-   - Com o estágio A, a mistura dá +0,076 na val_unseen (Bext, w = 0,5) e +0,051 no teste (B++, w = 0,25).
-   - O RX_C3 dá +0,035 e +0,048 sobre o K0extfull.
-   - As bases são diferentes (estágio A × K0extfull) e a complementaridade pode cair com uma base mais forte. Por isso o V1 vem antes de qualquer outra coisa.
-5. **O RX_C3 é frágil.** Com a condição de outro arquivo, perde 2,06 pontos. Nada garante o comportamento num ruído em que o Bext falhe.
-6. **Streaming:** nenhuma fusão compatível com streaming ganha no teste. O melhor modelo com 48 ms de lookahead é o K0ext.
-7. **Método:** só a val_unseen acompanhou o sinal do teste (seção 12.7). Os rankings das Fases 1–4 foram feitos na val antiga e não devem orientar novas escolhas.
+1. **Noise diversity was the main lever, more than the architecture.**
+   - On its own, external noise in the waveform branch gave +0.079 on the test set. That is more than any fusion variant of Phases 1–4, and none of those held up with new noise.
+   - The spectral branch needed the same remedy: its stand-alone PESQ on val_unseen went from 2.63 to 2.90.
+   - The hybrid also needs diverse noise in its own training. RX_P3vb uses Bext, but was trained only on VB-DEMAND, and stayed at +0.002.
+2. **Fusion only helps when the spectral branch generalizes, and the gain comes from the offline fusions.**
+   - S5 and P8 use the estimate of the spectral branch directly.
+   - P3 alone loses on the test set, but inside C3 it contributes: without it, C3 loses 0.017 on val and 0.029 on val_unseen (1 seed).
+3. **The two branches complement each other a lot, and the fusion exploits little of that.** On val_unseen, against stage A:
+   - Bext is more accurate in 61% of the bins;
+   - the "best of the two" ceiling is +0.34 above the waveform branch;
+   - the K3 oracle gives +0.21;
+   - RX_C3 gets +0.035 over K0extfull.
+4. **From the numbers that already exist, a training-free blend gives as much as the learned fusion.**
+   - With stage A, the blend gives +0.076 on val_unseen (Bext, w = 0.5) and +0.051 on the test set (B++, w = 0.25).
+   - RX_C3 gives +0.035 and +0.048 over K0extfull.
+   - The bases differ (stage A × K0extfull), and the complementarity may drop with a stronger base. That is why V1 comes before anything else.
+5. **RX_C3 is fragile.** With the condition of another file, it loses 2.06 points. Nothing guarantees its behaviour on a noise where Bext fails.
+6. **Streaming:** no streaming-compatible fusion gains on the test set. The best model with 48 ms of lookahead is K0ext.
+7. **Method:** only val_unseen followed the sign of the test set (section 12.7). The rankings of Phases 1–4 were made on the old val and should not guide new choices.
 
-### 12.9 Fila V (seção 13), executada em 2026‑10‑15, 14:31–17:55 ✔
+### 12.9 Queue V (section 13), run on 2026-10-15, 14:31–17:55 ✔
 
-`scripts/run_ablation.py --phases V1 V3 V2 V5 V6 V4 V7 VF --winner P3_bott_pre`. Tabelas em `results/abl/V*.md`; decisões em `results/abl/V*.json`. Δ em PESQ‑WB; o controle é o K0ext curto (val_unseen 3,169, val 2,749), salvo indicação.
+`scripts/run_ablation.py --phases V1 V3 V2 V5 V6 V4 V7 VF --winner P3_bott_pre`. Tables in `results/abl/V*.md`; decisions in `results/abl/V*.json`. Δ in PESQ-WB; the control is the short K0ext (val_unseen 3.169, val 2.749), unless stated otherwise.
 
-**V1: mistura sem treino × fusão aprendida (protocolo completo, 3 sementes).** O peso escolhido na val_unseen foi w = 0,25 (3,229, contra 3,218 com w = 0,5).
+**V1: training-free blend × learned fusion (full protocol, 3 seeds).** The weight chosen on val_unseen was w = 0.25 (3.229, against 3.218 with w = 0.5).
 
-| Sistema | Parâmetros | val | val_unseen | teste |
+| System | Parameters | val | val_unseen | test |
 |---|---|---|---|---|
-| K0extfull | 41,4M | 2,754 ± 0,004 | 3,185 ± 0,004 | 3,164 ± 0,008 |
-| Mistura K0extfull + Bext (w = 0,25) | 51,7M | 2,811 ± 0,004 | **3,229 ± 0,003** | 3,209 ± 0,005 |
-| RX_C3 | 53,8M | **2,830 ± 0,016** | 3,220 ± 0,018 | **3,212 ± 0,008** |
+| K0extfull | 41.4M | 2.754 ± 0.004 | 3.185 ± 0.004 | 3.164 ± 0.008 |
+| Blend K0extfull + Bext (w = 0.25) | 51.7M | 2.811 ± 0.004 | **3.229 ± 0.003** | 3.209 ± 0.005 |
+| RX_C3 | 53.8M | **2.830 ± 0.016** | 3.220 ± 0.018 | **3.212 ± 0.008** |
 
-- Mistura − RX_C3: −0,019 na val, +0,009 na val_unseen, −0,002 no teste (no teste, o IC 95% de cada semente inclui zero). **`fusion_justified = false`.**
-- No teste, a mistura ganha do K0extfull nas 3 sementes (+0,040 a +0,049) e tem CSIG/COVL iguais aos do RX_C3, com menos variância entre sementes.
-- A fusão aprendida só ganha da mistura nos tipos de ruído vistos no treino (val antiga).
-- Protocolo curto: mistura K0ext + Bext +0,045 a +0,048 na val_unseen, contra +0,052 do RX_C3 curto. O **RX_P8** sozinho dá +0,004.
+- Blend − RX_C3: −0.019 on val, +0.009 on val_unseen, −0.002 on the test set (on the test set, the 95% CI of each seed includes zero). **`fusion_justified = false`.**
+- On the test set, the blend beats K0extfull for all 3 seeds (+0.040 to +0.049) and has the same CSIG/COVL as RX_C3, with less variance between seeds.
+- The learned fusion only beats the blend on the noise types seen in training (old val).
+- Short protocol: blend K0ext + Bext +0.045 to +0.048 on val_unseen, against +0.052 for the short RX_C3. **RX_P8** alone gives +0.004.
 
-**V3: receita de ruído do ramo de onda (K0 curto).**
+**V3: noise recipe of the waveform branch (short K0).**
 
-| Receita | Δ val_unseen | Δ val |
+| Recipe | Δ val_unseen | Δ val |
 |---|---|---|
-| só `noise` (MUSAN noise, p = 0,5) | **+0,027** | +0,007 |
-| p = 0,8 | +0,018 | −0,003 |
-| SNR 0–20 dB | +0,013 | +0,007 |
-| mais babble | +0,002 | +0,002 |
-| p = 0,3 | −0,010 | +0,010 |
+| `noise` only (MUSAN noise, p = 0.5) | **+0.027** | +0.007 |
+| p = 0.8 | +0.018 | −0.003 |
+| SNR 0–20 dB | +0.013 | +0.007 |
+| more babble | +0.002 | +0.002 |
+| p = 0.3 | −0.010 | +0.010 |
 
-- Só `noise`, 3 sementes curtas: +0,020 na val_unseen. Passou e foi ao VF.
-- **VF (protocolo completo, 3 sementes):** 3,171 ± 0,006 no teste contra 3,164 do K0extfull (+0,007; sementes +0,002 / +0,014 / +0,005, só uma significativa). Na val_unseen, +0,015. Ganho real, mas pequeno: não vale trocar a receita da base.
+- `noise` only, 3 short seeds: +0.020 on val_unseen. It passed and went to VF.
+- **VF (full protocol, 3 seeds):** 3.171 ± 0.006 on the test set against 3.164 for K0extfull (+0.007; seeds +0.002 / +0.014 / +0.005, only one significant). On val_unseen, +0.015. A real but small gain: not worth changing the base recipe.
 
-**V2: condition dropout no RX_C3 (curto).**
+**V2: condition dropout in RX_C3 (short).**
 
-| Run | val_unseen | com a condição de outro arquivo | com a fusão desligada | dependência |
+| Run | val_unseen | with the condition of another file | with the fusion turned off | dependency |
 |---|---|---|---|---|
-| RX_C3 | 3,221 | 1,269 | 3,057 | 1,95 |
-| p = 0,15 | 3,209 | 1,309 | **3,196** | 1,90 |
-| p = 0,30 | 3,207 | 1,365 | 3,185 | 1,84 |
+| RX_C3 | 3.221 | 1.269 | 3.057 | 1.95 |
+| p = 0.15 | 3.209 | 1.309 | **3.196** | 1.90 |
+| p = 0.30 | 3.207 | 1.365 | 3.185 | 1.84 |
 
-- Perde 0,012–0,014 do Δ e **não reduz a dependência** (condição errada continua derrubando o PESQ para ~1,3). Reprovado.
-- Efeito colateral: com a fusão desligada, o modelo treinado com p = 0,15 fica em 3,196, acima do K0ext (3,169). O ramo de onda aprende a funcionar sem condição, mas não a ignorar uma condição errada.
+- It loses 0.012–0.014 of the Δ and **does not reduce the dependency** (a wrong condition still drops PESQ to ~1.3). Rejected.
+- Side effect: with the fusion turned off, the model trained with p = 0.15 scores 3.196, above K0ext (3.169). The waveform branch learns to work without a condition, but not to ignore a wrong one.
 
-**V5: fusões compatíveis com streaming (curto, Bext, ruído externo).** Nenhuma passou: S2 +0,014, P2 +0,014, P3 +0,012, G1 +0,008, O4 +0,007, P3 com dropout +0,003, P5 +0,000. Todas abaixo de δ_min na val_unseen, apesar de +0,018 a +0,029 na val antiga.
+**V5: streaming-compatible fusions (short, Bext, external noise).** None passed: S2 +0.014, P2 +0.014, P3 +0.012, G1 +0.008, O4 +0.007, P3 with dropout +0.003, P5 +0.000. All below δ_min on val_unseen, despite +0.018 to +0.029 on the old val.
 
-**V6: destilação do RX_C3 no modelo só de onda (curto).** λ = 1: +0,020 na val_unseen, +0,011 na val; λ = 0,5: +0,016 / +0,010. Abaixo de δ_min por pouco; ganho do mesmo tamanho que o da receita `noise` do V3, que no teste rendeu só +0,007.
+**V6: distillation of RX_C3 into the waveform-only model (short).** λ = 1: +0.020 on val_unseen, +0.011 on val; λ = 0.5: +0.016 / +0.010. Just below δ_min; a gain of the same size as the `noise` recipe of V3, which gave only +0.007 on the test set.
 
-**V4: ramo espectral sozinho (protocolo PN, ruído externo).** Referência: R_ext50, PESQ isolado 2,880 na val_unseen.
+**V4: spectral branch alone (PN protocol, external noise).** Reference: R_ext50, stand-alone PESQ 2.880 on val_unseen.
 
-| Ramo | sozinho (val_unseen) | mistura com o estágio A, w = 0,5 (val_unseen) |
+| Branch | alone (val_unseen) | blend with stage A, w = 0.5 (val_unseen) |
 |---|---|---|
-| R_ext50 | 2,880 | 3,163 |
-| R_ext50_final (= Bext) | 2,902 | 3,177 |
-| N3 sub‑banda | 2,875 | 3,146 |
-| profundo (8 camadas) | 2,876 | 3,161 |
-| **bidirecional** | **2,915** | **3,190** |
+| R_ext50 | 2.880 | 3.163 |
+| R_ext50_final (= Bext) | 2.902 | 3.177 |
+| N3 sub-band | 2.875 | 3.146 |
+| deep (8 layers) | 2.876 | 3.161 |
+| **bidirectional** | **2.915** | **3.190** |
 
-Nenhum atingiu o limiar de +0,05. O bidirecional, só com o treino curto, já supera o Bext final (+0,013 sozinho e na mistura); não é causal.
+None reached the +0.05 threshold. The bidirectional one, with only the short training, already beats the final Bext (+0.013 alone and in the blend); it is not causal.
 
-**V7: 30 épocas (1 semente, seed 1).**
+**V7: 30 epochs (1 seed, seed 1).**
 
-| Run | 10 épocas val_unseen | 30 épocas val_unseen |
+| Run | 10 epochs val_unseen | 30 epochs val_unseen |
 |---|---|---|
-| K0extfull | 3,182 | 3,200 (+0,018) |
-| RX_C3 | 3,238 | 3,238 (+0,000) |
+| K0extfull | 3.182 | 3.200 (+0.018) |
+| RX_C3 | 3.238 | 3.238 (+0.000) |
 
-O ramo de onda ainda melhora com mais épocas; o RX_C3 já saturou. A distância cai de +0,056 para +0,038.
+The waveform branch still improves with more epochs; RX_C3 has already saturated. The gap drops from +0.056 to +0.038.
 
-### 12.10 Análise da fila V
+### 12.10 Analysis of queue V
 
-1. **A fusão aprendida não se justifica no ruído novo.** A mistura sem treino dos dois modelos treinados separadamente empata com o RX_C3 no teste (−0,002) e na val_unseen (+0,009), com menos parâmetros, sem treino conjunto e sem a fragilidade da dependência de 2. O RX_C3 só leva vantagem nos ruídos vistos no treino (val antiga, +0,019), o que sugere que o treino conjunto ajusta a fusão aos ruídos do treino.
-2. **O sistema offline recomendado** passa a ser **K0extfull + Bext + mistura (w = 0,25)**: 3,209 ± 0,005 no teste. Para melhorá‑lo, os caminhos são os dois ramos separados: o ramo espectral (o bidirecional é o candidato mais forte, se a latência de utterance inteira for aceitável) e o ramo de onda (mais épocas: +0,018 com 30).
-3. **Streaming:** nenhuma fusão causal, nem a destilação, passou do δ_min. O melhor modelo para streaming continua sendo o K0ext, eventualmente com 30 épocas e a receita `noise` (ganhos pequenos e possivelmente somáveis, não testados juntos).
-4. **Condition dropout** ensina o modelo a funcionar sem condição, não a resistir a uma condição errada. Para reduzir a dependência seria preciso treinar com condições corrompidas (de outro arquivo ou com ruído), o que perde o sentido diante do item 1.
-5. **Método:** a val antiga continuou otimista com tudo que envolve fusão (V5: +0,018 a +0,029 na val, ~0 na val_unseen; V1: favorece o RX_C3). A val_unseen superestimou o V3 `noise` (+0,015 contra +0,007 no teste), mas acertou o sinal; a diferença mistura − RX_C3 ficou dentro do ruído nos dois conjuntos.
+1. **The learned fusion is not justified on new noise.** The training-free blend of the two separately trained models ties with RX_C3 on the test set (−0.002) and on val_unseen (+0.009), with fewer parameters, no joint training and without the fragility of a dependency of 2. RX_C3 only has an edge on the noises seen in training (old val, +0.019), which suggests that joint training fits the fusion to the training noises.
+2. **The recommended offline system** becomes **K0extfull + Bext + blend (w = 0.25)**: 3.209 ± 0.005 on the test set. The ways to improve it are the two separate branches: the spectral branch (the bidirectional one is the strongest candidate, if whole-utterance latency is acceptable) and the waveform branch (more epochs: +0.018 with 30).
+3. **Streaming:** no causal fusion, and no distillation, passed δ_min. The best streaming model is still K0ext, possibly with 30 epochs and the `noise` recipe (small gains that may add up; not tested together).
+4. **Condition dropout** teaches the model to work without a condition, not to resist a wrong one. Reducing the dependency would require training with corrupted conditions (from another file or with noise), which makes little sense given item 1.
+5. **Method:** the old val stayed optimistic about everything involving fusion (V5: +0.018 to +0.029 on val, ~0 on val_unseen; V1: it favours RX_C3). val_unseen overestimated the V3 `noise` recipe (+0.015 against +0.007 on the test set), but got the sign right; the blend − RX_C3 difference stayed within the noise on both sets.
 
-### 12.11 Análise complementar da fila V (2026‑10‑15, noite) ✔
+### 12.11 Complementary analysis of queue V (2026-10-15, evening) ✔
 
-Feita com as saídas regeneradas dos 4 sistemas (K0extfull, RX_C3, mistura, K0 com a receita `noise`; 3 sementes; teste e val_unseen). As saídas reproduzem exatamente os PESQ das tabelas. Os scripts ficaram fora do repositório.
+Done with the regenerated outputs of the 4 systems (K0extfull, RX_C3, blend, K0 with the `noise` recipe; 3 seeds; test and val_unseen). The outputs reproduce the PESQ values of the tables exactly. The scripts were kept out of the repository.
 
-**Por ruído (média das 3 sementes, Δ contra o K0extfull):**
+**Per noise (mean of the 3 seeds, Δ against K0extfull):**
 
-| Ruído | Mistura | RX_C3 | Mistura − RX_C3 |
+| Noise | Blend | RX_C3 | Blend − RX_C3 |
 |---|---|---|---|
-| teste: bus | +0,018 | +0,044 | −0,026 |
-| teste: cafe / living / office / psquare | +0,046 a +0,060 | +0,044 a +0,054 | −0,001 a +0,010 |
-| val_unseen: washing | +0,020 | +0,046 | −0,026 |
-| val_unseen: river / park | +0,059 / +0,063 | +0,024 / +0,044 | +0,035 / +0,020 |
-| val_unseen: field / hallway | +0,039 / +0,040 | +0,037 / +0,025 | +0,002 / +0,015 |
+| test: bus | +0.018 | +0.044 | −0.026 |
+| test: cafe / living / office / psquare | +0.046 to +0.060 | +0.044 to +0.054 | −0.001 to +0.010 |
+| val_unseen: washing | +0.020 | +0.046 | −0.026 |
+| val_unseen: river / park | +0.059 / +0.063 | +0.024 / +0.044 | +0.035 / +0.020 |
+| val_unseen: field / hallway | +0.039 / +0.040 | +0.037 / +0.025 | +0.002 / +0.015 |
 
-O RX_C3 só leva vantagem nos ruídos estacionários de baixa frequência (ônibus e máquina de lavar). Nos ruídos naturais não estacionários (rio, parque), a mistura é melhor.
+RX_C3 only has an edge on stationary low-frequency noise (bus and washing machine). On natural non-stationary noise (river, park), the blend is better.
 
-**Cauda de falhas do RX_C3.** Por arquivo, contra o K0extfull:
+**Failure tail of RX_C3.** Per file, against K0extfull:
 
-| | Mistura (teste) | RX_C3 (teste) | Mistura (val_unseen) | RX_C3 (val_unseen) |
+| | Blend (test) | RX_C3 (test) | Blend (val_unseen) | RX_C3 (val_unseen) |
 |---|---|---|---|---|
-| Arquivos com Δ < −0,1 | 0,5% | 5,9% | 0,4% | 8,3% |
-| Percentil 1 do Δ | −0,08 | −0,47 | −0,09 | −0,47 |
+| Files with Δ < −0.1 | 0.5% | 5.9% | 0.4% | 8.3% |
+| 1st percentile of Δ | −0.08 | −0.47 | −0.09 | −0.47 |
 
-- A mediana do ganho é igual nos dois (~+0,04 a +0,05). O RX_C3 ganha mais vezes por pouco e perde algumas vezes por muito.
-- Nos arquivos da cauda, as outras métricas quase não pioram: ΔSI‑SDR −0,02 dB e ΔSTOI −0,005. Nos demais arquivos, o ΔSI‑SDR é +0,26 dB.
-- A falha já aparece no PC‑1 (só a fusão treinada, ramos congelados). Vem da fusão, não do ajuste conjunto.
+- The median gain is the same for both (~+0.04 to +0.05). RX_C3 wins more often by a little and sometimes loses by a lot.
+- On the tail files, the other metrics barely get worse: ΔSI-SDR −0.02 dB and ΔSTOI −0.005. On the other files, ΔSI-SDR is +0.26 dB.
+- The failure already appears in PC-1 (only the fusion trained, branches frozen). It comes from the fusion, not from the joint fine-tuning.
 
-**Instabilidade do PESQ.** Nos piores arquivos, o PESQ‑WB muda até 1,6 ponto com transformações neutras:
-- Acrescentar 100 amostras de silêncio no início do sinal limpo e do processado: no p257_196, o RX_C3 vai de 2,59 para 4,21.
-- Trocar 3 ms (50 amostras) do RX_C3 pelos do K0: recupera 1,6 ponto. A diferença entre os dois nesse trecho fica ~35 dB abaixo da fala.
-- O K0 também é afetado: no p257_030, o PESQ dele cai de 2,53 para 1,76 com o mesmo silêncio extra.
+**PESQ instability.** On the worst files, PESQ-WB changes by up to 1.6 points under neutral transformations:
+- Prepending 100 samples of silence to both the clean and the processed signal: on p257_196, RX_C3 goes from 2.59 to 4.21.
+- Replacing 3 ms (50 samples) of RX_C3 with those of K0: recovers 1.6 points. The difference between the two in that stretch is ~35 dB below the speech.
+- K0 is affected too: on p257_030, its PESQ drops from 2.53 to 1.76 with the same extra silence.
 
-Com o PESQ calculado como média sobre 5 quantidades de silêncio no início (0, 40, 100, 160 e 240 amostras):
-- **As médias e as conclusões não mudam.** Mistura − RX_C3 = −0,002 no teste e +0,007 na val_unseen. O RX_C3 tem +0,049 e a mistura +0,047 sobre o K0extfull no teste. A receita `noise` tem +0,005 no teste e +0,015 na val_unseen.
-- **A cauda do RX_C3 continua:** 5,6% dos arquivos no teste e 8,1% na val_unseen. Cerca de metade deles falha nas 3 sementes (21 no teste, 22 na val_unseen).
-- **O teste é bem mais instável que a val_unseen:** 4,5% dos arquivos variam mais de 0,5 entre as quantidades de silêncio, contra 0,2% na val_unseen.
+With PESQ computed as the mean over 5 amounts of leading silence (0, 40, 100, 160 and 240 samples):
+- **The means and the conclusions do not change.** Blend − RX_C3 = −0.002 on the test set and +0.007 on val_unseen. RX_C3 has +0.049 and the blend +0.047 over K0extfull on the test set. The `noise` recipe has +0.005 on the test set and +0.015 on val_unseen.
+- **The RX_C3 tail remains:** 5.6% of the files on the test set and 8.1% on val_unseen. About half of them fail for all 3 seeds (21 on the test set, 22 on val_unseen).
+- **The test set is much less stable than val_unseen:** 4.5% of the files vary by more than 0.5 between the amounts of silence, against 0.2% on val_unseen.
 
-Conclusão: a cauda é real para o PESQ, mas não aparece no SI‑SDR nem no STOI. Só uma audição dos 21 arquivos do teste que falham nas 3 sementes diz se ela é audível.
+Conclusion: the tail is real for PESQ, but it does not show in SI-SDR or STOI. Only listening to the 21 test files that fail for all 3 seeds can tell whether it is audible.
 
-**Variância entre sementes (desvio padrão do PESQ):**
+**Variance between seeds (standard deviation of PESQ):**
 
-| | val_unseen | teste |
+| | val_unseen | test |
 |---|---|---|
-| Mistura | 0,003 | 0,005 |
-| RX_C3 | 0,018 | 0,008 |
+| Blend | 0.003 | 0.005 |
+| RX_C3 | 0.018 | 0.008 |
 
-**Médias de formas de onda (sem treino, pesos 0,5 / 0,5):**
+**Waveform averages (training-free, weights 0.5 / 0.5):**
 
-| Combinação | teste | val_unseen |
+| Combination | test | val_unseen |
 |---|---|---|
-| RX_C3 + mistura | **3,238 ± 0,004** | **3,253 ± 0,010** |
-| RX_C3 + K0extfull | 3,220 ± 0,002 | 3,238 ± 0,010 |
-| Mistura + K0 receita `noise` | 3,207 ± 0,006 | 3,231 ± 0,002 |
+| RX_C3 + blend | **3.238 ± 0.004** | **3.253 ± 0.010** |
+| RX_C3 + K0extfull | 3.220 ± 0.002 | 3.238 ± 0.010 |
+| Blend + K0 `noise` recipe | 3.207 ± 0.006 | 3.231 ± 0.002 |
 
-- A média RX_C3 + mistura ganha +0,026 sobre o RX_C3 no teste. Os dois conjuntos concordam, e não houve ajuste de peso.
-- Os ganhos por arquivo da mistura e do RX_C3 têm correlação de só 0,60 (teste) e 0,45 (val_unseen). Os erros dos dois sistemas são diferentes o bastante para que a média os compense.
-- Dois modelos de onda quase iguais (K0ext e K0 com a receita `noise`) não somam nada.
-- Custo: K0 + RX_C3 + Bext, ~105M parâmetros e duas passadas, offline. É um ensemble, não uma arquitetura.
+- The RX_C3 + blend average gains +0.026 over RX_C3 on the test set. The two sets agree, and no weight was tuned.
+- The per-file gains of the blend and of RX_C3 have a correlation of only 0.60 (test) and 0.45 (val_unseen). The errors of the two systems differ enough for the average to compensate them.
+- Two almost identical waveform models (K0ext and K0 with the `noise` recipe) add nothing.
+- Cost: K0 + RX_C3 + Bext, ~105M parameters and two passes, offline. It is an ensemble, not an architecture.
 
 ---
 
-## 13. Próximos experimentos (proposta de 2026‑10‑15)
+## 13. Next experiments (proposal of 2026-10-15)
 
-**Estado:** V1–V7 executados em 2026‑10‑15 (seção 12.9). V4d e V8 não foram executados: exigem baixar outro corpus, e o candidato óbvio (ESC‑50) vem do Freesound, como o MUSAN, cujos IDs não são listados, então não há como garantir ruído inédito.
+**Status:** V1–V7 run on 2026-10-15 (section 12.9). V4d and V8 were not run: they require downloading another corpus, and the obvious candidate (ESC-50) comes from Freesound, like MUSAN, whose IDs are not listed, so there is no way to guarantee unseen noise.
 
-**Regras para todos:**
-- A seleção usa a val_unseen. Na val antiga, a variante não pode cair mais de 0,04 (2·δ_min) contra o controle.
-- O Δ é sempre contra o controle com o mesmo treino: o K0ext, ou o K0 de uma receita nova.
-- Na triagem, 1 semente; no protocolo completo, 3.
-- O teste fica só para a confirmação final.
+**Rules for all:**
+- Selection uses val_unseen. On the old val, a variant may not drop by more than 0.04 (2·δ_min) against the control.
+- Δ is always against the control with the same training: K0ext, or the K0 of a new recipe.
+- Screening uses 1 seed; the full protocol, 3.
+- The test set is kept for the final confirmation only.
 
-### Prioridade 1: próxima fila, pouco ou nenhum código
+### Priority 1: next queue, little or no code
 
-| ID | Experimento | Pergunta | Custo ◇ |
+| ID | Experiment | Question | Cost ◇ |
 |---|---|---|---|
-| **V1** | **Controle de ensemble.** Mistura sem treino do K0extfull (3 sementes) com o Bext, w = 0,25 e 0,5, com a fase do ramo de onda (`scripts/diagnose_spec_branch.py --wave_ckpt logs/abl/K0extfull_s*/last.ckpt --spec_ckpt Bext=logs/abl/N_R_ext50_final/last.ckpt`), na val, na val_unseen e, com o w escolhido, no teste. Também uma execução curta do **RX_P8**: só o P8, com o Bext e o ruído externo | A fusão aprendida (RX_C3) supera uma simples mistura dos mesmos dois modelos? | ~1 h, quase tudo inferência |
-| **V3** | **Receita de ruído do ramo de onda.** K0 curto com p = 0,3 e 0,8 (hoje 0,5); SNR de 0 a 20 dB (hoje −5 a 20); pesos só `noise` e com mais babble (0,4 / 0,4 / 0,2; hoje 0,6 / 0,25 / 0,15) | O p = 0,5 foi escolhido pelo ramo espectral. Qual receita é a melhor para o ramo de onda? | ~6 execuções curtas, ~45 min |
+| **V1** | **Ensemble control.** Training-free blend of K0extfull (3 seeds) with Bext, w = 0.25 and 0.5, with the phase of the waveform branch (`scripts/diagnose_spec_branch.py --wave_ckpt logs/abl/K0extfull_s*/last.ckpt --spec_ckpt Bext=logs/abl/N_R_ext50_final/last.ckpt`), on val, val_unseen and, with the chosen w, the test set. Also a short run of **RX_P8**: only P8, with Bext and the external noise | Does the learned fusion (RX_C3) beat a simple blend of the same two models? | ~1 h, mostly inference |
+| **V3** | **Noise recipe of the waveform branch.** Short K0 with p = 0.3 and 0.8 (today 0.5); SNR from 0 to 20 dB (today −5 to 20); weights `noise` only and more babble (0.4 / 0.4 / 0.2; today 0.6 / 0.25 / 0.15) | p = 0.5 was chosen by the spectral branch. Which recipe is best for the waveform branch? | ~6 short runs, ~45 min |
 
-**Decisões:**
-- **V1, se a mistura ficar a menos de δ_min do RX_C3 na val_unseen:** a fusão aprendida não se justifica.
-  - O sistema offline passa a ser K0ext + Bext + mistura, sem treino conjunto, com os dois ramos treinados separadamente.
-  - A pesquisa de fusão fica só para o que a mistura não faz: streaming (V5) e destilação (V6).
-- **V1, se o RX_C3 ficar ≥ δ_min acima da mistura:** a fusão aprendida acrescenta algo. Seguir com V2 e V4 sobre o RX_C3.
-- **V3, se uma receita superar o K0ext por ≥ δ_min:** ela vira a base dos próximos híbridos. Talvez seja preciso retreinar o Bext com ela.
+**Decisions:**
+- **V1, if the blend is within δ_min of RX_C3 on val_unseen:** the learned fusion is not justified.
+  - The offline system becomes K0ext + Bext + blend, without joint training, with the two branches trained separately.
+  - Fusion research is kept only for what the blend cannot do: streaming (V5) and distillation (V6).
+- **V1, if RX_C3 is ≥ δ_min above the blend:** the learned fusion adds something. Continue with V2 and V4 on RX_C3.
+- **V3, if a recipe beats K0ext by ≥ δ_min:** it becomes the base of the next hybrids. Bext may need to be retrained with it.
 
-### Prioridade 2: código novo ou dependente do V1/V3
+### Priority 2: new code, or dependent on V1/V3
 
-| ID | Experimento | Pergunta / hipótese | Custo ◇ |
+| ID | Experiment | Question / hypothesis | Cost ◇ |
 |---|---|---|---|
-| **V2** | **Condition dropout no RX_C3.** Com probabilidade p por lote, o passo de treino roda com `fusion_enabled=False` (P3, S5 e P8 desligados), com p = 0,15 e 0,3. O ramo espectral continua recebendo a perda espectral. Se funcionar, uma versão por exemplo (máscara por item em cada caminho da fusão) vem depois | A dependência cai de ~2 para menos de 0,5 sem perder o Δ? Com a fusão desligada, o PESQ deve ficar perto do K0ext em vez de desabar. A regularização pode até ajudar na val_unseen | ~1 h de código e testes, mais ~30 min de GPU |
-| **V4** | **Ramo espectral melhor para o sistema offline**, no protocolo PN com ruído externo, escolhido pelo PESQ isolado na val_unseen e depois testado no RX_C3. Candidatos: (a) N3 sub‑banda, que tende a generalizar melhor e empatou com o N1b na val antiga; (b) escala (N9) e mais épocas; (c) CleanSpecNet bidirecional, só para o modo de utterance inteira, que é outra classe de latência; (d) outro corpus de ruído além do MUSAN, sem DEMAND, o que exige download | O oráculo K3 (+0,21) e o teto "melhor dos dois" (+0,34) mostram espaço. Um Bext melhor aumenta o ganho do híbrido (H10)? | ~1–3 h por candidato |
-| **V5** | **Nova triagem das fusões compatíveis com streaming na val_unseen**, com o Bext e o ruído externo: P2, P5, S2, O4/G1, Lc e o P3 com condition dropout | Existe fusão compatível com streaming que ganhe com ruído novo? Só vale se o híbrido em streaming for objetivo | ~8 execuções curtas, ~1,5 h |
-| **V6** | **Destilação do RX_C3 no modelo só de onda.** O professor é o RX_C3 congelado; o aluno começa no K0extfull. Perda: onda contra o sinal limpo + λ · L1 contra a saída do professor, com o ruído externo | Parte dos +0,048 passa para um modelo de 41,4M parâmetros, com 48 ms de lookahead e sem ramo espectral? É o caminho mais provável para um modelo de streaming melhor que o K0ext | ~1–2 h de código, mais ~30 min de GPU |
-| **V7** | **Treino mais longo:** K0ext e RX_C3 com 30 épocas no protocolo completo, 1 semente cada | O ruído externo deixa o treino mais difícil. O ganho do RX_C3 cresce ou some com mais épocas? | ~2–3 h |
-| V8 (opcional) | **Segundo conjunto de ruído não visto**, por exemplo NOISEX‑92 ou ESC‑50, com os falantes do teste | A val_unseen passou a ser usada para seleção, então um conjunto independente fortalece a conclusão final | Download, mais ~10 min |
+| **V2** | **Condition dropout in RX_C3.** With probability p per batch, the training step runs with `fusion_enabled=False` (P3, S5 and P8 off), with p = 0.15 and 0.3. The spectral branch keeps getting the spectral loss. If it works, a per-example version (a per-item mask on each fusion path) comes next | Does the dependency drop from ~2 to below 0.5 without losing the Δ? With the fusion off, PESQ should stay close to K0ext instead of collapsing. The regularization may even help on val_unseen | ~1 h of code and tests, plus ~30 min of GPU |
+| **V4** | **Better spectral branch for the offline system**, in the PN protocol with external noise, chosen by the stand-alone PESQ on val_unseen and then tested in RX_C3. Candidates: (a) N3 sub-band, which tends to generalize better and tied with N1b on the old val; (b) scale (N9) and more epochs; (c) bidirectional CleanSpecNet, only for whole-utterance mode, which is another latency class; (d) another noise corpus besides MUSAN, without DEMAND, which requires a download | The K3 oracle (+0.21) and the "best of the two" ceiling (+0.34) show there is room. Does a better Bext increase the hybrid's gain (H10)? | ~1–3 h per candidate |
+| **V5** | **New screening of the streaming-compatible fusions on val_unseen**, with Bext and the external noise: P2, P5, S2, O4/G1, Lc and P3 with condition dropout | Is there a streaming-compatible fusion that gains on new noise? Only worth it if a streaming hybrid is a goal | ~8 short runs, ~1.5 h |
+| **V6** | **Distillation of RX_C3 into the waveform-only model.** The teacher is the frozen RX_C3; the student starts from K0extfull. Loss: waveform against the clean signal + λ · L1 against the teacher output, with the external noise | Does part of the +0.048 pass to a 41.4M-parameter model, with 48 ms of lookahead and no spectral branch? It is the most likely path to a streaming model better than K0ext | ~1–2 h of code, plus ~30 min of GPU |
+| **V7** | **Longer training:** K0ext and RX_C3 with 30 epochs in the full protocol, 1 seed each | External noise makes training harder. Does the RX_C3 gain grow or vanish with more epochs? | ~2–3 h |
+| V8 (optional) | **Second unseen-noise set**, for example NOISEX-92 or ESC-50, with the test speakers | val_unseen is now used for selection, so an independent set strengthens the final conclusion | Download, plus ~10 min |
 
-**Confirmação final:** os vencedores do V1–V7, com 3 sementes, o protocolo completo e o teste uma única vez.
+**Final confirmation:** the winners of V1–V7, with 3 seeds, the full protocol and the test set used once.
 
-**O que não repetir:** triagens de operador, ponto de injeção ou treino da fusão escolhidas pela val antiga.
+**What not to repeat:** screenings of operator, injection point or fusion training chosen on the old val.
 
-**Ordem sugerida:**
-1. Uma fila com V1 e V3, que não precisam de código.
-2. Enquanto ela roda, implementar o V2. Depois, rodar o V2.
-3. Escolher entre V4 e V6 conforme o resultado do V1.
+**Suggested order:**
+1. One queue with V1 and V3, which need no code.
+2. While it runs, implement V2. Then run V2.
+3. Choose between V4 and V6 depending on the result of V1.
 
 ---
 
-## 14. Melhor sistema e modelo mais simples e robusto (fila W, 2026‑10‑15)
+## 14. Best system and simplest robust model (queue W, 2026-10-15)
 
-**Objetivos:**
-- **(A) Melhor resultado:** o maior PESQ no teste, offline, sem limite de custo.
-- **(B) Modelo mais simples e robusto:** uma única rede só de onda (41,4M parâmetros, a do K0ext), sem fusão e compatível com streaming. Robusto quer dizer:
-  - estável entre sementes;
-  - sem cauda de arquivos com falha;
-  - bom em ruído novo, inclusive com SNR baixo.
+**Goals:**
+- **(A) Best result:** the highest test PESQ, offline, with no cost limit.
+- **(B) Simplest robust model:** a single waveform-only network (41.4M parameters, that of K0ext), with no fusion and streaming-compatible. Robust means:
+  - stable between seeds;
+  - no tail of failed files;
+  - good on new noise, including at low SNR.
 
-**Ponto de partida (teste, 3 sementes):**
+**Starting point (test, 3 seeds):**
 
-| Sistema | Parâmetros | Teste |
+| System | Parameters | Test |
 |---|---|---|
-| K0extfull (só onda, 10 épocas) | 41,4M | 3,164 ± 0,008 |
-| Mistura K0extfull + Bext (w = 0,25) | 51,7M | 3,209 ± 0,005 |
-| RX_C3 | 53,8M | 3,212 ± 0,008 |
-| Média das saídas RX_C3 + mistura (12.11) | ~105M | 3,238 ± 0,004 |
+| K0extfull (waveform-only, 10 epochs) | 41.4M | 3.164 ± 0.008 |
+| Blend K0extfull + Bext (w = 0.25) | 51.7M | 3.209 ± 0.005 |
+| RX_C3 | 53.8M | 3.212 ± 0.008 |
+| Output average RX_C3 + blend (12.11) | ~105M | 3.238 ± 0.004 |
 
-**Regras:**
-- **Seleção** na val_unseen, com a val antiga como guarda (−0,04) e δ_min = 0,02, como na seção 13.
-- **Guardas contra "PESQ hacking"** para as perdas novas, na val_unseen: ΔSTOI ≥ −0,003 e ΔSI‑SDR ≥ −0,5 dB.
-- **TTA** só entra se ganhar ≥ 0,01 na val_unseen, porque multiplica o custo.
-- **Soups** são sempre avaliadas, porque não custam nada.
-- **Teste** só na fase final (WF).
+**Rules:**
+- **Selection** on val_unseen, with the old val as a guard (−0.04) and δ_min = 0.02, as in section 13.
+- **Guards against "PESQ hacking"** for the new losses, on val_unseen: ΔSTOI ≥ −0.003 and ΔSI-SDR ≥ −0.5 dB.
+- **TTA** is accepted only if it gains ≥ 0.01 on val_unseen, because it multiplies the cost.
+- **Soups** are always evaluated, because they cost nothing.
+- **Test set** only in the final phase (WF).
 
-### 14.1 Experimentos
+### 14.1 Experiments
 
-| ID | Experimento | Pergunta / decisão | Custo ◇ |
+| ID | Experiment | Question / decision | Cost ◇ |
 |---|---|---|---|
-| **W0** | Conjunto **val_unseen_low**: os ruídos da val_unseen a −5 e 0 dB (770 arquivos, 77 por condição; uma mistura que saturaria é reescalada junto com uma cópia do sinal limpo) | Teste de estresse de robustez | feito |
-| **W1** | **Sem treino**, sobre checkpoints existentes: (a) **soup de pesos** das 3 sementes do K0extfull e do K0ext; (b) média das saídas das 3 sementes, como teto da soup; (c) **TTA** com inversão de sinal e com 4 deslocamentos da entrada (0, 64, 128 e 192 amostras) no K0extfull; (d) peso w da mistura com o Bext (0,15 / 0,25 / 0,35 / 0,5); (e) peso α do RX_C3 na média RX_C3 + mistura (0,3 a 0,7) | Melhorias de graça? Escolhe w, α e a TTA → `W1.json` | ~30 min |
-| **W2** | **Perda do ramo de onda** (K0 curto, semente 1, ruído externo): (a) MSE de magnitude comprimida \|X\|^0,3 (n_fft 400) com peso 10 e 30; (b) **discriminador métrico** (MetricGAN+, como no CMGAN e no MP‑SENet) com peso 0,3 e 1,0 | Uma perda mais alinhada à percepção melhora o PESQ em ruído novo sem custo na inferência? | ~35 min |
-| **W3** | **Destilação da média RX_C3 + mistura** (o melhor sistema, α e w do W1) no modelo só de onda, λ = 1 e 2 (K0 curto) | Um professor melhor e sem a cauda do RX_C3 passa mais ganho que o V6 (+0,020)? | ~15 min |
-| **W4** | **Receita final do modelo simples:** os vencedores do W2 e do W3 e, se ambos existirem, a combinação deles (curto). Fica a melhor que passar; sem vencedor, a receita é o K0ext puro | → `W4.json` | ~10 min |
-| **W5** | **Bext bidirecional** com o orçamento do Bext (100 épocas; o V4_bidir foi o único candidato acima do Bext) e as misturas com o K0extfull (4 pesos) | Escolhe ramo espectral e w para o sistema offline → `W5.json` | ~50 min |
-| **WF** | **Final, 3 sementes, sementes intercaladas, avaliado no teste, na val_unseen, na val_unseen_low e na val:** (B) K0ext com 30 épocas (controle; a semente 1 é o V7_K0ext30) e a receita do W4 com 30 épocas (S30), mais as soups; (A) mistura de S30 com o ramo espectral do W5 e a média α·RX_C3 + (1−α)·mistura (com a TTA do W1), ao lado da média da análise 12.11 | Números finais dos dois objetivos | ~3–4 h |
-| **WR** | **Relatório de robustez** (`results/abl/W_robustness.md`): por sistema, desvio entre sementes, PESQ robusto no teste, % de arquivos > 0,1 abaixo do K0extfull, pior tipo de ruído, val_unseen_low e streaming dos modelos só de onda | Qual é o modelo mais robusto? | ~40 min |
+| **W0** | **val_unseen_low** set: the val_unseen noises at −5 and 0 dB (770 files, 77 per condition; a mixture that would clip is rescaled together with a copy of the clean signal) | Robustness stress test | done |
+| **W1** | **No training**, on existing checkpoints: (a) **weight soup** of the 3 seeds of K0extfull and of K0ext; (b) mean of the outputs of the 3 seeds, as the soup's ceiling; (c) **TTA** with sign inversion and with 4 input shifts (0, 64, 128 and 192 samples) on K0extfull; (d) blend weight w with Bext (0.15 / 0.25 / 0.35 / 0.5); (e) weight α of RX_C3 in the RX_C3 + blend average (0.3 to 0.7) | Free improvements? Chooses w, α and the TTA → `W1.json` | ~30 min |
+| **W2** | **Loss of the waveform branch** (short K0, seed 1, external noise): (a) MSE of the compressed magnitude \|X\|^0.3 (n_fft 400) with weights 10 and 30; (b) **metric discriminator** (MetricGAN+, as in CMGAN and MP-SENet) with weights 0.3 and 1.0 | Does a loss better aligned with perception improve PESQ on new noise at no inference cost? | ~35 min |
+| **W3** | **Distillation of the RX_C3 + blend average** (the best system, α and w from W1) into the waveform-only model, λ = 1 and 2 (short K0) | Does a better teacher without the RX_C3 tail pass on more gain than V6 (+0.020)? | ~15 min |
+| **W4** | **Final recipe of the simple model:** the winners of W2 and W3 and, if both exist, their combination (short). The best one that passes is kept; with no winner, the recipe is plain K0ext | → `W4.json` | ~10 min |
+| **W5** | **Bidirectional Bext** with the Bext budget (100 epochs; V4_bidir was the only candidate above Bext) and the blends with K0extfull (4 weights) | Chooses the spectral branch and w for the offline system → `W5.json` | ~50 min |
+| **WF** | **Final, 3 seeds, interleaved, evaluated on test, val_unseen, val_unseen_low and val:** (B) K0ext with 30 epochs (control; seed 1 is V7_K0ext30) and the W4 recipe with 30 epochs (S30), plus the soups; (A) blend of S30 with the W5 spectral branch and the average α·RX_C3 + (1−α)·blend (with the W1 TTA), next to the average of analysis 12.11 | Final numbers for both goals | ~3–4 h |
+| **WR** | **Robustness report** (`results/abl/W_robustness.md`): per system, standard deviation between seeds, robust test PESQ, % of files > 0.1 below K0extfull, worst noise type, val_unseen_low and streaming of the waveform-only models | Which model is the most robust? | ~40 min |
 
-**Calibração dos pesos das perdas.** Medida com o K0extfull_s1 em recortes de treino com ruído externo, pela norma do gradiente:
-- **Base (L1 + MR‑STFT):** o gradiente vem quase todo do MR‑STFT.
-- **Magnitude comprimida:** cada unidade de peso dá ~0,044 vez o gradiente da base, então os pesos 10 e 30 equivalem a ~0,45 e ~1,3 vez.
-- **Gerador do discriminador métrico** (depois de 500 passos do discriminador): ~0,3 vez a base, então os pesos 0,3 e 1,0 equivalem a ~9% e ~30%.
-- **Termo complexo comprimido:** ficou de fora, porque o gradiente explode nos bins quase sem energia (7,6 vezes o da base).
+**Calibration of the loss weights.** Measured with K0extfull_s1 on training crops with external noise, by gradient norm:
+- **Base (L1 + MR-STFT):** the gradient comes almost entirely from MR-STFT.
+- **Compressed magnitude:** each unit of weight gives ~0.044 times the gradient of the base, so weights 10 and 30 amount to ~0.45 and ~1.3 times.
+- **Generator of the metric discriminator** (after 500 discriminator steps): ~0.3 times the base, so weights 0.3 and 1.0 amount to ~9% and ~30%.
+- **Compressed complex term:** left out, because the gradient explodes on bins with almost no energy (7.6 times that of the base).
 
-**Custo de treino** (K0 com 16 recortes de 2 s por lote): base ~16 it/s; destilação com o professor‑ensemble 12 it/s e 4,3 GB; discriminador métrico ~6 it/s (o PESQ dos 16 recortes roda num pool de 8 processos).
+**Training cost** (K0 with 16 crops of 2 s per batch): base ~16 it/s; distillation with the ensemble teacher 12 it/s and 4.3 GB; metric discriminator ~6 it/s (the PESQ of the 16 crops runs in a pool of 8 processes).
 
-### 14.2 Implementação
+### 14.2 Implementation
 
-| Arquivo | Mudança |
+| File | Change |
 |---|---|
 | `losses.py` | `CompressedMagnitudeLoss` |
-| `cleanunet/metric_disc.py` | `MetricDiscriminator`, `batch_pesq` (pool de processos), perdas do gerador e do discriminador |
-| `cleanunet/blend.py` | Mistura por exemplo, usada pelo `evaluate.py` e pelos professores da destilação |
-| `lightning_modules/cleanunet_module.py` | `loss.cmag`; `loss.metric_gan` (otimização manual, dois otimizadores, recorte do gradiente no módulo, `mgan_step` salvo no checkpoint); `distill.teachers` (média ponderada de professores, cada um com mistura opcional) |
-| `train.py` | Sem `gradient_clip_val` no Trainer quando o módulo usa otimização manual |
-| `evaluate.py` | `--tta flip/shift/flipshift`, `--robust_pesq` (coluna `pesq_wb_r`), funções de escrita reutilizáveis |
-| `evaluation/metrics.py` | `robust_pesq_wb` (média sobre 0, 40, 100, 160 e 240 amostras de silêncio no início) |
-| `scripts/make_soup.py` | Soup de checkpoints Lightning da mesma arquitetura |
-| `scripts/ensemble_outputs.py` | Média ponderada de áudios salvos, com métricas no formato do `evaluate.py` |
-| `scripts/robustness_report.py` | Relatório de robustez a partir de um JSON de sistemas |
-| `scripts/make_val_unseen.py` | `--rescale` para SNRs baixos |
-| `scripts/run_ablation.py` | Fases W0–W5, WF e WR |
-| `tests/test_w_experiments.py` | 14 testes, inclusive os da polaridade (14.3); a suíte inteira passa (134) |
+| `cleanunet/metric_disc.py` | `MetricDiscriminator`, `batch_pesq` (process pool), generator and discriminator losses |
+| `cleanunet/blend.py` | Per-example blend, used by `evaluate.py` and by the distillation teachers |
+| `lightning_modules/cleanunet_module.py` | `loss.cmag`; `loss.metric_gan` (manual optimization, two optimizers, gradient clipping in the module, `mgan_step` saved in the checkpoint); `distill.teachers` (weighted average of teachers, each with an optional blend) |
+| `train.py` | No `gradient_clip_val` in the Trainer when the module uses manual optimization |
+| `evaluate.py` | `--tta flip/shift/flipshift`, `--robust_pesq` (column `pesq_wb_r`), reusable writing functions |
+| `evaluation/metrics.py` | `robust_pesq_wb` (mean over 0, 40, 100, 160 and 240 samples of leading silence) |
+| `scripts/make_soup.py` | Soup of Lightning checkpoints with the same architecture |
+| `scripts/ensemble_outputs.py` | Weighted average of saved audio, with metrics in the `evaluate.py` format |
+| `scripts/robustness_report.py` | Robustness report from a JSON of systems |
+| `scripts/make_val_unseen.py` | `--rescale` for low SNRs |
+| `scripts/run_ablation.py` | Phases W0–W5, WF and WR |
+| `tests/test_w_experiments.py` | 14 tests, including the polarity ones (14.3); the whole suite passes (134) |
 
-**Validação antes do lançamento:**
-- Dry run com 13 treinos, 198 avaliações e 75 scripts.
-- Teste das regras de decisão com resultados falsos, em dois cenários (com e sem vencedores; GAN barrado pela guarda de SI‑SDR).
-- Testes de fumaça na GPU do discriminador métrico (500 passos: a perda do discriminador cai de 0,41 para 0,01) e da destilação com o professor‑ensemble.
+**Validation before the launch:**
+- Dry run with 13 trainings, 198 evaluations and 75 scripts.
+- Test of the decision rules with fake results, in two scenarios (with and without winners; GAN blocked by the SI-SDR guard).
+- GPU smoke tests of the metric discriminator (500 steps: the discriminator loss drops from 0.41 to 0.01) and of the distillation with the ensemble teacher.
 
-**Execução:** `logs/abl/run_W.sh` → `logs/abl/queue_W.log`, lançado em 2026‑10‑15 às 21:11.
+**Execution:** `logs/abl/run_W.sh` → `logs/abl/queue_W.log`, launched on 2026-10-15 at 21:11.
 
-**Primeiro resultado:** a soup das 3 sementes do K0extfull dá 2,760 na val e 3,189 na val_unseen, contra médias das sementes de 2,754 e 3,185. Ela supera cada semente isolada, com o custo de um modelo.
+**First result:** the soup of the 3 K0extfull seeds gives 2.760 on val and 3.189 on val_unseen, against seed means of 2.754 and 3.185. It beats every single seed, at the cost of one model.
 
-### 14.3 Achado durante a fila: dependência de polaridade (2026‑10‑15, 21:30) ✔
+### 14.3 Finding during the queue: polarity dependence (2026-10-15, 21:30) ✔
 
-A TTA com inversão de sinal derrubou o K0extfull em 0,24 na val_unseen (W1). Isso levou a um teste direto: o mesmo modelo com a entrada invertida e a saída invertida de volta. Medido em 300 arquivos da val_unseen para o K0extfull e o estágio A e em 150 para os demais:
+The sign-inversion TTA dropped K0extfull by 0.24 on val_unseen (W1). This led to a direct test: the same model with the input inverted and the output inverted back. Measured on 300 val_unseen files for K0extfull and stage A, and on 150 for the others:
 
-| Modelo | Ruído de treino | PESQ normal | PESQ com a entrada invertida |
+| Model | Training noise | Normal PESQ | PESQ with inverted input |
 |---|---|---|---|
-| Estágio A | só VB‑DEMAND | 3,095 | 3,095 |
-| K0_s1 (5 épocas) / K0full_s1 (10 épocas) | só VB‑DEMAND | 3,097 / 3,109 | 3,074 / 3,008 |
-| V3_noise | MUSAN só `noise` | 3,207 | 3,190 |
-| K0ext_s1 (5 épocas) | MUSAN noise / babble / música | 3,181 | **1,976** |
-| K0extfull_s1 (10 épocas) | idem | 3,187 | **1,494** (STOI 0,57; SI‑SDR 0,95 dB) |
-| V3_babble | mais babble | 3,180 | **1,528** |
+| Stage A | VB-DEMAND only | 3.095 | 3.095 |
+| K0_s1 (5 epochs) / K0full_s1 (10 epochs) | VB-DEMAND only | 3.097 / 3.109 | 3.074 / 3.008 |
+| V3_noise | MUSAN `noise` only | 3.207 | 3.190 |
+| K0ext_s1 (5 epochs) | MUSAN noise / babble / music | 3.181 | **1.976** |
+| K0extfull_s1 (10 epochs) | same | 3.187 | **1.494** (STOI 0.57; SI-SDR 0.95 dB) |
+| V3_babble | more babble | 3.180 | **1.528** |
 
-**Interpretação:**
-- O babble do MUSAN é feito de fala de outro corpus, e cada locutor entra com a polaridade original da gravação. Como a forma de onda da fala é assimétrica, o modelo aprendeu um atalho: manter a fala com a polaridade do VCTK e remover a outra.
-- Com a entrada invertida, a fala‑alvo passa a ter a "polaridade do babble" e é apagada.
-- O teste do VB‑DEMAND não revela isso, porque a polaridade dele é constante.
-- O babble do próprio VB‑DEMAND é feito de vozes do VCTK, por isso o K0 só com VB quase não sofre. Mesmo assim, ele perde 0,10 com 10 épocas.
+**Interpretation:**
+- The MUSAN babble is made of speech from another corpus, and each talker comes in with the original polarity of the recording. Since the speech waveform is asymmetric, the model learned a shortcut: keep the speech with the VCTK polarity and remove the other one.
+- With the input inverted, the target speech takes on the "babble polarity" and gets erased.
+- The VB-DEMAND test set does not reveal this, because its polarity is constant.
+- The babble of VB-DEMAND itself is made of VCTK voices, which is why K0 with VB data only barely suffers. Even so, it loses 0.10 with 10 epochs.
 
-**Consequências:**
-- Todos os modelos de onda treinados com o ruído externo padrão herdam o atalho: K0ext, K0extfull, RX_C3 e as misturas baseadas neles. O Bext é invariante por construção, porque usa só a magnitude.
-- Para o objetivo (B), robustez, isso precisa ser corrigido.
+**Consequences:**
+- Every waveform model trained with the default external noise inherits the shortcut: K0ext, K0extfull, RX_C3 and the blends based on them. Bext is invariant by construction, because it uses only the magnitude.
+- For goal (B), robustness, this must be fixed.
 
-**Correções implementadas** (desligadas por padrão, para não alterar as execuções da fila em andamento):
-- `augment_polarity: p`, no módulo: inverte o par de treino inteiro com probabilidade p. Os professores da destilação veem sempre a polaridade original; o sinal é aplicado à saída deles.
-- `data.ext_noise.random_sign: true`, no `noise_bank.py`: dá sinal aleatório a cada locutor do babble e a cada trecho de ruído ou música.
-- `evaluate.py --invert`: avalia com a entrada invertida.
-- Testes: a suíte passa (134).
+**Fixes implemented** (off by default, so as not to change the runs of the queue in progress):
+- `augment_polarity: p`, in the module: inverts the whole training pair with probability p. The distillation teachers always see the original polarity; the sign is applied to their output.
+- `data.ext_noise.random_sign: true`, in `noise_bank.py`: gives a random sign to each babble talker and each noise or music excerpt.
+- `evaluate.py --invert`: evaluates with the inverted input.
+- Tests: the suite passes (134).
 
-**Fase WP** (inserida antes do W5 e do WF; a fila foi reiniciada às 21:45 sem perder trabalho):
-- **Candidatos** (K0 curto, semente 1): `WP_flip` (inversão do par, p = 0,5), `WP_sign` (sinal aleatório nas fontes), `WP_both` (os dois). Também o V3_noise (sem babble nem música; 3 sementes).
-- **Regra:** a perda com a entrada invertida deve ser ≤ 0,05, o Δ na val_unseen contra o K0ext deve ser ≥ −δ_min, e a val serve de guarda. Entre os que passam, fica o melhor Δ. Um vencedor de 1 semente é confirmado com as sementes 2 e 3.
-- **Efeito nos finais (WF):** a correção escolhida entra no controle (K0ext30p, 30 épocas, 3 sementes novas) e na receita S30. O V7_K0ext30 (sem correção) fica como referência.
-- **Efeito no WR:** o relatório ganha a coluna "PESQ com a entrada invertida" na val_unseen, para todos os sistemas.
-- **Expectativa:** o sinal aleatório sozinho não deve bastar, porque a fala‑alvo continuaria sempre com a mesma polaridade.
+**Phase WP** (inserted before W5 and WF; the queue was restarted at 21:45 without losing work):
+- **Candidates** (short K0, seed 1): `WP_flip` (pair inversion, p = 0.5), `WP_sign` (random sign on the sources), `WP_both` (both). Also V3_noise (no babble or music; 3 seeds).
+- **Rule:** the loss with the inverted input must be ≤ 0.05, the Δ on val_unseen against K0ext must be ≥ −δ_min, and val acts as a guard. Among those that pass, the best Δ wins. A 1-seed winner is confirmed with seeds 2 and 3.
+- **Effect on the finals (WF):** the chosen fix goes into the control (K0ext30p, 30 epochs, 3 new seeds) and into the S30 recipe. V7_K0ext30 (without the fix) stays as a reference.
+- **Effect on WR:** the report gets a "PESQ with inverted input" column on val_unseen, for every system.
+- **Expectation:** the random sign alone should not be enough, because the target speech would still always have the same polarity.
 
-### 14.4 Resultados da fila W (2026‑10‑15 21:45 → 2026‑10‑16 04:43) ✔
+### 14.4 Results of queue W (2026-10-15 21:45 → 2026-10-16 04:43) ✔
 
-A fila terminou sem falhas. O S30_s1 caiu uma vez com segfault em código nativo, perto da época 24, e foi retomado do último checkpoint. Os números dele ficam entre os das outras duas sementes.
+The queue finished with no failures. S30_s1 crashed once with a segfault in native code, near epoch 24, and was resumed from the last checkpoint. Its numbers lie between those of the other two seeds.
 
-**W1 (sem treino, val_unseen):**
-- **Soup** das 3 sementes do K0extfull: +0,005 (3,189 contra a média 3,185), com o custo de um modelo. A **média das saídas** das 3 sementes dá +0,020, com o custo de três.
-- **TTA rejeitada:** a inversão de sinal perde 0,24 (é o efeito da polaridade, 14.3) e os deslocamentos perdem 0,02.
-- Mistura K0extfull + Bext: w = 0,35 (3,230). Média RX_C3 + mistura: α = 0,4 (3,254).
+**W1 (no training, val_unseen):**
+- **Soup** of the 3 K0extfull seeds: +0.005 (3.189 against the mean 3.185), at the cost of one model. The **mean of the outputs** of the 3 seeds gives +0.020, at the cost of three.
+- **TTA rejected:** sign inversion loses 0.24 (the polarity effect, 14.3) and the shifts lose 0.02.
+- Blend K0extfull + Bext: w = 0.35 (3.230). RX_C3 + blend average: α = 0.4 (3.254).
 
-**W2–W4** (K0 curto, semente 1; Δ contra o K0ext com 3 sementes, que tem val 2,749 e val_unseen 3,169):
+**W2–W4** (short K0, seed 1; Δ against K0ext with 3 seeds, which has val 2.749 and val_unseen 3.169):
 
-| Variante | Δ val_unseen | Δ val | ΔSTOI | ΔSI‑SDR | Decisão |
+| Variant | Δ val_unseen | Δ val | ΔSTOI | ΔSI-SDR | Decision |
 |---|---|---|---|---|---|
-| Magnitude comprimida, peso 10 | +0,030 | +0,029 | +0,0003 | +0,04 dB | passa |
-| Magnitude comprimida, peso 30 | +0,029 | +0,030 | +0,0006 | −0,01 dB | passa |
-| **Discriminador métrico, peso 0,3** | **+0,068** | +0,061 | 0,0000 | −0,41 dB | **vencedor do W2** |
-| Discriminador métrico, peso 1,0 | +0,099 | +0,090 | 0,0000 | −1,07 dB | barrado pela guarda de SI‑SDR |
-| Destilação do ensemble (W3), λ = 1 | +0,026 | +0,022 | +0,0005 | +0,16 dB | passa |
-| Destilação do ensemble (W3), λ = 2 | +0,030 | +0,025 | +0,0004 | +0,15 dB | vencedor do W3 (o V6 deu +0,020) |
-| Discriminador 0,3 + destilação 2 (W4) | +0,056 | +0,048 | +0,0007 | +0,13 dB | perde para o discriminador sozinho |
+| Compressed magnitude, weight 10 | +0.030 | +0.029 | +0.0003 | +0.04 dB | passes |
+| Compressed magnitude, weight 30 | +0.029 | +0.030 | +0.0006 | −0.01 dB | passes |
+| **Metric discriminator, weight 0.3** | **+0.068** | +0.061 | 0.0000 | −0.41 dB | **W2 winner** |
+| Metric discriminator, weight 1.0 | +0.099 | +0.090 | 0.0000 | −1.07 dB | blocked by the SI-SDR guard |
+| Ensemble distillation (W3), λ = 1 | +0.026 | +0.022 | +0.0005 | +0.16 dB | passes |
+| Ensemble distillation (W3), λ = 2 | +0.030 | +0.025 | +0.0004 | +0.15 dB | W3 winner (V6 gave +0.020) |
+| Discriminator 0.3 + distillation 2 (W4) | +0.056 | +0.048 | +0.0007 | +0.13 dB | loses to the discriminator alone |
 
-- **Receita do modelo simples** (`W4.json`): discriminador métrico com peso 0,3.
-- O ganho do discriminador é uniforme nas faixas de SNR (+0,06 a +0,07). A combinação com a destilação recupera o SI‑SDR, mas perde 0,012 de PESQ.
+- **Recipe of the simple model** (`W4.json`): metric discriminator with weight 0.3.
+- The discriminator gain is uniform over the SNR ranges (+0.06 to +0.07). The combination with distillation recovers the SI-SDR, but loses 0.012 PESQ.
 
-**WP: correção da polaridade** (K0 curto; a perda é o PESQ normal menos o PESQ com a entrada invertida, na val_unseen):
+**WP: polarity fix** (short K0; the loss is the normal PESQ minus the PESQ with the inverted input, on val_unseen):
 
-| Variante | Sementes | Δ val_unseen | Δ val | Perda com a entrada invertida | Decisão |
+| Variant | Seeds | Δ val_unseen | Δ val | Loss with the inverted input | Decision |
 |---|---|---|---|---|---|
-| K0ext, sem correção | 3 | — | — | 0,87 | — |
-| **WP_flip** (inversão do par, p = 0,5) | 1 → 3 | +0,000 → +0,001 | −0,008 → −0,004 | −0,011 | **vencedor** |
-| WP_sign (sinal aleatório nas fontes) | 1 | −0,005 | −0,001 | 0,90 | não corrige |
-| WP_both (os dois) | 1 | −0,005 | −0,008 | −0,007 | passa, mas perde para o WP_flip |
-| V3_noise (sem babble nem música) | 3 | +0,020 | +0,007 | 0,08 (semente 3: 0,18) | não passa |
+| K0ext, no fix | 3 | — | — | 0.87 | — |
+| **WP_flip** (pair inversion, p = 0.5) | 1 → 3 | +0.000 → +0.001 | −0.008 → −0.004 | −0.011 | **winner** |
+| WP_sign (random sign on the sources) | 1 | −0.005 | −0.001 | 0.90 | does not fix it |
+| WP_both (both) | 1 | −0.005 | −0.008 | −0.007 | passes, but loses to WP_flip |
+| V3_noise (no babble or music) | 3 | +0.020 | +0.007 | 0.08 (seed 3: 0.18) | does not pass |
 
-- **A expectativa de 14.3 se confirmou:** o sinal aleatório nas fontes não basta, porque a fala‑alvo continua sempre com a polaridade do VCTK. Só a inversão do par inteiro remove o atalho.
-- **A correção é de graça:** +0,001 na val_unseen e −0,004 na val, com 3 sementes.
-- **Tirar o babble também não resolve:** o V3_noise ainda depende da polaridade em uma das 3 sementes.
+- **The expectation of 14.3 was confirmed:** a random sign on the sources is not enough, because the target speech still always has the VCTK polarity. Only inverting the whole pair removes the shortcut.
+- **The fix is free:** +0.001 on val_unseen and −0.004 on val, with 3 seeds.
+- **Removing the babble does not solve it either:** V3_noise still depends on polarity for one of the 3 seeds.
 
-**W5: ramo espectral bidirecional com 100 épocas** (`W5_bidir_final`):
-- Sozinho, dá 2,967 na val_unseen (Bext: 2,902; V4_bidir curto: 2,915) e 2,552 na val (Bext: 2,483).
-- Nas misturas com o K0extfull (3 sementes, val_unseen), o melhor peso é w = 0,5, com 3,249. O Bext dá 3,230 com w = 0,35: +0,019.
-- É bidirecional, portanto só offline.
+**W5: bidirectional spectral branch with 100 epochs** (`W5_bidir_final`):
+- Alone, it gives 2.967 on val_unseen (Bext: 2.902; short V4_bidir: 2.915) and 2.552 on val (Bext: 2.483).
+- In the blends with K0extfull (3 seeds, val_unseen), the best weight is w = 0.5, with 3.249. Bext gives 3.230 with w = 0.35: +0.019.
+- It is bidirectional, hence offline only.
 
-**WF: finais** (30 épocas, 3 sementes intercaladas; a correção de polaridade entra no controle e no S30; o teste tem 824 arquivos):
+**WF: finals** (30 epochs, 3 interleaved seeds; the polarity fix goes into the control and S30; the test set has 824 files):
 
-| Sistema | Parâmetros | Teste | STOI | SI‑SDR | COVL | val_unseen | val_unseen_low | val |
+| System | Parameters | Test | STOI | SI-SDR | COVL | val_unseen | val_unseen_low | val |
 |---|---|---|---|---|---|---|---|---|
-| K0extfull (10 épocas, ponto de partida) | 41,4M | 3,164 ± 0,008 | 0,9534 | 18,72 | 3,96 | 3,185 | 2,434 | 2,754 |
-| K0ext30p (30 épocas + polaridade, controle) | 41,4M | 3,161 ± 0,001 | 0,9542 | 18,71 | 3,96 | 3,201 | 2,445 | 2,757 |
-| K0ext30p soup | 41,4M | 3,165 | 0,9543 | 18,74 | 3,97 | 3,204 | 2,452 | 2,762 |
-| **S30** (discriminador 0,3 + polaridade, 30 épocas) | 41,4M | **3,328 ± 0,011** | 0,9542 | 18,44 | 4,10 | 3,344 | 2,565 | 2,890 |
-| **S30 soup** | 41,4M | **3,335** | 0,9544 | 18,47 | 4,10 | 3,348 | 2,572 | 2,897 |
-| Mistura S30 + W5, w = 0,5 (peso do W5) | 60,9M | 3,353 ± 0,006 | 0,9569 | 19,05 | 4,13 | 3,345 | 2,631 | 2,946 |
-| **Mistura S30 + W5, w = 0,25** (escolhido na val_unseen, 14.5) | 60,9M | **3,372 ± 0,009** | 0,9562 | 18,83 | 4,15 | 3,370 | 2,626 | 2,945 |
-| **S30 soup + W5, w = 0,25** | 60,9M | **3,375** | 0,9564 | 18,85 | 4,15 | 3,373 | 2,631 | 2,951 |
-| RX_C3 | 53,8M | 3,212 ± 0,008 | 0,9536 | 18,96 | 4,01 | 3,220 | 2,514 | 2,830 |
-| 0,4·RX_C3 + 0,6·mistura S30 (w = 0,5) | ~115M | 3,335 ± 0,008 | 0,9561 | 19,13 | 4,12 | 3,333 | 2,633 | 2,943 |
-| Média RX_C3 + mistura K0extfull (12.11) | ~105M | 3,238 ± 0,004 | 0,9541 | 18,97 | 4,03 | 3,253 | 2,535 | 2,851 |
+| K0extfull (10 epochs, starting point) | 41.4M | 3.164 ± 0.008 | 0.9534 | 18.72 | 3.96 | 3.185 | 2.434 | 2.754 |
+| K0ext30p (30 epochs + polarity, control) | 41.4M | 3.161 ± 0.001 | 0.9542 | 18.71 | 3.96 | 3.201 | 2.445 | 2.757 |
+| K0ext30p soup | 41.4M | 3.165 | 0.9543 | 18.74 | 3.97 | 3.204 | 2.452 | 2.762 |
+| **S30** (discriminator 0.3 + polarity, 30 epochs) | 41.4M | **3.328 ± 0.011** | 0.9542 | 18.44 | 4.10 | 3.344 | 2.565 | 2.890 |
+| **S30 soup** | 41.4M | **3.335** | 0.9544 | 18.47 | 4.10 | 3.348 | 2.572 | 2.897 |
+| Blend S30 + W5, w = 0.5 (weight of W5) | 60.9M | 3.353 ± 0.006 | 0.9569 | 19.05 | 4.13 | 3.345 | 2.631 | 2.946 |
+| **Blend S30 + W5, w = 0.25** (chosen on val_unseen, 14.5) | 60.9M | **3.372 ± 0.009** | 0.9562 | 18.83 | 4.15 | 3.370 | 2.626 | 2.945 |
+| **S30 soup + W5, w = 0.25** | 60.9M | **3.375** | 0.9564 | 18.85 | 4.15 | 3.373 | 2.631 | 2.951 |
+| RX_C3 | 53.8M | 3.212 ± 0.008 | 0.9536 | 18.96 | 4.01 | 3.220 | 2.514 | 2.830 |
+| 0.4·RX_C3 + 0.6·blend S30 (w = 0.5) | ~115M | 3.335 ± 0.008 | 0.9561 | 19.13 | 4.12 | 3.333 | 2.633 | 2.943 |
+| Average RX_C3 + blend K0extfull (12.11) | ~105M | 3.238 ± 0.004 | 0.9541 | 18.97 | 4.03 | 3.253 | 2.535 | 2.851 |
 
-- **O discriminador métrico é o grande ganho:** o S30 fica +0,167 acima do controle com o mesmo treino (K0ext30p). O ganho aparece nas 3 sementes, nos 5 ruídos do teste (+0,15 a +0,18) e em todas as faixas de SNR (+0,15 a +0,19).
-- **30 épocas (com a correção de polaridade) não mudam o teste:** o K0ext30p fica em 3,161, contra 3,164 do K0extfull. Na val_unseen, ganham +0,016.
-- **As soups ganham de +0,003 a +0,007 sobre a média das sementes em todos os conjuntos, com o custo de um modelo.**
-- **O RX_C3 atrapalha o ensemble:** com ele, o resultado cai de 3,353 para 3,335 no teste. Ele só complementava a mistura antiga, feita com o K0extfull.
-- **Sobre o uso do teste:** o w = 0,5 foi avaliado no teste dentro do WF. O w = 0,25 foi escolhido depois, só pela val_unseen, e avaliado no teste uma única vez.
+- **The metric discriminator is the big gain:** S30 is +0.167 above the control with the same training (K0ext30p). The gain appears for all 3 seeds, all 5 test noises (+0.15 to +0.18) and every SNR range (+0.15 to +0.19).
+- **30 epochs (with the polarity fix) do not change the test result:** K0ext30p is at 3.161, against 3.164 for K0extfull. On val_unseen, they gain +0.016.
+- **The soups gain +0.003 to +0.007 over the seed mean on every set, at the cost of one model.**
+- **RX_C3 hurts the ensemble:** with it, the result drops from 3.353 to 3.335 on the test set. It only complemented the old blend, built with K0extfull.
+- **On the use of the test set:** w = 0.5 was evaluated on the test set within WF. w = 0.25 was chosen afterwards, on val_unseen only, and evaluated on the test set once.
 
-**WR: robustez** (relatório completo em `results/abl/W_robustness_final.md`; o da fila está em `W_robustness.md`):
+**WR: robustness** (full report in `results/abl/W_robustness_final.md`; the queue's report is in `W_robustness.md`):
 
-| Sistema | Arquivos do teste > 0,1 abaixo do K0extfull | Pior 1% do Δ por arquivo (teste) | Perda com a entrada invertida (val_unseen) | Teste em streaming (offline → streaming) |
+| System | Test files > 0.1 below K0extfull | Worst 1% of the per-file Δ (test) | Loss with inverted input (val_unseen) | Test in streaming (offline → streaming) |
 |---|---|---|---|---|
-| K0extfull | — | — | **1,36** | 3,154 → 2,868 (semente 1) |
-| K0ext30, sem correção (semente 1) | — | — | **1,98** | — |
-| K0ext30p | 4,1% | −0,361 | 0,000 | 3,163 → 2,911 (semente 1) |
-| K0ext30p soup | 3,9% | −0,212 | −0,001 | 3,165 → 2,920 |
-| S30 | 0,6% | −0,063 | +0,001 | 3,331 → 3,065 (semente 1) |
-| **S30 soup** | 0,6% | −0,057 | 0,000 | **3,335 → 3,085** |
-| Mistura S30 + W5, w = 0,25 | **0,2%** | **−0,026** | 0,000 | só offline |
-| S30 soup + W5, w = 0,25 | 0,4% | −0,026 | −0,001 | só offline |
-| RX_C3 | 5,9% | −0,472 | **1,26** | só offline |
-| 0,4·RX_C3 + 0,6·mistura S30 | 0,8% | −0,084 | 0,10 | só offline |
-| Média 12.11 | 1,6% | −0,163 | **1,19** | só offline |
+| K0extfull | — | — | **1.36** | 3.154 → 2.868 (seed 1) |
+| K0ext30, no fix (seed 1) | — | — | **1.98** | — |
+| K0ext30p | 4.1% | −0.361 | 0.000 | 3.163 → 2.911 (seed 1) |
+| K0ext30p soup | 3.9% | −0.212 | −0.001 | 3.165 → 2.920 |
+| S30 | 0.6% | −0.063 | +0.001 | 3.331 → 3.065 (seed 1) |
+| **S30 soup** | 0.6% | −0.057 | 0.000 | **3.335 → 3.085** |
+| Blend S30 + W5, w = 0.25 | **0.2%** | **−0.026** | 0.000 | offline only |
+| S30 soup + W5, w = 0.25 | 0.4% | −0.026 | −0.001 | offline only |
+| RX_C3 | 5.9% | −0.472 | **1.26** | offline only |
+| 0.4·RX_C3 + 0.6·blend S30 | 0.8% | −0.084 | 0.10 | offline only |
+| Average 12.11 | 1.6% | −0.163 | **1.19** | offline only |
 
-- **Polaridade:** todo sistema com o K0extfull ou o RX_C3 herda o atalho. Com a correção, nenhum sistema perde mais de 0,002.
-- **Cauda de falhas:** o S30 e as misturas com ele quase não têm cauda. O K0ext30p tem uma cauda de 4% contra o K0extfull, sem mudar a média; o S30, treinado do mesmo jeito mais o discriminador, não tem.
-- **SNR baixo (val_unseen_low, −5 e 0 dB):** a soup do S30 ganha +0,138 sobre o K0extfull, e as misturas ganham +0,19 a +0,20. O pior ruído de cada sistema ainda fica acima do K0extfull.
-- **Streaming:** todos os modelos de onda perdem de 0,25 a 0,29 no teste (ver 14.5).
+- **Polarity:** every system with K0extfull or RX_C3 inherits the shortcut. With the fix, no system loses more than 0.002.
+- **Failure tail:** S30 and the blends with it have almost no tail. K0ext30p has a 4% tail against K0extfull without changing the mean; S30, trained the same way plus the discriminator, has none.
+- **Low SNR (val_unseen_low, −5 and 0 dB):** the S30 soup gains +0.138 over K0extfull, and the blends gain +0.19 to +0.20. Each system's worst noise is still above K0extfull.
+- **Streaming:** every waveform model loses 0.25 to 0.29 on the test set (see 14.5).
 
-### 14.5 Análises depois da fila (2026‑10‑16) ✔
+### 14.5 Analyses after the queue (2026-10-16) ✔
 
-**Peso da mistura para o S30.** O w = 0,5 do W5 foi escolhido com o K0extfull. Refeito para o S30 sem treino, na val_unseen (média das 3 sementes; a val serve de guarda):
+**Blend weight for S30.** The w = 0.5 of W5 was chosen with K0extfull. Redone for S30 without training, on val_unseen (mean of the 3 seeds; val acts as a guard):
 
-| w | 0 (S30) | 0,15 | **0,25** | 0,35 | 0,5 |
+| w | 0 (S30) | 0.15 | **0.25** | 0.35 | 0.5 |
 |---|---|---|---|---|---|
-| val_unseen | 3,344 | 3,367 | **3,370** | 3,365 | 3,345 |
-| val | 2,890 | 2,932 | 2,945 | 2,951 | 2,946 |
-| STOI (val_unseen) | 0,9236 | 0,9256 | 0,9266 | 0,9273 | 0,9280 |
-| SI‑SDR (val_unseen) | 18,34 | 18,59 | 18,72 | 18,82 | 18,92 |
+| val_unseen | 3.344 | 3.367 | **3.370** | 3.365 | 3.345 |
+| val | 2.890 | 2.932 | 2.945 | 2.951 | 2.946 |
+| STOI (val_unseen) | 0.9236 | 0.9256 | 0.9266 | 0.9273 | 0.9280 |
+| SI-SDR (val_unseen) | 18.34 | 18.59 | 18.72 | 18.82 | 18.92 |
 
-- Com o S30, que já é mais forte em PESQ, o peso ideal do ramo espectral cai. O w = 0,25 ganha +0,026 sobre o S30 sozinho (acima do δ_min) e passa na guarda da val.
-- No teste, o w = 0,25 dá 3,372 ± 0,009: +0,044 sobre o S30 e +0,019 sobre o w = 0,5 (Wilcoxon por arquivo: p = 3·10⁻⁶⁰ e 2·10⁻²²). STOI e SI‑SDR sobem com w, então w = 0,5 é a escolha quando importam mais que o PESQ.
-- A val_unseen acertou de novo o sentido do resultado no teste.
+- With S30, which is already stronger in PESQ, the ideal weight of the spectral branch drops. w = 0.25 gains +0.026 over S30 alone (above δ_min) and passes the val guard.
+- On the test set, w = 0.25 gives 3.372 ± 0.009: +0.044 over S30 and +0.019 over w = 0.5 (per-file Wilcoxon: p = 3·10⁻⁶⁰ and 2·10⁻²²). STOI and SI-SDR rise with w, so w = 0.5 is the choice when they matter more than PESQ.
+- val_unseen again got the direction of the test result right.
 
-**O ganho do discriminador aparece fora do PESQ?** Médias das sementes no teste. Menor é melhor no WSS e no LLR.
+**Does the discriminator gain show outside PESQ?** Seed means on the test set. Lower is better for WSS and LLR.
 
-| Sistema | PESQ‑WB | PESQ‑NB | STOI | SI‑SDR | segSNR | WSS | LLR |
+| System | PESQ-WB | PESQ-NB | STOI | SI-SDR | segSNR | WSS | LLR |
 |---|---|---|---|---|---|---|---|
-| K0ext30p | 3,161 | 3,755 | 0,9542 | 18,71 | 9,40 | 3,88 | 0,289 |
-| S30 | 3,328 | 3,821 | 0,9542 | 18,44 | 9,04 | 4,07 | 0,291 |
-| Mistura S30 + W5, w = 0,25 | 3,372 | 3,859 | 0,9562 | 18,83 | 9,38 | 3,66 | 0,267 |
-| Mistura S30 + W5, w = 0,5 | 3,353 | 3,853 | 0,9569 | 19,05 | 9,62 | 3,36 | 0,269 |
-| RX_C3 | 3,212 | 3,781 | 0,9536 | 18,96 | 9,64 | 3,76 | 0,281 |
+| K0ext30p | 3.161 | 3.755 | 0.9542 | 18.71 | 9.40 | 3.88 | 0.289 |
+| S30 | 3.328 | 3.821 | 0.9542 | 18.44 | 9.04 | 4.07 | 0.291 |
+| Blend S30 + W5, w = 0.25 | 3.372 | 3.859 | 0.9562 | 18.83 | 9.38 | 3.66 | 0.267 |
+| Blend S30 + W5, w = 0.5 | 3.353 | 3.853 | 0.9569 | 19.05 | 9.62 | 3.36 | 0.269 |
+| RX_C3 | 3.212 | 3.781 | 0.9536 | 18.96 | 9.64 | 3.76 | 0.281 |
 
-- **No S30, o ganho fica no PESQ.** Contra o K0ext30p, o PESQ‑WB sobe 0,167 e o PESQ‑NB só 0,066. O STOI não muda, e o SI‑SDR (−0,27 dB), o segSNR (−0,36 dB) e o WSS (+0,19) pioram um pouco.
-- **O CSIG, o CBAK e o COVL não são evidência independente.** As três são combinações lineares com o PESQ (0,603, 0,478 e 0,805 por ponto de PESQ). Tirado esse termo, o S30 fica 0,03 abaixo no CSIG, 0,02 abaixo no CBAK e igual no COVL.
-- **As misturas melhoram tudo de uma vez.** Ganham PESQ, STOI, WSS e LLR. O SI‑SDR e o segSNR voltam ao nível do K0ext30p com w = 0,25 e passam dele com w = 0,5.
-- **Conclusão:** o PESQ do S30 é robusto ao deslocamento do sinal (PESQ robusto 3,329 contra 3,328), mas confirmar que a melhora é perceptível pede uma medida que não seja o PESQ: uma escuta ou um preditor de MOS sem referência (DNSMOS, UTMOS).
+- **In S30, the gain stays in PESQ.** Against K0ext30p, PESQ-WB rises by 0.167 and PESQ-NB by only 0.066. STOI does not change, and SI-SDR (−0.27 dB), segSNR (−0.36 dB) and WSS (+0.19) get slightly worse.
+- **CSIG, CBAK and COVL are not independent evidence.** All three are linear combinations that include PESQ (0.603, 0.478 and 0.805 per PESQ point). With that term removed, S30 is 0.03 lower in CSIG, 0.02 lower in CBAK and equal in COVL.
+- **The blends improve everything at once.** They gain PESQ, STOI, WSS and LLR. SI-SDR and segSNR return to the K0ext30p level with w = 0.25 and go above it with w = 0.5.
+- **Conclusion:** the PESQ of S30 is robust to a shift of the signal (robust PESQ 3.329 against 3.328), but confirming that the improvement is perceptible requires a measure other than PESQ: a listening test or a non-intrusive MOS predictor (DNSMOS, UTMOS).
 
-**Origem da perda em streaming.** Soup do S30, val_unseen, quadro a quadro com `cleanunet/streaming.py`:
+**Origin of the streaming loss.** S30 soup, val_unseen, frame by frame with `cleanunet/streaming.py`:
 
-| Normalização da entrada | PESQ | STOI | SI‑SDR |
+| Input normalization | PESQ | STOI | SI-SDR |
 |---|---|---|---|
-| Offline (referência) | 3,348 | 0,9239 | 18,38 |
-| Streaming, normalização causal atual (média corrente do desvio padrão por quadro) | 3,164 | 0,9136 | 17,21 |
-| Streaming com a normalização do arquivo inteiro (não causal) | 3,339 | 0,9239 | 18,38 |
+| Offline (reference) | 3.348 | 0.9239 | 18.38 |
+| Streaming, current causal normalization (running mean of the per-frame standard deviation) | 3.164 | 0.9136 | 17.21 |
+| Streaming with the whole-file normalization (non-causal) | 3.339 | 0.9239 | 18.38 |
 
-- O processamento quadro a quadro é praticamente exato (−0,009). **Quase toda a perda vem da estimativa causal da escala**, como já se via no estágio A (−0,16).
-- **Por quê:** no início do arquivo há pouco sinal, a escala estimada fica pequena e a fala chega ao modelo amplificada além do que ele viu no treino. A média corrente demora a se ajustar.
-- Uma variante com o RMS corrente foi testada em 9 arquivos e não ajudou (3,171 contra 3,189).
+- The frame-by-frame processing is practically exact (−0.009). **Almost all of the loss comes from the causal estimate of the scale**, as already seen with stage A (−0.16).
+- **Why:** at the start of the file there is little signal, the estimated scale is small and the speech reaches the model amplified beyond what it saw in training. The running mean takes a while to adjust.
+- A variant with the running RMS was tested on 9 files and did not help (3.171 against 3.189).
 
-### 14.6 Conclusões e próximos passos
+### 14.6 Conclusions and next steps
 
-**(A) Melhor resultado: soup do S30 + ramo espectral W5, mistura com w = 0,25.**
-- **Teste:** PESQ 3,375; STOI 0,956; SI‑SDR 18,85 dB; CSIG 4,72; CBAK 3,81; COVL 4,15.
-- **Custo:** 60,9M parâmetros, offline, sem fusão aprendida. São duas redes treinadas separadamente, combinadas pela mistura de magnitudes de `cleanunet/blend.py`.
-- **Robustez:** não depende da polaridade, a cauda de falhas é de 0,4% e tem 2,631 na val_unseen_low.
-- **Variante:** com w = 0,5, troca 0,02 de PESQ por +0,2 dB de SI‑SDR e +0,0007 de STOI.
+**(A) Best result: S30 soup + W5 spectral branch, blend with w = 0.25.**
+- **Test:** PESQ 3.375; STOI 0.956; SI-SDR 18.85 dB; CSIG 4.72; CBAK 3.81; COVL 4.15.
+- **Cost:** 60.9M parameters, offline, no learned fusion. These are two separately trained networks, combined by the magnitude blend of `cleanunet/blend.py`.
+- **Robustness:** it does not depend on polarity, its failure tail is 0.4% and it scores 2.631 on val_unseen_low.
+- **Variant:** with w = 0.5, it trades 0.02 PESQ for +0.2 dB SI-SDR and +0.0007 STOI.
 
-**(B) Modelo simples e robusto: soup do S30.**
-- **Arquitetura e uso:** uma rede só de onda de 41,4M parâmetros, compatível com streaming.
-- **Teste:** 3,335 (3 sementes: 3,328 ± 0,011).
-- **Robustez:** não depende da polaridade, a cauda de falhas é de 0,6% e tem +0,138 em SNR baixo.
-- **Receita:** `configs/ablation/k0.yaml` com `trainer.max_epochs=30`, `data.ext_noise` (MUSAN, p = 0,5, SNR de −5 a 20 dB), `augment_polarity=0.5` e `loss.metric_gan={weight: 0.3}`. Depois, `scripts/make_soup.py` sobre as 3 sementes.
-- **Ressalvas:** o ganho é de PESQ (14.5), e o streaming perde 0,25 por causa da normalização.
-  - Metade do ganho está na faixa de 50–100 Hz (14.7.2).
-  - A perda do streaming tem correção sem treino na val_unseen (14.7.4).
-- **Alternativa conservadora**, sem perda que mire o PESQ: a soup do K0ext30p, com 3,165 e as outras métricas iguais às do K0extfull.
+**(B) Simple, robust model: S30 soup.**
+- **Architecture and use:** a single waveform-only network with 41.4M parameters, streaming-compatible.
+- **Test:** 3.335 (3 seeds: 3.328 ± 0.011).
+- **Robustness:** it does not depend on polarity, its failure tail is 0.6% and it gains +0.138 at low SNR.
+- **Recipe:** `configs/ablation/k0.yaml` with `trainer.max_epochs=30`, `data.ext_noise` (MUSAN, p = 0.5, SNR from −5 to 20 dB), `augment_polarity=0.5` and `loss.metric_gan={weight: 0.3}`. Then `scripts/make_soup.py` over the 3 seeds.
+- **Caveats:** the gain is in PESQ (14.5), and streaming loses 0.25 because of the normalization.
+  - Half of the gain sits in the 50–100 Hz band (14.7.2).
+  - The streaming loss has a training-free fix on val_unseen (14.7.4).
+- **Conservative alternative**, without a loss that targets PESQ: the K0ext30p soup, with 3.165 and the other metrics equal to those of K0extfull.
 
-**Próximos passos propostos:**
-1. **Normalização para streaming** (objetivo B). *Atualizado em 14.7.4: uma escala fixa ou uma estimativa corrente com valor inicial resolve sem treino na val_unseen. O texto abaixo fica como registro.* O mais promissor é ajustar o S30 por algumas épocas com a normalização causal simulada no treino: a mesma escala corrente por quadro de `streaming.py`, aplicada ao recorte. A alternativa é um estimador causal melhor, por exemplo com valor inicial e ataque rápido, avaliado na val_unseen. Meta: recuperar a maior parte dos 0,18 da val_unseen.
-2. **Validação perceptiva do discriminador métrico:** DNSMOS ou UTMOS (o download dos modelos segue a regra de arquivos não confiáveis) ou uma escuta ABX curta comparando S30 com K0ext30p.
-3. **Ramo espectral causal** para uma mistura em streaming. O W5 é bidirecional.
-4. **Estabilidade do treino com o discriminador:** houve 1 segfault em código nativo em ~4 h de treino com o pool de PESQ (`fork`). Trocar para `forkserver` é uma opção barata se voltar a acontecer.
+**Proposed next steps:**
+1. **Normalization for streaming** (goal B). *Updated in 14.7.4: a fixed scale or a running estimate with a prior solves it without training on val_unseen. The text below is kept for the record.* The most promising option is to fine-tune S30 for a few epochs with the causal normalization simulated in training: the same per-frame running scale of `streaming.py`, applied to the crop. The alternative is a better causal estimator, for example with a prior and a fast attack, evaluated on val_unseen. Target: recover most of the 0.18 on val_unseen.
+2. **Perceptual validation of the metric discriminator:** DNSMOS or UTMOS (downloading the models follows the untrusted-files rule) or a short ABX listening test comparing S30 with K0ext30p.
+3. **Causal spectral branch** for a streaming blend. W5 is bidirectional.
+4. **Training stability with the discriminator:** there was 1 segfault in native code in ~4 h of training with the PESQ pool (`fork`). Switching to `forkserver` is a cheap option if it happens again.
 
-### 14.7 Análise dos resultados (2026‑10‑16) ✔
+### 14.7 Analysis of the results (2026-10-16) ✔
 
-Scripts e dados: `results/abl/W_analysis/` (ver o README). No teste, só entram sistemas que já tinham sido avaliados nele, e nenhuma escolha nova foi feita com ele. Os diagnósticos de streaming usam a val_unseen.
+Scripts and data: `results/abl/W_analysis/` (see the README). On the test set, only systems that had already been evaluated on it are included, and no new choice was made with it. The streaming diagnostics use val_unseen.
 
-**14.7.1 O protocolo é confiável?**
-- **A val_unseen prevê o teste.** Nos 52 sistemas avaliados nas duas, o Spearman é 0,978 e o Pearson 0,951 (teste ≈ 0,80 · val_unseen + 0,65, com resíduo de 0,031). A val antiga, com os ruídos do treino, dá Spearman 0,66 nos mesmos sistemas. A troca do critério de seleção (seção 10) estava certa.
-- **Os efeitos estão bem acima do ruído.** Intervalos de 95% por bootstrap sobre os arquivos do teste, com a média das sementes:
+**14.7.1 Is the protocol reliable?**
+- **val_unseen predicts the test set.** Over the 52 systems evaluated on both, Spearman is 0.978 and Pearson 0.951 (test ≈ 0.80 · val_unseen + 0.65, with a residual of 0.031). The old val, with the training noises, gives Spearman 0.66 on the same systems. Changing the selection criterion (section 10) was right.
+- **The effects are well above the noise.** 95% bootstrap intervals over the test files, with the seed mean:
 
-| Comparação | ΔPESQ | IC 95% | Arquivos que melhoram | ΔSI‑SDR |
+| Comparison | ΔPESQ | 95% CI | Files that improve | ΔSI-SDR |
 |---|---|---|---|---|
-| S30 − K0ext30p (o discriminador) | +0,167 | [+0,157; +0,178] | 96% | −0,27 dB (pior em 96%) |
-| Mistura w 0,25 − S30 | +0,044 | [+0,037; +0,051] | 75% | +0,39 dB (melhor em 99%) |
-| S30 − RX_C3 | +0,117 | [+0,104; +0,130] | 84% | −0,52 dB |
-| K0ext30p − K0extfull (30 épocas + polaridade) | −0,002 | [−0,009; +0,004] | 53% | −0,01 dB |
-| Soup do S30 − média das sementes | +0,007 | [+0,005; +0,010] | 68% | +0,04 dB |
+| S30 − K0ext30p (the discriminator) | +0.167 | [+0.157, +0.178] | 96% | −0.27 dB (worse for 96%) |
+| Blend w 0.25 − S30 | +0.044 | [+0.037, +0.051] | 75% | +0.39 dB (better for 99%) |
+| S30 − RX_C3 | +0.117 | [+0.104, +0.130] | 84% | −0.52 dB |
+| K0ext30p − K0extfull (30 epochs + polarity) | −0.002 | [−0.009, +0.004] | 53% | −0.01 dB |
+| S30 soup − seed mean | +0.007 | [+0.005, +0.010] | 68% | +0.04 dB |
 
-- **30 épocas sozinhas não ajudam no teste** (−0,002 no teste, +0,016 na val_unseen). O que mudou o S30 foi a perda.
-- **O ganho do discriminador é uniforme:** +0,15 a +0,19 nos 4 níveis de SNR e +0,15 (bus) a +0,18 (office) nos ruídos.
-- **Locutores.** O ganho varia por locutor sem seguir o gênero.
-  - No teste: p232 (M) +0,13 e p257 (F) +0,20.
-  - Na val_unseen: p226 (M) +0,21 e p287 (F) +0,09.
-  - Com 2 locutores por partição, a generalização para locutores novos é o ponto mais fraco do benchmark.
-- **O discriminador aumenta a variância entre sementes:** ±0,011 no S30 contra ±0,0013 no K0ext30p. A soup absorve essa variância.
+- **30 epochs alone do not help on the test set** (−0.002 on test, +0.016 on val_unseen). What changed S30 was the loss.
+- **The discriminator gain is uniform:** +0.15 to +0.19 over the 4 SNR levels and +0.15 (bus) to +0.18 (office) over the noises.
+- **Speakers.** The gain varies by speaker without following gender.
+  - On the test set: p232 (M) +0.13 and p257 (F) +0.20.
+  - On val_unseen: p226 (M) +0.21 and p287 (F) +0.09.
+  - With 2 speakers per split, generalization to new speakers is the weakest point of the benchmark.
+- **The discriminator increases the variance between seeds:** ±0.011 for S30 against ±0.0013 for K0ext30p. The soup absorbs that variance.
 
-**14.7.2 O que o discriminador mudou no sinal.** Atribuição no teste: parte‑se da saída da soup do K0ext30p e troca‑se uma região tempo‑frequência por vez pela saída da soup do S30 (STFT 512/128, depois iSTFT). O ganho total é +0,170.
+**14.7.2 What the discriminator changed in the signal.** Attribution on the test set: start from the output of the K0ext30p soup and replace one time-frequency region at a time with the output of the S30 soup (STFT 512/128, then iSTFT). The total gain is +0.170.
 
-| Região trocada | PESQ | Δ | SI‑SDR |
+| Region replaced | PESQ | Δ | SI-SDR |
 |---|---|---|---|
-| Nenhuma (K0ext30p) | 3,165 | — | 18,74 |
-| 0–100 Hz | 3,264 | **+0,099** | **18,49** |
-| 100–200 Hz / 200–300 Hz | 3,182 / 3,172 | +0,017 / +0,006 | 18,72 / 18,74 |
-| 300–3400 Hz | 3,213 | +0,048 | 18,74 |
-| Acima de 3,4 kHz | 3,169 | +0,004 | 18,74 |
-| Quadros de 0 a 20 dB abaixo do máximo | 3,215 | +0,049 | 18,66 |
-| Quadros de 20 a 40 dB abaixo (fala fraca, transições) | 3,277 | **+0,111** | 18,59 |
-| Quadros mais de 40 dB abaixo (pausas) | 3,172 | +0,007 | 18,71 |
-| Só a magnitude / só a fase | 3,313 / 3,191 | +0,148 / +0,026 | 18,52 / 18,73 |
-| Tudo (S30) | 3,335 | +0,170 | 18,47 |
+| None (K0ext30p) | 3.165 | — | 18.74 |
+| 0–100 Hz | 3.264 | **+0.099** | **18.49** |
+| 100–200 Hz / 200–300 Hz | 3.182 / 3.172 | +0.017 / +0.006 | 18.72 / 18.74 |
+| 300–3400 Hz | 3.213 | +0.048 | 18.74 |
+| Above 3.4 kHz | 3.169 | +0.004 | 18.74 |
+| Frames 0 to 20 dB below the maximum | 3.215 | +0.049 | 18.66 |
+| Frames 20 to 40 dB below (weak speech, transitions) | 3.277 | **+0.111** | 18.59 |
+| Frames more than 40 dB below (pauses) | 3.172 | +0.007 | 18.71 |
+| Magnitude only / phase only | 3.313 / 3.191 | +0.148 / +0.026 | 18.52 / 18.73 |
+| Everything (S30) | 3.335 | +0.170 | 18.47 |
 
-- **Quase 60% do ganho e toda a perda de SI‑SDR estão abaixo de 100 Hz**, sobretudo nos quadros de fala fraca: a faixa < 300 Hz só desses quadros vale +0,078. A troca inversa confirma: o S30 com a faixa 0–100 Hz do K0ext30p perde 0,097.
-- **Por que essa faixa pesa tanto no PESQ‑WB.**
-  - O filtro de entrada do P.862.2 (pacote `pesq`) é um passa‑altas de 2ª ordem: −12 dB em 50 Hz e −3 dB em 100 Hz, em relação à banda passante.
-  - O alinhamento de nível usa só a potência acima de 300 Hz.
-  - Então o conteúdo entre 50 e 100 Hz entra direto na perturbação.
-  - Abaixo de 50 Hz não importa: tirar esse conteúdo das saídas mal muda a diferença entre os sistemas (+0,162).
-- **É uma faixa difícil e com pouca fala.**
-  - 88% da energia do ruído do teste está abaixo de 100 Hz. O SNR de entrada é −16 dB em 0–50 Hz e −0,2 dB em 50–100 Hz.
-  - Na referência limpa, 50–100 Hz tem 1,6% da energia no p232 (região do F0 masculino) e 0,15% no p257.
-- **Não é mais supressão de ruído.** Pelo filtro‑sombra (G = Y/X aplicado à fala e ao ruído), o S30 atenua o ruído um pouco menos (9,7 contra 9,9 dB). Ele também deixa mais resíduo nas pausas: −13,1 contra −14,2 dB em relação à entrada.
-- **Avaliação sem a faixa abaixo de 100 Hz.** Passa‑altas de fase zero em 100 Hz na referência e na saída:
+- **Almost 60% of the gain and all of the SI-SDR loss are below 100 Hz**, mostly in the weak-speech frames: the < 300 Hz band of those frames alone is worth +0.078. The reverse swap confirms it: S30 with the 0–100 Hz band of K0ext30p loses 0.097.
+- **Why this band weighs so much in PESQ-WB.**
+  - The input filter of P.862.2 (`pesq` package) is a 2nd-order high-pass: −12 dB at 50 Hz and −3 dB at 100 Hz, relative to the passband.
+  - The level alignment uses only the power above 300 Hz.
+  - So the content between 50 and 100 Hz goes straight into the disturbance.
+  - Below 50 Hz it does not matter: removing that content from the outputs barely changes the difference between the systems (+0.162).
+- **It is a hard band with little speech.**
+  - 88% of the energy of the test noise is below 100 Hz. The input SNR is −16 dB in 0–50 Hz and −0.2 dB in 50–100 Hz.
+  - In the clean reference, 50–100 Hz holds 1.6% of the energy for p232 (male F0 region) and 0.15% for p257.
+- **It is not more noise suppression.** By the shadow filter (G = Y/X applied to the speech and to the noise), S30 attenuates the noise slightly less (9.7 against 9.9 dB). It also leaves more residual in the pauses: −13.1 against −14.2 dB relative to the input.
+- **Evaluation without the band below 100 Hz.** Zero-phase high-pass at 100 Hz on the reference and the output:
 
-| Sistema | PESQ | PESQ sem < 100 Hz | SI‑SDR sem < 100 Hz |
+| System | PESQ | PESQ without < 100 Hz | SI-SDR without < 100 Hz |
 |---|---|---|---|
-| Soup do K0ext30p | 3,165 | 3,337 | 25,96 |
-| RX_C3 (3 sementes) | 3,211 | 3,363 | 25,94 |
-| Soup do S30 | 3,335 | 3,415 | 25,89 |
-| Soup do S30 + W5, w 0,25 | 3,375 | 3,455 | 26,11 |
+| K0ext30p soup | 3.165 | 3.337 | 25.96 |
+| RX_C3 (3 seeds) | 3.211 | 3.363 | 25.94 |
+| S30 soup | 3.335 | 3.415 | 25.89 |
+| S30 soup + W5, w 0.25 | 3.375 | 3.455 | 26.11 |
 
-  - **S30 − K0ext30p** cai de +0,170 para **+0,078** [+0,073; +0,084]. 92% dos arquivos melhoram, com só −0,07 dB de SI‑SDR. Por locutor: +0,072 e +0,083.
-  - **S30 − RX_C3** cai de +0,124 para +0,053 [+0,045; +0,061].
-  - **A mistura − S30** fica igual (+0,040): o ganho da mistura está na banda da fala.
-  - **A mistura − RX_C3** dá +0,092 [+0,084; +0,100], e o SI‑SDR passa a favorecer a mistura (+0,17 dB).
-  - A ordem dos sistemas não muda.
-- **O SI‑SDR deste benchmark é dominado pelo que está abaixo de 100 Hz.**
-  - Sem essa faixa, o SI‑SDR vai de ~18,7 para ~26 dB em todos os sistemas, e as diferenças entre eles caem para ≤ 0,2 dB.
-  - A vantagem de SI‑SDR do RX_C3 (+0,5 dB) vem quase toda dessa faixa: sem ela, a diferença para o S30 cai para 0,04 dB.
-  - Um passa‑altas de fase zero em 50 Hz só na saída dá +0,8 a +0,9 dB de SI‑SDR ao K0ext30p e ao S30, sem mudar o PESQ.
-  - Um passa‑altas causal derruba o SI‑SDR por causa da fase: com 4ª ordem em 50 Hz, ele cai para ~5 dB.
-- **Leitura.**
-  - Metade do ganho do discriminador (+0,08) é melhora na banda da fala, sem custo de SI‑SDR acima de 100 Hz.
-  - A outra metade (+0,09) está entre 50 e 100 Hz, que o PESQ‑WB pesa muito e cuja relevância perceptiva é pequena. Alto‑falantes de celular e de notebook nem reproduzem essa faixa.
-  - A escuta deve olhar essa faixa, com fones.
+  - **S30 − K0ext30p** drops from +0.170 to **+0.078** [+0.073, +0.084]. 92% of the files improve, with only −0.07 dB of SI-SDR. Per speaker: +0.072 and +0.083.
+  - **S30 − RX_C3** drops from +0.124 to +0.053 [+0.045, +0.061].
+  - **Blend − S30** stays the same (+0.040): the gain of the blend is in the speech band.
+  - **Blend − RX_C3** gives +0.092 [+0.084, +0.100], and SI-SDR now favours the blend (+0.17 dB).
+  - The ranking of the systems does not change.
+- **SI-SDR on this benchmark is dominated by what lies below 100 Hz.**
+  - Without that band, SI-SDR goes from ~18.7 to ~26 dB for every system, and the differences between them drop to ≤ 0.2 dB.
+  - RX_C3's SI-SDR edge (+0.5 dB) comes almost entirely from that band: without it, the difference to S30 drops to 0.04 dB.
+  - A zero-phase high-pass at 50 Hz on the output only gives +0.8 to +0.9 dB of SI-SDR to K0ext30p and S30, without changing PESQ.
+  - A causal high-pass ruins SI-SDR because of its phase: with 4th order at 50 Hz, it drops to ~5 dB.
+- **Reading.**
+  - Half of the discriminator gain (+0.08) is an improvement in the speech band, with no SI-SDR cost above 100 Hz.
+  - The other half (+0.09) lies between 50 and 100 Hz, which PESQ-WB weighs heavily and whose perceptual relevance is small. Phone and laptop speakers do not even reproduce that band.
+  - The listening test should look at this band, with headphones.
 
-**14.7.3 Mistura com o W5.**
-- **O peso fixo é quase ótimo.** Na val_unseen, o melhor w por arquivo (entre 0 e 0,5) daria 3,398, só +0,028 sobre o w = 0,25 fixo. Uma regra pelo SNR verdadeiro daria +0,002. Uma porta aprendida tem pouco espaço.
-- **O ramo espectral ajuda mais com SNR baixo.**
-  - Na val_unseen, o melhor w é 0,35 em 2,5 dB e 0,15 em 12,5 e 17,5 dB.
-  - No teste, a mistura ganha +0,061 em 2,5 dB e +0,027 em 17,5 dB.
-  - Na val_unseen_low, ganha +0,061.
-- **O ganho de PESQ da mistura vem dos quadros de fala e se espalha pelas faixas.** O maior pedaço é +0,014, em 300–3400 Hz, e das pausas vem só +0,002. Já a recuperação de SI‑SDR (+0,38 dB) vem quase toda de < 100 Hz (+0,32).
+**14.7.3 Blend with W5.**
+- **The fixed weight is almost optimal.** On val_unseen, the best per-file w (between 0 and 0.5) would give 3.398, only +0.028 over the fixed w = 0.25. A rule based on the true SNR would give +0.002. A learned gate has little room.
+- **The spectral branch helps more at low SNR.**
+  - On val_unseen, the best w is 0.35 at 2.5 dB and 0.15 at 12.5 and 17.5 dB.
+  - On the test set, the blend gains +0.061 at 2.5 dB and +0.027 at 17.5 dB.
+  - On val_unseen_low, it gains +0.061.
+- **The PESQ gain of the blend comes from the speech frames and is spread over the bands.** The largest piece is +0.014, in 300–3400 Hz, and the pauses contribute only +0.002. The SI-SDR recovery (+0.38 dB), on the other hand, comes almost entirely from < 100 Hz (+0.32).
 
-**14.7.4 Streaming.** Soup do S30, val_unseen.
-- **A rede tolera bem um erro estático de escala.** Offline, com a escala da entrada multiplicada por c:
+**14.7.4 Streaming.** S30 soup, val_unseen.
+- **The network tolerates a static scale error well.** Offline, with the input scale multiplied by c:
 
-| c | 0,5 | 0,71 | 0,85 | 1 | 1,18 | 1,41 | 2 |
+| c | 0.5 | 0.71 | 0.85 | 1 | 1.18 | 1.41 | 2 |
 |---|---|---|---|---|---|---|---|
-| ΔPESQ | −0,058 | −0,014 | −0,003 | 0 (3,348) | −0,002 | −0,011 | −0,042 |
+| ΔPESQ | −0.058 | −0.014 | −0.003 | 0 (3.348) | −0.002 | −0.011 | −0.042 |
 
-- **A estimativa corrente erra muito no começo.** Em relação ao desvio padrão do arquivo inteiro, ela vale (mediana, com o intervalo dos percentis 10–90):
-  - 0,29 (0,14–0,63) aos 100 ms;
-  - 0,30 aos 500 ms;
-  - 0,78 (0,69–0,87) no fim.
+- **The running estimate is very wrong at the start.** Relative to the standard deviation of the whole file, it is (median, with the 10–90 percentile range):
+  - 0.29 (0.14–0.63) at 100 ms;
+  - 0.30 at 500 ms;
+  - 0.78 (0.69–0.87) at the end.
 
-  As frases têm mediana de 2,3 a 2,6 s, então boa parte de cada arquivo entra amplificada cerca de 3×.
-- **O viés final não explica a perda.** Offline, fixando por arquivo a razão final, a perda é −0,010. Com a média geométrica da trajetória, é −0,031.
-- **A perda está no primeiro segundo.** SNR por trecho, estimativa corrente contra oráculo:
-  - 0,5–1 s: 15,4 contra 20,3 dB;
-  - 1–1,5 s: 18,6 contra 19,8 dB;
-  - depois de 2 s: 12,3 contra 12,5 dB.
-- **Correções sem treino.** Streaming quadro a quadro; os valores a priori vêm da val, não da val_unseen:
+  The sentences have a median length of 2.3 to 2.6 s, so a good part of each file comes in amplified about 3×.
+- **The final bias does not explain the loss.** Offline, fixing the final ratio per file, the loss is −0.010. With the geometric mean of the trajectory, it is −0.031.
+- **The loss is in the first second.** SNR per segment, running estimate against oracle:
+  - 0.5–1 s: 15.4 against 20.3 dB;
+  - 1–1.5 s: 18.6 against 19.8 dB;
+  - after 2 s: 12.3 against 12.5 dB.
+- **Training-free fixes.** Frame-by-frame streaming; the prior values come from val, not from val_unseen:
 
-| Escala da entrada | PESQ | STOI | SI‑SDR |
+| Input scale | PESQ | STOI | SI-SDR |
 |---|---|---|---|
-| Offline | 3,348 | 0,9239 | 18,38 |
-| Corrente, como está hoje | 3,164 | 0,9136 | 17,21 |
-| Arquivo inteiro (oráculo, não causal) | 3,339 | 0,9239 | 18,38 |
-| **Fixa** (0,075, a mediana da val) | **3,335** | 0,9235 | 18,25 |
-| **Corrente com valor inicial** (62 pseudo‑quadros, ≈ 1 s, em 0,060: a mediana da estimativa final na val) | **3,325** | 0,9232 | 18,51 |
+| Offline | 3.348 | 0.9239 | 18.38 |
+| Running, as it is today | 3.164 | 0.9136 | 17.21 |
+| Whole file (oracle, non-causal) | 3.339 | 0.9239 | 18.38 |
+| **Fixed** (0.075, the val median) | **3.335** | 0.9235 | 18.25 |
+| **Running with a prior** (62 pseudo-frames, ≈ 1 s, at 0.060: the median of the final estimate on val) | **3.325** | 0.9232 | 18.51 |
 
-- **A escala fixa só serve com nível de entrada calibrado.** No VB‑DEMAND, o desvio padrão da entrada varia só 1,8–2× entre os percentis 10 e 90. A versão com valor inicial continua adaptativa.
-- **O ajuste fino com a normalização causal simulada (14.6, passo 1) deixa de ser necessário neste benchmark.** Falta a confirmação única no teste, onde o streaming dá hoje 3,085.
+- **The fixed scale only works with a calibrated input level.** On VB-DEMAND, the standard deviation of the input varies only 1.8–2× between the 10th and 90th percentiles. The version with a prior stays adaptive.
+- **Fine-tuning with the simulated causal normalization (14.6, step 1) is no longer needed on this benchmark.** A single confirmation on the test set is still missing; streaming there currently gives 3.085.
 
-**14.7.5 Consequências.**
-- **As escolhas (A) e (B) se mantêm.** A ordem dos sistemas resiste à exclusão de < 100 Hz.
-- **Ao relatar o ganho do discriminador**, separar a parte da banda da fala (+0,08) da parte de 50–100 Hz (+0,09). Vale reportar o PESQ sem < 100 Hz como métrica secundária.
-- **(B) fica viável em streaming** quase com a qualidade offline e sem treino, se o teste confirmar.
+**14.7.5 Consequences.**
+- **Choices (A) and (B) stand.** The ranking of the systems survives the exclusion of < 100 Hz.
+- **When reporting the discriminator gain**, separate the speech-band part (+0.08) from the 50–100 Hz part (+0.09). It is worth reporting PESQ without < 100 Hz as a secondary metric.
+- **(B) becomes viable in streaming** at almost offline quality and without training, if the test set confirms it.
 
-Próximos passos, em ordem:
-1. **Confirmar no teste, uma vez, o streaming da soup do S30** com a escala corrente com valor inicial, e com a fixa como referência (~5 min). Depois, levar o valor inicial para `cleanunet/streaming.py` como opção.
-2. **Escuta ABX curta** do S30 contra o K0ext30p, com fones, prestando atenção à faixa de 50–100 Hz. E/ou DNSMOS/UTMOS, seguindo a regra de arquivos não confiáveis.
-3. **Se a parte de 50–100 Hz for julgada irrelevante**, treinar o discriminador com o PESQ calculado sobre sinais filtrados acima de 100 Hz, para a perda mirar só a banda da fala.
-4. **Ramo espectral causal** para uma mistura em streaming (sem mudança).
-5. **Porta aprendida para o peso da mistura:** o teto é +0,03, então a prioridade é baixa.
+Next steps, in order:
+1. **Confirm on the test set, once, the streaming of the S30 soup** with the running scale with a prior, and with the fixed one as a reference (~5 min). Then bring the prior into `cleanunet/streaming.py` as an option.
+2. **Short ABX listening test** of S30 against K0ext30p, with headphones, paying attention to the 50–100 Hz band. And/or DNSMOS/UTMOS, following the untrusted-files rule.
+3. **If the 50–100 Hz part is judged irrelevant**, train the discriminator with PESQ computed on signals high-passed above 100 Hz, so the loss targets only the speech band.
+4. **Causal spectral branch** for a streaming blend (unchanged).
+5. **Learned gate for the blend weight:** the ceiling is +0.03, so the priority is low.
 
-### 14.8 Fila X: os próximos passos de 14.7 (2026‑10‑16)
+### 14.8 Queue X: the next steps of 14.7 (2026-10-16)
 
-Pedido do usuário: "executar os experimentos propostos". Foram três frentes: o streaming com valor inicial no teste e a opção no código; a validação perceptiva (DNSMOS e uma página de escuta); e o discriminador restrito à banda acima de 100 Hz (S30hp).
+User request: "run the proposed experiments". There were three fronts: streaming with a prior on the test set and the option in the code; perceptual validation (DNSMOS and a listening page); and the metric discriminator restricted to the band above 100 Hz (S30hp).
 
-**Implementação.** Testes em `tests/test_x_experiments.py` (6 novos); a suíte tem 140 testes e passa.
-- **Streaming com valor inicial.** `cleanunet/streaming.py`: `StreamingCleanUNet` e `stream_denoise` ganharam `prior_std` e `prior_frames`.
-  - A média corrente do desvio padrão por quadro começa de `prior_frames` pseudo‑quadros em `prior_std`.
-  - `prior_frames = inf` fixa a escala.
-  - Sem esses parâmetros, o resultado é o de antes, bit a bit.
-  - Opções no `evaluate.py`: `--stream_prior_std` e `--stream_prior_frames`.
-- **PESQ sem < 100 Hz.** `evaluation/metrics.py` ganhou `highpass` (Butterworth de 4ª ordem, ida e volta, fase zero) e a métrica `pesq_wb_hp`: o PESQ‑WB com a referência e a estimativa filtradas acima de 100 Hz. Ativa com `evaluate.py --band_limited`.
-- **Discriminador restrito, `loss.metric_gan.highpass_hz`** (`cleanunet/metric_disc.py` e o módulo).
-  - O alvo do discriminador passa a ser o PESQ dos dois sinais filtrados.
-  - O discriminador vê os sinais filtrados pelo mesmo |H|², aplicado pela FFT, de forma diferenciável.
-  - Assim, a perda métrica não age abaixo de 100 Hz.
-- **DNSMOS.** `evaluation/dnsmos.py` reimplementa o `dnsmos_local.py` da Microsoft: P.835 (SIG, BAK, OVRL) e P.808, com janelas de 9,01 s. O código baixado não é executado.
-  - Os modelos ONNX estão em `/home/fred/DATASETS/DNSMOS_dl_20261016/` (sha256 `269fbebd…` do `sig_bak_ovr.onnx`, `9246480c…` do `model_v8.onnx`).
-  - O script roda com `python -I`.
-  - No teste, a referência limpa dá OVRL 3,221, SIG 3,511, BAK 4,038 e P808 3,533. O ruidoso dá 2,697, 3,346, 3,126 e 3,053: os valores conhecidos do VB‑DEMAND.
-- **Lançadores e saídas.**
-  - `logs/abl/run_X.sh`: o S30hp.
-  - `logs/abl/run_X_eval.sh`: o streaming e o PESQ sem < 100 Hz dos sistemas existentes, em diretórios novos `*_bl`.
-  - `logs/abl/run_X_dnsmos.sh`: o DNSMOS.
-  - Log em `logs/abl/queue_X.log`, áudio em `results/abl/X_audio/` e DNSMOS em `results/abl/X_dnsmos/`.
-  - Scripts de análise, relatório (`x_report.txt`) e a página de escuta: `results/abl/X_analysis/` (ver o README).
+**Implementation.** Tests in `tests/test_x_experiments.py` (6 new); the suite has 140 tests and passes.
+- **Streaming with a prior.** `cleanunet/streaming.py`: `StreamingCleanUNet` and `stream_denoise` got `prior_std` and `prior_frames`.
+  - The running mean of the per-frame standard deviation starts from `prior_frames` pseudo-frames at `prior_std`.
+  - `prior_frames = inf` fixes the scale.
+  - Without these parameters, the result is bit-exact with the previous one.
+  - Options in `evaluate.py`: `--stream_prior_std` and `--stream_prior_frames`.
+- **PESQ without < 100 Hz.** `evaluation/metrics.py` got `highpass` (4th-order Butterworth, forward and backward, zero phase) and the metric `pesq_wb_hp`: PESQ-WB with the reference and the estimate high-passed above 100 Hz. Enabled with `evaluate.py --band_limited`.
+- **Restricted discriminator, `loss.metric_gan.highpass_hz`** (`cleanunet/metric_disc.py` and the module).
+  - The discriminator target becomes the PESQ of the two filtered signals.
+  - The discriminator sees the signals filtered by the same |H|², applied through the FFT, differentiably.
+  - So the metric loss does not act below 100 Hz.
+- **DNSMOS.** `evaluation/dnsmos.py` re-implements Microsoft's `dnsmos_local.py`: P.835 (SIG, BAK, OVRL) and P.808, with 9.01 s windows. The downloaded code is not executed.
+  - The ONNX models are in `/home/fred/DATASETS/DNSMOS_dl_20261016/` (sha256 `269fbebd…` for `sig_bak_ovr.onnx`, `9246480c…` for `model_v8.onnx`).
+  - The script runs with `python -I`.
+  - On the test set, the clean reference gives OVRL 3.221, SIG 3.511, BAK 4.038 and P808 3.533. The noisy audio gives 2.697, 3.346, 3.126 and 3.053: the known values for VB-DEMAND.
+- **Launchers and outputs.**
+  - `logs/abl/run_X.sh`: S30hp.
+  - `logs/abl/run_X_eval.sh`: streaming and PESQ without < 100 Hz for the existing systems, in new `*_bl` directories.
+  - `logs/abl/run_X_dnsmos.sh`: DNSMOS.
+  - Log in `logs/abl/queue_X.log`, audio in `results/abl/X_audio/` and DNSMOS in `results/abl/X_dnsmos/`.
+  - Analysis scripts, report (`x_report.txt`) and the listening page: `results/abl/X_analysis/` (see the README).
 
-**X1. Streaming com valor inicial (teste, uma rodada por configuração).** Os valores a priori vêm da val, sem ajuste na val_unseen nem no teste:
-- valor inicial: 0,0604 com 62 pseudo‑quadros (≈ 1 s), a mediana da estimativa final na val;
-- escala fixa: 0,075, a mediana do desvio padrão do arquivo inteiro na val.
+**X1. Streaming with a prior (test set, one run per configuration).** The prior values come from val, without tuning on val_unseen or the test set:
+- prior: 0.0604 with 62 pseudo-frames (≈ 1 s), the median of the final estimate on val;
+- fixed scale: 0.075, the median of the whole-file standard deviation on val.
 
-Na val_unseen, a implementação reproduz o diagnóstico de 14.7.4: 3,3253 e 3,3346.
+On val_unseen, the implementation reproduces the diagnostic of 14.7.4: 3.3253 and 3.3346.
 
-| Soup | Offline | Streaming atual | Com valor inicial | Escala fixa |
+| Soup | Offline | Current streaming | With a prior | Fixed scale |
 |---|---|---|---|---|
-| S30, PESQ | 3,335 | 3,085 | **3,323** | 3,317 |
-| S30, STOI / SI‑SDR | 0,9544 / 18,47 | 0,9416 / 17,26 | 0,9536 / 18,70 | 0,9546 / 18,39 |
-| K0ext30p, PESQ | 3,165 | 2,920 | **3,151** | 3,142 |
-| K0ext30p, STOI / SI‑SDR | 0,9543 / 18,74 | 0,9405 / 17,34 | 0,9535 / 18,89 | 0,9544 / 18,68 |
+| S30, PESQ | 3.335 | 3.085 | **3.323** | 3.317 |
+| S30, STOI / SI-SDR | 0.9544 / 18.47 | 0.9416 / 17.26 | 0.9536 / 18.70 | 0.9546 / 18.39 |
+| K0ext30p, PESQ | 3.165 | 2.920 | **3.151** | 3.142 |
+| K0ext30p, STOI / SI-SDR | 0.9543 / 18.74 | 0.9405 / 17.34 | 0.9535 / 18.89 | 0.9544 / 18.68 |
 
-- **O valor inicial recupera ~95% da perda nos dois modelos**, sem treino. A escala fixa recupera ~93%. Na val_unseen a ordem entre as duas se inverte (S30: 3,325 contra 3,335), mas ambas ficam a ≤ 0,03 do offline.
-- **Recomendado: o valor inicial**, que continua adaptativo. A escala fixa depende de um nível de entrada calibrado.
-- **(B) em streaming fica com 3,323 no teste**, contra 3,335 offline (STOI 0,9536, SI‑SDR 18,70). O passo 1 de 14.6 (ajuste fino com normalização causal) deixa de ser necessário.
+- **The prior recovers ~95% of the loss for both models**, without training. The fixed scale recovers ~93%. On val_unseen the order between the two is reversed (S30: 3.325 against 3.335), but both stay within ≤ 0.03 of offline.
+- **Recommended: the prior**, which stays adaptive. The fixed scale depends on a calibrated input level.
+- **(B) in streaming scores 3.323 on the test set**, against 3.335 offline (STOI 0.9536, SI-SDR 18.70). Step 1 of 14.6 (fine-tuning with causal normalization) is no longer needed.
 
-**X2. DNSMOS no teste (824 arquivos).** Diferenças pareadas por arquivo com IC 95% por bootstrap, e a fração de arquivos que melhoram:
+**X2. DNSMOS on the test set (824 files).** Per-file paired differences with a 95% bootstrap CI, and the share of files that improve:
 
-| Sistema | SIG | BAK | OVRL | P808 |
+| System | SIG | BAK | OVRL | P808 |
 |---|---|---|---|---|
-| Referência limpa | 3,511 | 4,038 | 3,221 | 3,533 |
-| Ruidoso | 3,346 | 3,126 | 2,697 | 3,053 |
-| Soup do K0ext30p (controle) | 3,512 | 4,045 | 3,225 | 3,437 |
-| Soup do S30 | 3,503 | 4,008 | 3,198 | 3,447 |
-| S30 com a faixa < 100 Hz do controle | 3,505 | 4,044 | 3,217 | 3,436 |
-| Controle com a faixa < 100 Hz do S30 | 3,509 | 4,010 | 3,204 | 3,448 |
-| Soup do S30 + W5, w 0,25 | 3,503 | 4,026 | 3,206 | 3,461 |
-| RX_C3 (semente 1) | 3,512 | 4,036 | 3,219 | 3,461 |
-| Soup do S30, streaming atual | 3,475 | 4,043 | 3,193 | 3,449 |
-| Soup do S30, streaming com valor inicial | 3,499 | 4,030 | 3,205 | 3,443 |
+| Clean reference | 3.511 | 4.038 | 3.221 | 3.533 |
+| Noisy | 3.346 | 3.126 | 2.697 | 3.053 |
+| K0ext30p soup (control) | 3.512 | 4.045 | 3.225 | 3.437 |
+| S30 soup | 3.503 | 4.008 | 3.198 | 3.447 |
+| S30 with the < 100 Hz band of the control | 3.505 | 4.044 | 3.217 | 3.436 |
+| Control with the < 100 Hz band of S30 | 3.509 | 4.010 | 3.204 | 3.448 |
+| S30 soup + W5, w 0.25 | 3.503 | 4.026 | 3.206 | 3.461 |
+| RX_C3 (seed 1) | 3.512 | 4.036 | 3.219 | 3.461 |
+| S30 soup, current streaming | 3.475 | 4.043 | 3.193 | 3.449 |
+| S30 soup, streaming with a prior | 3.499 | 4.030 | 3.205 | 3.443 |
 
-- **O DNSMOS não confirma o ganho do discriminador.** S30 − controle:
-  - OVRL −0,026 [−0,029; −0,024], com só 22% dos arquivos melhorando;
-  - BAK −0,037 [−0,040; −0,034];
-  - SIG −0,009;
-  - P808 +0,010 [+0,008; +0,012].
-- **A diferença vem da faixa abaixo de 100 Hz.** Devolver ao S30 a faixa < 100 Hz do controle recupera +0,019 de OVRL e +0,035 de BAK (91% dos arquivos). Pôr no controle a faixa do S30 tira −0,020 e −0,035. Acima de 100 Hz, S30 e controle ficam praticamente iguais no DNSMOS (OVRL −0,008). O mesmo conteúdo de 50–100 Hz que rende +0,10 de PESQ‑WB soa ao DNSMOS como um pouco mais de ruído de fundo.
-- **O DNSMOS está perto do teto.** O controle já empata com a referência limpa (3,225 contra 3,221). As diferenças entre sistemas (≤ 0,03) são pequenas perto do ganho sobre o ruidoso (+0,5) e provavelmente abaixo do que um ouvinte nota. Por isso o DNSMOS não decide; a escuta decide.
-- **Os outros pares têm efeitos pequenos.**
-  - Mistura − S30: OVRL +0,008, BAK +0,018.
-  - S30 − RX_C3: OVRL −0,021.
-  - Streaming com valor inicial − streaming atual: OVRL +0,012, SIG +0,024. O aquecimento da escala prejudicava o sinal de fala.
+- **DNSMOS does not confirm the discriminator gain.** S30 − control:
+  - OVRL −0.026 [−0.029, −0.024], with only 22% of the files improving;
+  - BAK −0.037 [−0.040, −0.034];
+  - SIG −0.009;
+  - P808 +0.010 [+0.008, +0.012].
+- **The difference comes from the band below 100 Hz.** Giving S30 the < 100 Hz band of the control back recovers +0.019 OVRL and +0.035 BAK (91% of the files). Putting the S30 band into the control takes away −0.020 and −0.035. Above 100 Hz, S30 and the control are practically equal in DNSMOS (OVRL −0.008). The same 50–100 Hz content that yields +0.10 PESQ-WB sounds to DNSMOS like a little more background noise.
+- **DNSMOS is close to its ceiling.** The control already ties with the clean reference (3.225 against 3.221). The differences between systems (≤ 0.03) are small next to the gain over the noisy audio (+0.5) and probably below what a listener notices. That is why DNSMOS does not decide; the listening test does.
+- **The other pairs have small effects.**
+  - Blend − S30: OVRL +0.008, BAK +0.018.
+  - S30 − RX_C3: OVRL −0.021.
+  - Streaming with a prior − current streaming: OVRL +0.012, SIG +0.024. The warm-up of the scale was hurting the speech signal.
 
-**X3. PESQ sem < 100 Hz, 3 sementes (`*_bl`).** Média ± desvio padrão amostral entre as sementes:
+**X3. PESQ without < 100 Hz, 3 seeds (`*_bl`).** Mean ± sample standard deviation between the seeds:
 
-| Sistema | Teste: PESQ | Teste: sem < 100 Hz | val_unseen: PESQ | val_unseen: sem < 100 Hz |
+| System | Test: PESQ | Test: without < 100 Hz | val_unseen: PESQ | val_unseen: without < 100 Hz |
 |---|---|---|---|---|
-| K0ext30p | 3,161 ± 0,001 | 3,333 ± 0,002 | 3,201 ± 0,002 | 3,381 ± 0,002 |
-| RX_C3 | 3,211 ± 0,008 | 3,363 ± 0,005 | 3,220 ± 0,018 | 3,382 ± 0,013 |
-| S30 | 3,328 ± 0,011 | 3,410 ± 0,006 | 3,344 ± 0,012 | 3,443 ± 0,008 |
-| S30 + W5, w 0,25 | 3,372 ± 0,009 | 3,452 ± 0,006 | 3,370 ± 0,010 | 3,472 ± 0,006 |
+| K0ext30p | 3.161 ± 0.001 | 3.333 ± 0.002 | 3.201 ± 0.002 | 3.381 ± 0.002 |
+| RX_C3 | 3.211 ± 0.008 | 3.363 ± 0.005 | 3.220 ± 0.018 | 3.382 ± 0.013 |
+| S30 | 3.328 ± 0.011 | 3.410 ± 0.006 | 3.344 ± 0.012 | 3.443 ± 0.008 |
+| S30 + W5, w 0.25 | 3.372 ± 0.009 | 3.452 ± 0.006 | 3.370 ± 0.010 | 3.472 ± 0.006 |
 
-- **S30 − K0ext30p sem < 100 Hz:** +0,077 [+0,072; +0,082] no teste, com 93% dos arquivos melhorando, e +0,062 na val_unseen. Com o PESQ completo, era +0,167 e +0,143.
-- **As soups dão os mesmos números da análise de 14.7.2**, o que confirma a implementação.
+- **S30 − K0ext30p without < 100 Hz:** +0.077 [+0.072, +0.082] on the test set, with 93% of the files improving, and +0.062 on val_unseen. With the full PESQ, it was +0.167 and +0.143.
+- **The soups give the same numbers as the analysis of 14.7.2**, which confirms the implementation.
 
-**X4. Discriminador restrito à banda acima de 100 Hz (S30hp).**
-- **Receita:** a do S30 com `loss.metric_gan={weight: 0.3, highpass_hz: 100}`, 3 sementes e soup.
-- **Treino:** as 3 sementes treinaram sem falhas nem retomadas.
-- **Avaliação:** com `--band_limited`. ± é o desvio padrão amostral entre as sementes.
+**X4. Discriminator restricted to the band above 100 Hz (S30hp).**
+- **Recipe:** that of S30 with `loss.metric_gan={weight: 0.3, highpass_hz: 100}`, 3 seeds and soup.
+- **Training:** the 3 seeds trained with no failures or resumes.
+- **Evaluation:** with `--band_limited`. ± is the sample standard deviation between the seeds.
 
-| Teste | PESQ | PESQ sem < 100 Hz | SI‑SDR | PESQ‑NB | CSIG / CBAK / COVL | segSNR | WSS |
+| Test | PESQ | PESQ without < 100 Hz | SI-SDR | PESQ-NB | CSIG / CBAK / COVL | segSNR | WSS |
 |---|---|---|---|---|---|---|---|
-| K0ext30p (controle) | 3,161 ± 0,001 | 3,333 ± 0,002 | 18,71 | 3,755 | 4,61 / 3,71 / 3,96 | 9,40 | 3,88 |
-| S30 | 3,328 ± 0,011 | 3,410 ± 0,006 | 18,44 | 3,821 | 4,68 / 3,77 / 4,10 | 9,04 | 4,07 |
-| **S30hp** | 3,274 ± 0,005 | **3,427 ± 0,004** | 18,65 | 3,822 | 4,66 / 3,76 / 4,05 | 9,32 | 3,88 |
-| Soup do S30 | 3,335 | 3,415 | 18,47 | 3,825 | 4,69 / 3,77 / 4,10 | 9,07 | 4,06 |
-| Soup do S30hp | 3,280 | 3,430 | 18,68 | 3,825 | 4,67 / 3,76 / 4,06 | 9,35 | 3,86 |
-| Soup do S30 + W5, w 0,25 | **3,375** | 3,455 | 18,85 | 3,862 | 4,72 / 3,81 / 4,15 | 9,41 | 3,65 |
-| Soup do S30hp + W5, w 0,25 | 3,326 | **3,469** | **19,00** | 3,861 | 4,71 / 3,80 / 4,11 | 9,61 | **3,52** |
+| K0ext30p (control) | 3.161 ± 0.001 | 3.333 ± 0.002 | 18.71 | 3.755 | 4.61 / 3.71 / 3.96 | 9.40 | 3.88 |
+| S30 | 3.328 ± 0.011 | 3.410 ± 0.006 | 18.44 | 3.821 | 4.68 / 3.77 / 4.10 | 9.04 | 4.07 |
+| **S30hp** | 3.274 ± 0.005 | **3.427 ± 0.004** | 18.65 | 3.822 | 4.66 / 3.76 / 4.05 | 9.32 | 3.88 |
+| S30 soup | 3.335 | 3.415 | 18.47 | 3.825 | 4.69 / 3.77 / 4.10 | 9.07 | 4.06 |
+| S30hp soup | 3.280 | 3.430 | 18.68 | 3.825 | 4.67 / 3.76 / 4.06 | 9.35 | 3.86 |
+| S30 soup + W5, w 0.25 | **3.375** | 3.455 | 18.85 | 3.862 | 4.72 / 3.81 / 4.15 | 9.41 | 3.65 |
+| S30hp soup + W5, w 0.25 | 3.326 | **3.469** | **19.00** | 3.861 | 4.71 / 3.80 / 4.11 | 9.61 | **3.52** |
 
-O STOI é 0,954 sem o W5 e 0,956 com ele em todas as linhas. Diferenças pareadas no teste, por arquivo e com a média das sementes:
+STOI is 0.954 without W5 and 0.956 with it in every row. Paired differences on the test set, per file and with the seed mean:
 
-| Comparação | PESQ | PESQ sem < 100 Hz | SI‑SDR |
+| Comparison | PESQ | PESQ without < 100 Hz | SI-SDR |
 |---|---|---|---|
-| S30hp − S30 | −0,054 [−0,062; −0,047], 18% melhoram | **+0,017** [+0,013; +0,021], 63% | **+0,21 dB**, 94% |
-| S30hp − K0ext30p | +0,113 [+0,106; +0,120], 95% | +0,094 [+0,089; +0,099], 93% | −0,06 dB, 23% |
-| S30 − K0ext30p (referência) | +0,167 [+0,157; +0,178], 96% | +0,077 [+0,072; +0,082], 93% | −0,27 dB, 4% |
-| Soups com o W5: S30hp − S30 | −0,049 [−0,056; −0,043], 18% | +0,014 [+0,012; +0,017], 64% | +0,15 dB, 93% |
+| S30hp − S30 | −0.054 [−0.062, −0.047], 18% improve | **+0.017** [+0.013, +0.021], 63% | **+0.21 dB**, 94% |
+| S30hp − K0ext30p | +0.113 [+0.106, +0.120], 95% | +0.094 [+0.089, +0.099], 93% | −0.06 dB, 23% |
+| S30 − K0ext30p (reference) | +0.167 [+0.157, +0.178], 96% | +0.077 [+0.072, +0.082], 93% | −0.27 dB, 4% |
+| Soups with W5: S30hp − S30 | −0.049 [−0.056, −0.043], 18% | +0.014 [+0.012, +0.017], 64% | +0.15 dB, 93% |
 
-Na val_unseen o padrão se repete:
-- S30hp − S30: −0,052, +0,014 e +0,21 dB.
-- S30hp − controle: +0,091, +0,076 e +0,00 dB.
+On val_unseen the pattern repeats:
+- S30hp − S30: −0.052, +0.014 and +0.21 dB.
+- S30hp − control: +0.091, +0.076 and +0.00 dB.
 
-- **A restrição funcionou, mas não por completo.**
-  - **O SI‑SDR volta ao do controle:** −0,06 dB no teste e +0,00 na val_unseen, contra −0,27 e −0,21 dB do S30. segSNR e WSS também voltam ao nível do controle.
-  - **O erro em 50–100 Hz também volta.** A potência do erro relativa à da referência, somada no teste, fica em −12,5 dB, contra −12,6 dB no controle e −12,0 dB no S30.
-  - **Resta um pedaço abaixo de 100 Hz.** Pela troca de faixas de 14.7.2 (`x_hp_swap.py`):
-    - posta no controle, a faixa < 100 Hz do S30hp ainda vale +0,041 de PESQ (a do S30 valia +0,099);
-    - trocá‑la pela do controle tira 0,043 do S30hp (no S30, tirava 0,097).
-  - **Esse resíduo vem do corte suave.**
-    - O filtro (Butterworth de 4ª ordem, aplicado ida e volta) atenua só 6 dB em 100 Hz, 8,5 dB em 94 Hz e 17 dB em 80 Hz.
-    - A janela da STFT leva para os bins abaixo de 100 Hz parte do que está logo acima.
-    - O PESQ sem < 100 Hz usa o mesmo filtro e também conta essa transição.
-- **Sem < 100 Hz, o S30hp fica +0,094 acima do controle, contra +0,077 do S30.** Aqui estava escrito que o ganho na banda da fala aumentou. **Revisto em 14.8.2:** o PESQ‑NB dá o mesmo ganho aos dois, e o PESQ filtrado é o próprio alvo do discriminador do S30hp.
-- **O custo é o PESQ‑WB completo.**
-  - São −0,054 em relação ao S30. CSIG e COVL caem junto, porque são regressões sobre o PESQ.
-  - Ainda assim, ficam +0,113 sobre o controle, com 95% dos arquivos melhorando.
-- **Robustez.**
-  - **Variância entre sementes menor:** ± 0,005, contra ± 0,011 do S30.
-  - **Não depende da polaridade:** 3,295 na val_unseen e 3,299 com a entrada invertida.
-  - **SNR baixo:** 2,534 na val_unseen_low, contra 2,565 do S30 e 2,445 do controle.
-  - **Cauda de falhas:** 1,1% dos arquivos ficam mais de 0,1 abaixo do K0extfull (0,8% na soup). O S30 tem 0,6% e o controle K0ext30p, 4,1%.
-  - **Streaming com valor inicial:** a soup dá 3,273 no teste, a −0,007 do offline. O S30 fica a −0,012.
-- **DNSMOS no teste:**
+- **The restriction worked, but not completely.**
+  - **SI-SDR returns to the control's:** −0.06 dB on the test set and +0.00 on val_unseen, against −0.27 and −0.21 dB for S30. segSNR and WSS also return to the control level.
+  - **The 50–100 Hz error also returns.** The error power relative to that of the reference, summed over the test set, is −12.5 dB, against −12.6 dB for the control and −12.0 dB for S30.
+  - **A piece below 100 Hz remains.** By the band swap of 14.7.2 (`x_hp_swap.py`):
+    - put into the control, the < 100 Hz band of S30hp is still worth +0.041 PESQ (that of S30 was worth +0.099);
+    - replacing it with the control's takes 0.043 away from S30hp (for S30, it took 0.097).
+  - **That residual comes from the soft cutoff.**
+    - The filter (4th-order Butterworth, applied forward and backward) attenuates only 6 dB at 100 Hz, 8.5 dB at 94 Hz and 17 dB at 80 Hz.
+    - The STFT window carries part of what lies just above 100 Hz into the bins below it.
+    - PESQ without < 100 Hz uses the same filter and also counts that transition.
+- **Without < 100 Hz, S30hp is +0.094 above the control, against +0.077 for S30.** It was written here that the speech-band gain had increased. **Revised in 14.8.2:** PESQ-NB gives the same gain to both, and the filtered PESQ is the very target of the S30hp discriminator.
+- **The cost is the full PESQ-WB.**
+  - It is −0.054 relative to S30. CSIG and COVL drop with it, because they are regressions on PESQ.
+  - Even so, they stay +0.113 above the control, with 95% of the files improving.
+- **Robustness.**
+  - **Smaller variance between seeds:** ± 0.005, against ± 0.011 for S30.
+  - **No polarity dependence:** 3.295 on val_unseen and 3.299 with the inverted input.
+  - **Low SNR:** 2.534 on val_unseen_low, against 2.565 for S30 and 2.445 for the control.
+  - **Failure tail:** 1.1% of the files are more than 0.1 below K0extfull (0.8% for the soup). S30 has 0.6% and the K0ext30p control 4.1%.
+  - **Streaming with a prior:** the soup gives 3.273 on the test set, −0.007 from offline. S30 is −0.012 from offline.
+- **DNSMOS on the test set:**
 
-| Sistema | SIG | BAK | OVRL | P808 |
+| System | SIG | BAK | OVRL | P808 |
 |---|---|---|---|---|
-| Soup do K0ext30p (controle) | 3,512 | 4,045 | 3,225 | 3,437 |
-| Soup do S30 | 3,503 | 4,008 | 3,198 | 3,447 |
-| Soup do S30hp | 3,508 | 4,034 | 3,215 | 3,438 |
-| Soup do S30hp + W5, w 0,25 | 3,507 | 4,046 | 3,219 | 3,450 |
-| Soup do S30hp, streaming com valor inicial | 3,501 | 4,050 | 3,218 | 3,428 |
+| K0ext30p soup (control) | 3.512 | 4.045 | 3.225 | 3.437 |
+| S30 soup | 3.503 | 4.008 | 3.198 | 3.447 |
+| S30hp soup | 3.508 | 4.034 | 3.215 | 3.438 |
+| S30hp soup + W5, w 0.25 | 3.507 | 4.046 | 3.219 | 3.450 |
+| S30hp soup, streaming with a prior | 3.501 | 4.050 | 3.218 | 3.428 |
 
   - **S30hp − S30:**
-    - OVRL +0,016 [+0,014; +0,018], com 73% dos arquivos melhorando;
-    - BAK +0,025, com 82%;
-    - P808 −0,009.
-  - **S30hp − controle:** OVRL −0,010 [−0,012; −0,008], BAK −0,012, P808 +0,001 (não significativo).
-  - **O S30hp recupera ~60% do déficit do S30**, na mesma proporção em que caiu o efeito da troca de faixas (de +0,099 para +0,041). O que falta acompanha o resíduo abaixo de 100 Hz.
-  - **Com o W5:** a mistura do S30hp − a do S30 dá OVRL +0,013 e BAK +0,019.
-  - **O DNSMOS não vê ganho do discriminador nem na banda da fala** (S30hp − controle: OVRL −0,010, P808 +0,001). Como o controle já empata com a referência limpa, ele não separa sistemas desse nível. Aqui ele serve só para detectar degradação, como o BAK abaixo de 100 Hz.
+    - OVRL +0.016 [+0.014, +0.018], with 73% of the files improving;
+    - BAK +0.025, with 82%;
+    - P808 −0.009.
+  - **S30hp − control:** OVRL −0.010 [−0.012, −0.008], BAK −0.012, P808 +0.001 (not significant).
+  - **S30hp recovers ~60% of the S30 deficit**, in the same proportion as the drop of the band-swap effect (from +0.099 to +0.041). What remains follows the residual below 100 Hz.
+  - **With W5:** the S30hp blend − the S30 blend gives OVRL +0.013 and BAK +0.019.
+  - **DNSMOS sees no discriminator gain, not even in the speech band** (S30hp − control: OVRL −0.010, P808 +0.001). Since the control already ties with the clean reference, it cannot separate systems at this level. Here it only serves to detect degradation, such as the BAK below 100 Hz.
 
-**X5. Página de escuta cega:** https://claude.ai/artifact/GqL1QYn6mBzMSc4KHuijXm (privada, para ouvir com fones).
-- **Conteúdo:** 22 tentativas, com arquivos do teste em WAV.
-  - **Bloco A:** 8 de preferência, soup do S30 contra a do K0ext30p.
-  - **Bloco B:** 8 ABX, S30 contra o S30 com a faixa < 100 Hz do controle. Testa se essa faixa é audível.
-  - **Bloco C:** 6 de preferência, a mistura com o W5 contra o S30.
-- **Seleção dos arquivos:** entre os percentis 75 e 95 do ΔPESQ por arquivo (PESQ robusto nos blocos A e C), equilibrados por locutor. A posição de cada sistema e o X do ABX foram sorteados uma vez, na geração das tentativas.
-- **Respostas:** um documento por resposta na coleção `respostas` do banco do artefato (uid, tentativa, bloco, arquivo, ruído, SNR, ordem, resposta, acerto ou escolha, tempo). Para ler: ArtifactData `list`.
-- **Arquivos:** `listen_audio.py` gera os WAVs, e a página está em `results/abl/X_analysis/listen/`.
-- **Situação em 2026‑10‑16, 11:15:** nenhuma resposta ainda.
+**X5. Blind listening page:** https://claude.ai/artifact/GqL1QYn6mBzMSc4KHuijXm (private, for listening with headphones).
+- **Content:** 22 trials, with test files as WAV.
+  - **Block A:** 8 preference trials, S30 soup against the K0ext30p soup.
+  - **Block B:** 8 ABX trials, S30 against S30 with the < 100 Hz band of the control. Tests whether that band is audible.
+  - **Block C:** 6 preference trials, the blend with W5 against S30.
+- **File selection:** between the 75th and 95th percentiles of the per-file ΔPESQ (robust PESQ in blocks A and C), balanced by speaker. The position of each system and the ABX reference were drawn once, when the trials were generated.
+- **Answers:** one document per answer in the `respostas` ("answers") collection of the artifact database (uid, trial, block, file, noise, SNR, order, answer, correct or choice, time). To read: ArtifactData `list`.
+- **Files:** `listen_audio.py` generates the WAVs, and the page is in `results/abl/X_analysis/listen/`.
+- **Status on 2026-10-16, 11:15:** no answers yet.
 
-**14.8.1 Conclusões da fila X.**
-1. **Streaming resolvido sem treino.**
-   - Com a escala corrente com valor inicial (`--stream_prior_std 0.0604 --stream_prior_frames 62`), o streaming fica a ≤ 0,014 do offline no teste: S30 3,323, S30hp 3,273, K0ext30p 3,151. Antes, perdia 0,25.
-   - O DNSMOS do streaming com valor inicial fica igual ao do offline ou um pouco acima (OVRL +0,003 a +0,007).
-2. **O discriminador métrico tem dois efeitos.**
-   - **Na banda da fala**, um ganho de PESQ que se mantém sem < 100 Hz e no PESQ‑NB (+0,066 no S30, +0,067 no S30hp), sem custo de SI‑SDR.
-   - **Em 50–100 Hz**, um conteúdo que o PESQ‑WB premia (+0,10). Ele custa SI‑SDR (−0,27 dB), e o DNSMOS o lê como ruído de fundo (BAK −0,035).
-   - O S30hp separa os dois: mantém o primeiro e corta ~60% do segundo.
-3. **Recomendação.**
-   - **Para o número de benchmark (PESQ‑WB)**, continuam a soup do S30 + W5 (3,375) e a soup do S30 (3,335), como em 14.6. A ressalva é explícita: ~0,09 desse ganho é a faixa de 50–100 Hz.
-   - **Para uso, a soup do S30hp como (B) e a soup do S30hp + W5 como (A).** Elas são melhores em todas as outras métricas.
-     - **(B)** PESQ 3,280; sem < 100 Hz 3,430; SI‑SDR 18,68 dB; DNSMOS OVRL 3,215. A variância entre sementes é a metade da do S30.
-     - **(A)** PESQ 3,326; sem < 100 Hz 3,469 e SI‑SDR 19,00 dB, os maiores de todos os sistemas; WSS 3,52, o menor; DNSMOS OVRL 3,219.
-   - A escolha entre S30 e S30hp é uma questão sobre a faixa de 50–100 Hz, e é isso que o bloco B da escuta testa.
-     - Se a faixa não for audível, o S30hp fica com a vantagem nas métricas restantes.
-     - Se for audível e a versão do S30 for preferida, o PESQ‑WB estava certo, e vale o S30.
-4. **O DNSMOS está no teto deste benchmark:** detecta degradação, mas não ordena sistemas que já igualam a referência limpa.
+**14.8.1 Conclusions of queue X.**
+1. **Streaming solved without training.**
+   - With the running scale with a prior (`--stream_prior_std 0.0604 --stream_prior_frames 62`), streaming is within ≤ 0.014 of offline on the test set: S30 3.323, S30hp 3.273, K0ext30p 3.151. Before, it lost 0.25.
+   - The DNSMOS of streaming with a prior is equal to that of offline or slightly above (OVRL +0.003 to +0.007).
+2. **The metric discriminator has two effects.**
+   - **In the speech band**, a PESQ gain that holds without < 100 Hz and in PESQ-NB (+0.066 for S30, +0.067 for S30hp), with no SI-SDR cost.
+   - **In 50–100 Hz**, content that PESQ-WB rewards (+0.10). It costs SI-SDR (−0.27 dB), and DNSMOS reads it as background noise (BAK −0.035).
+   - S30hp separates the two: it keeps the first and removes ~60% of the second.
+3. **Recommendation.**
+   - **For the benchmark number (PESQ-WB)**, the S30 soup + W5 (3.375) and the S30 soup (3.335) remain, as in 14.6. The caveat is explicit: ~0.09 of this gain is the 50–100 Hz band.
+   - **For use, the S30hp soup as (B) and the S30hp soup + W5 as (A).** They are better on every other metric.
+     - **(B)** PESQ 3.280; without < 100 Hz 3.430; SI-SDR 18.68 dB; DNSMOS OVRL 3.215. The variance between seeds is half that of S30.
+     - **(A)** PESQ 3.326; without < 100 Hz 3.469 and SI-SDR 19.00 dB, the highest of all systems; WSS 3.52, the lowest; DNSMOS OVRL 3.219.
+   - The choice between S30 and S30hp is a question about the 50–100 Hz band, and that is what block B of the listening test tests.
+     - If the band is not audible, S30hp keeps the advantage on the remaining metrics.
+     - If it is audible and the S30 version is preferred, PESQ-WB was right, and S30 is the choice.
+4. **DNSMOS is at its ceiling on this benchmark:** it detects degradation, but it does not rank systems that already match the clean reference.
 
-**Próximos passos:**
-1. **Escuta** (depende do usuário): a página de X5 leva ~10 min, com fones.
-2. **Corte mais íngreme ou mais alto no discriminador** (8ª ordem, ou 150 Hz), para tirar o resíduo de +0,04 abaixo de 100 Hz: ~3 h para 3 sementes. Só vale se a escuta mostrar que essa faixa importa.
-3. **Ramo espectral causal**, para uma mistura em streaming (sem mudança). Não entrou na fila X.
-4. **Porta aprendida para o peso da mistura:** teto de +0,03, prioridade baixa. Não entrou na fila X.
+**Next steps:**
+1. **Listening test** (up to the user): the X5 page takes ~10 min, with headphones.
+2. **Steeper or higher cutoff in the discriminator** (8th order, or 150 Hz), to remove the +0.04 residual below 100 Hz: ~3 h for 3 seeds. Only worth it if the listening test shows the band matters.
+3. **Causal spectral branch**, for a streaming blend (unchanged). Not part of queue X.
+4. **Learned gate for the blend weight:** ceiling of +0.03, low priority. Not part of queue X.
 
-**14.8.2 Análise complementar (2026‑10‑16, noite).** Sem treino nem inferência nova: só os resultados por arquivo já gravados. Script `results/abl/X_analysis/x_extra.py`, saída `x_extra.txt`.
+**14.8.2 Complementary analysis (2026-10-16, evening).** No training and no new inference: only the per-file results already stored. Script `results/abl/X_analysis/x_extra.py`, output `x_extra.txt`.
 
-**PESQ‑NB como verificação da banda da fala.** O PESQ‑NB só avalia 300–3400 Hz e não é o alvo de nenhum dos dois discriminadores. É do mesmo algoritmo, então não substitui a escuta. Diferenças pareadas no teste, por arquivo e com a média das sementes:
+**PESQ-NB as a check on the speech band.** PESQ-NB only evaluates 300–3400 Hz and is the target of neither discriminator. It is the same algorithm, so it does not replace the listening test. Paired differences on the test set, per file and with the seed mean:
 
-| Comparação | PESQ‑WB | Sem < 100 Hz | PESQ‑NB | SI‑SDR | segSNR | WSS (menor é melhor) |
+| Comparison | PESQ-WB | Without < 100 Hz | PESQ-NB | SI-SDR | segSNR | WSS (lower is better) |
 |---|---|---|---|---|---|---|
-| S30 − K0ext30p | +0,167 | +0,077 | +0,066 [+0,062; +0,070], 94% | −0,27 dB | −0,36 | +0,19 |
-| S30hp − K0ext30p | +0,113 | +0,094 | +0,067 [+0,063; +0,071], 95% | −0,06 dB | −0,08 | −0,00 |
-| S30hp − S30 | −0,054 | +0,017 | +0,001 [−0,001; +0,002], 46% | +0,21 dB | +0,28 | −0,19 |
+| S30 − K0ext30p | +0.167 | +0.077 | +0.066 [+0.062, +0.070], 94% | −0.27 dB | −0.36 | +0.19 |
+| S30hp − K0ext30p | +0.113 | +0.094 | +0.067 [+0.063, +0.071], 95% | −0.06 dB | −0.08 | −0.00 |
+| S30hp − S30 | −0.054 | +0.017 | +0.001 [−0.001, +0.002], 46% | +0.21 dB | +0.28 | −0.19 |
 
-- **O ganho do discriminador na banda da fala é real e igual nos dois modelos:** +0,066 e +0,067 de PESQ‑NB sobre o controle. Ele aparece nas 3 sementes (t de 28 e 66 entre as médias por semente), nos 5 ruídos e nos 4 SNRs do teste.
-- **O +0,017 do S30hp sobre o S30 sem < 100 Hz não aparece no PESQ‑NB.** O PESQ filtrado é o alvo do discriminador do S30hp, como o PESQ‑WB é o do S30, e cada modelo ganha na métrica que otimiza. O S30hp mantém o ganho do S30 na banda da fala, sem aumentá‑lo.
-- **As vantagens do S30hp sobre o S30 fora do PESQ:** SI‑SDR +0,21 dB, segSNR +0,28, WSS −0,19, DNSMOS OVRL +0,016 e BAK +0,025, com metade da variância entre sementes.
-- **Contra o controle, o S30hp empata em tudo o que não é PESQ:**
-  - STOI igual, WSS igual (−0,003), SI‑SDR −0,06 dB no teste e +0,00 na val_unseen, LLR +0,003;
-  - o ganho fica só no PESQ: NB +0,067, WB +0,113;
-  - o DNSMOS OVRL fica −0,010.
+- **The discriminator's speech-band gain is real and equal for both models:** +0.066 and +0.067 PESQ-NB over the control. It appears for the 3 seeds (t of 28 and 66 between the per-seed means), the 5 noises and the 4 SNRs of the test set.
+- **The +0.017 of S30hp over S30 without < 100 Hz does not appear in PESQ-NB.** The filtered PESQ is the target of the S30hp discriminator, as PESQ-WB is that of S30, and each model gains on the metric it optimizes. S30hp keeps the speech-band gain of S30, without increasing it.
+- **The advantages of S30hp over S30 outside PESQ:** SI-SDR +0.21 dB, segSNR +0.28, WSS −0.19, DNSMOS OVRL +0.016 and BAK +0.025, with half the variance between seeds.
+- **Against the control, S30hp ties on everything that is not PESQ:**
+  - equal STOI, equal WSS (−0.003), SI-SDR −0.06 dB on the test set and +0.00 on val_unseen, LLR +0.003;
+  - the gain is only in PESQ: NB +0.067, WB +0.113;
+  - DNSMOS OVRL is −0.010.
 
-**Locutores.** O teste tem 2 locutores (p232 e p257) e a val_unseen outros 2 (p226 e p287). Os ICs por arquivo tratam ~800 arquivos como independentes e não medem a variação entre locutores. Médias por locutor:
+**Speakers.** The test set has 2 speakers (p232 and p257) and val_unseen another 2 (p226 and p287). The per-file CIs treat ~800 files as independent and do not measure the variation between speakers. Means per speaker:
 
-| | p232 (teste) | p257 (teste) | p226 (val_unseen) | p287 (val_unseen) |
+| | p232 (test) | p257 (test) | p226 (val_unseen) | p287 (val_unseen) |
 |---|---|---|---|---|
-| S30 − K0, PESQ‑WB | +0,128 | +0,203 | +0,208 | +0,088 |
-| S30 − K0, sem < 100 Hz | +0,070 | +0,083 | +0,062 | +0,062 |
-| Parte abaixo de 100 Hz (a diferença das duas linhas) | 0,058 | 0,120 | 0,146 | 0,026 |
-| S30hp − S30, sem < 100 Hz | +0,003 | +0,030 | +0,049 | −0,015 |
-| S30hp − S30, SI‑SDR | +0,31 dB | +0,13 dB | +0,22 dB | +0,20 dB |
-| S30hp − K0, sem < 100 Hz | +0,073 | +0,113 | +0,111 | +0,047 |
-| Energia da referência limpa em 50–100 Hz (dB do total) | −12,4 | −25,9 | −12,1 | −8,3 |
+| S30 − K0, PESQ-WB | +0.128 | +0.203 | +0.208 | +0.088 |
+| S30 − K0, without < 100 Hz | +0.070 | +0.083 | +0.062 | +0.062 |
+| Part below 100 Hz (the difference of the two rows) | 0.058 | 0.120 | 0.146 | 0.026 |
+| S30hp − S30, without < 100 Hz | +0.003 | +0.030 | +0.049 | −0.015 |
+| S30hp − S30, SI-SDR | +0.31 dB | +0.13 dB | +0.22 dB | +0.20 dB |
+| S30hp − K0, without < 100 Hz | +0.073 | +0.113 | +0.111 | +0.047 |
+| Energy of the clean reference in 50–100 Hz (dB of the total) | −12.4 | −25.9 | −12.1 | −8.3 |
 
-- **Estáveis nos 4 locutores:**
-  - o ganho sem < 100 Hz do S30 e do S30hp sobre o controle;
-  - a perda de PESQ‑WB e o ganho de SI‑SDR do S30hp sobre o S30.
-- **A parte abaixo de 100 Hz varia 5×** entre os locutores, de 0,026 a 0,146.
-- **O +0,017 do S30hp sobre o S30 sem < 100 Hz vai de −0,015 a +0,049.** Ele acompanha a parte abaixo de 100 Hz: é maior onde o S30 ganhava mais abaixo de 100 Hz (p226 e p257). Isso reforça que vem da transição do corte suave, não da banda da fala.
-- **Dentro de cada split, o locutor com menos energia em 50–100 Hz na referência tem o maior efeito abaixo de 100 Hz:** p257 no teste e p226 na val_unseen.
-  - Em p257, uma voz mais aguda (energia concentrada em 200–300 Hz), a referência quase não tem energia nessa faixa (−25,9 dB do total).
-  - O erro de todos os sistemas em 50–100 Hz é do tamanho da própria referência (−0,4 a −0,9 dB): o que o PESQ‑WB premia ali não é fala reproduzida.
-  - Com 4 locutores, é só um indício.
+- **Stable across the 4 speakers:**
+  - the gain without < 100 Hz of S30 and S30hp over the control;
+  - the PESQ-WB loss and the SI-SDR gain of S30hp over S30.
+- **The part below 100 Hz varies 5×** between the speakers, from 0.026 to 0.146.
+- **The +0.017 of S30hp over S30 without < 100 Hz goes from −0.015 to +0.049.** It follows the part below 100 Hz: it is larger where S30 gained more below 100 Hz (p226 and p257). This reinforces that it comes from the transition of the soft cutoff, not from the speech band.
+- **Within each split, the speaker with less 50–100 Hz energy in the reference has the larger effect below 100 Hz:** p257 on the test set and p226 on val_unseen.
+  - For p257, a higher voice (energy concentrated in 200–300 Hz), the reference has almost no energy in that band (−25.9 dB of the total).
+  - The 50–100 Hz error of every system is as large as the reference itself (−0.4 to −0.9 dB): what PESQ-WB rewards there is not reproduced speech.
+  - With 4 speakers, this is only a hint.
 
-**Ruído e SNR.**
-- Todos os efeitos têm o mesmo sinal nos 5 ruídos e nos 4 SNRs do teste, e nos 5 ruídos da val_unseen.
-- O déficit de DNSMOS do S30 cresce com o ruído:
-  - OVRL −0,016 em 17,5 dB e −0,037 em 2,5 dB;
-  - BAK −0,019 e −0,057.
-- O S30hp reduz esse déficit à metade em cada SNR. Isso é coerente com o conteúdo de 50–100 Hz do S30 ser ruído residual.
+**Noise and SNR.**
+- Every effect has the same sign across the 5 noises and the 4 SNRs of the test set, and the 5 noises of val_unseen.
+- The DNSMOS deficit of S30 grows with the noise:
+  - OVRL −0.016 at 17.5 dB and −0.037 at 2.5 dB;
+  - BAK −0.019 and −0.057.
+- S30hp halves that deficit at each SNR. This is consistent with the 50–100 Hz content of S30 being residual noise.
 
-**Nível em 50–100 Hz.**
-- O S30 não põe mais energia na faixa: mediana −0,07 dB por arquivo, contra o controle. O erro na faixa sobe +0,6 dB.
-- Por arquivo, nem a diferença de nível nem a de erro em 50–100 Hz prevê a parte do ganho de PESQ abaixo de 100 Hz (|r| ≤ 0,11).
-- O mecanismo dentro do PESQ continua em aberto.
+**Level in 50–100 Hz.**
+- S30 does not put more energy in the band: median −0.07 dB per file, against the control. The error in the band rises by +0.6 dB.
+- Per file, neither the level difference nor the error difference in 50–100 Hz predicts the part of the PESQ gain below 100 Hz (|r| ≤ 0.11).
+- The mechanism inside PESQ remains open.
 
-**Treino.** As curvas de treino do S30 e do S30hp (PESQ dos lotes, perda do discriminador, perda de onda) têm a mesma forma, sem instabilidade. As duas ainda sobem ~0,01 de PESQ nas últimas 10 épocas.
+**Training.** The training curves of S30 and S30hp (batch PESQ, discriminator loss, waveform loss) have the same shape, with no instability. Both still rise by ~0.01 PESQ over the last 10 epochs.
 
-**Consequências.**
-1. **A recomendação de 14.8.1 não muda, mas a justificativa sim.** O S30hp tem o mesmo ganho de PESQ na banda da fala que o S30 (PESQ‑NB) e é melhor em SI‑SDR, segSNR, WSS e DNSMOS. STOI e LLR ficam iguais. Ele não tem "mais ganho na banda da fala".
-2. **Ao relatar o ganho do discriminador na banda da fala, usar o PESQ‑NB**, não o PESQ sem < 100 Hz. O PESQ‑NB não é o alvo de nenhum discriminador e não tem a transição do corte.
-3. **Escuta.** O bloco A compara o S30 com o controle e mistura os dois efeitos. Como a recomendação de uso é o S30hp, valeria trocar o bloco A por S30hp contra o controle, que isola o ganho na banda da fala. Ainda não há respostas, então a troca não perde dados. Depende do usuário.
-4. **Ao generalizar, contar locutores, não arquivos.** Efeitos que mudam de sinal entre os 4 locutores (como o +0,017) não devem ser reportados só com o IC por arquivo.
+**Consequences.**
+1. **The recommendation of 14.8.1 does not change, but its justification does.** S30hp has the same speech-band PESQ gain as S30 (PESQ-NB) and is better in SI-SDR, segSNR, WSS and DNSMOS. STOI and LLR stay equal. It does not have "more speech-band gain".
+2. **When reporting the discriminator's speech-band gain, use PESQ-NB**, not PESQ without < 100 Hz. PESQ-NB is the target of neither discriminator and has no cutoff transition.
+3. **Listening test.** Block A compares S30 with the control and mixes the two effects. Since the recommendation for use is S30hp, it would be worth replacing block A with S30hp against the control, which isolates the speech-band gain. There are no answers yet, so the change loses no data. Up to the user.
+4. **When generalizing, count speakers, not files.** Effects that change sign between the 4 speakers (like the +0.017) should not be reported with the per-file CI alone.
 
-### 14.9 Fila Y: verificações sem treino e um conjunto com 80 locutores (2026‑10‑16 a 19) ✔
+### 14.9 Queue Y: training-free checks and a set with 80 speakers (2026-10-16 to 19) ✔
 
-Pedido do usuário: executar os itens 1 a 3 propostos depois de 14.8.2 e baixar o VCTK para o item 7. Não houve treino.
-- **Lançadores:** `logs/abl/run_Y.sh` (Y1–Y3) e `logs/abl/run_YV.sh` (vctk_unseen). Log em `logs/abl/queue_Y.log`.
-- **Análise:** `results/abl/Y_analysis/` (README, `y_report.txt`, `y_vctk.txt`).
-- **Diretórios novos:** `<run>/val_unseen_full` e `<run>/test_full` (todas as métricas mais o PESQ sem < 100 Hz) e `<run>/vctk_unseen`. As misturas são `WS_*` (W5) e `WB_*` (Bext).
-- **Execução:** Y1–Y3 em 2026‑10‑16, 19:39–20:11, sem falhas. A avaliação no vctk_unseen parou com o fim da sessão (16/10, 20:13) e foi retomada em 19/10, 14:54–15:00, sem falhas.
+User request: run items 1 to 3 proposed after 14.8.2 and download VCTK for item 7. There was no training.
+- **Launchers:** `logs/abl/run_Y.sh` (Y1–Y3) and `logs/abl/run_YV.sh` (vctk_unseen). Log in `logs/abl/queue_Y.log`.
+- **Analysis:** `results/abl/Y_analysis/` (README, `y_report.txt`, `y_vctk.txt`).
+- **New directories:** `<run>/val_unseen_full` and `<run>/test_full` (all metrics plus PESQ without < 100 Hz) and `<run>/vctk_unseen`. The blends are `WS_*` (W5) and `WB_*` (Bext).
+- **Execution:** Y1–Y3 on 2026-10-16, 19:39–20:11, with no failures. The evaluation on vctk_unseen stopped when the session ended (10/16, 20:13) and was resumed on 10/19, 14:54–15:00, with no failures.
 
-**Y1. Peso da mistura com o W5 para o S30hp** (val_unseen, média das 3 sementes):
+**Y1. Blend weight with W5 for S30hp** (val_unseen, mean of the 3 seeds):
 
-| w | 0,15 | 0,25 | 0,35 | 0,5 |
+| w | 0.15 | 0.25 | 0.35 | 0.5 |
 |---|---|---|---|---|
-| S30hp + W5: PESQ | 3,314 | **3,318** | 3,316 | 3,301 |
-| S30hp + W5: PESQ‑NB | 3,835 | 3,845 | 3,849 | 3,846 |
-| S30hp + W5: SI‑SDR | 18,76 | 18,87 | 18,95 | 19,02 |
-| S30 + W5: PESQ | 3,367 | **3,370** | 3,365 | 3,345 |
+| S30hp + W5: PESQ | 3.314 | **3.318** | 3.316 | 3.301 |
+| S30hp + W5: PESQ-NB | 3.835 | 3.845 | 3.849 | 3.846 |
+| S30hp + W5: SI-SDR | 18.76 | 18.87 | 18.95 | 19.02 |
+| S30 + W5: PESQ | 3.367 | **3.370** | 3.365 | 3.345 |
 
-- **O w = 0,25 continua o escolhido para os dois.** A curva é plana entre 0,25 e 0,35: o 0,35 troca 0,002 de PESQ‑WB por +0,004 de PESQ‑NB e +0,08 dB de SI‑SDR.
-- A receita de (A) não muda.
+- **w = 0.25 remains the choice for both.** The curve is flat between 0.25 and 0.35: 0.35 trades 0.002 PESQ-WB for +0.004 PESQ-NB and +0.08 dB SI-SDR.
+- The recipe of (A) does not change.
 
-**Y2. PESQ‑NB na val_unseen** (diferenças pareadas por arquivo, média das sementes):
+**Y2. PESQ-NB on val_unseen** (per-file paired differences, seed mean):
 
-| Comparação | PESQ‑NB | p226 | p287 | Sem < 100 Hz: p226 / p287 |
+| Comparison | PESQ-NB | p226 | p287 | Without < 100 Hz: p226 / p287 |
 |---|---|---|---|---|
-| S30 − controle | +0,054 [+0,050; +0,058] | +0,052 | +0,055 | +0,062 / +0,062 |
-| S30hp − controle | +0,053 [+0,049; +0,058] | +0,052 | +0,055 | +0,111 / +0,047 |
-| S30hp − S30 | −0,001 [−0,002; +0,001] | −0,000 | −0,001 | +0,049 / −0,015 |
+| S30 − control | +0.054 [+0.050, +0.058] | +0.052 | +0.055 | +0.062 / +0.062 |
+| S30hp − control | +0.053 [+0.049, +0.058] | +0.052 | +0.055 | +0.111 / +0.047 |
+| S30hp − S30 | −0.001 [−0.002, +0.001] | −0.000 | −0.001 | +0.049 / −0.015 |
 
-- **Confirma 14.8.2 nos outros 2 locutores:** o ganho na banda da fala é o mesmo nos dois modelos e quase não varia entre locutores.
-- O PESQ sem < 100 Hz, o alvo do S30hp, é o que varia.
+- **It confirms 14.8.2 on the other 2 speakers:** the speech-band gain is the same for both models and barely varies between speakers.
+- PESQ without < 100 Hz, the target of S30hp, is what varies.
 
-**Y3. Mistura com o Bext: teto offline de uma mistura em streaming.**
-- **O Bext** (`N_R_ext50_final`) é o ramo espectral com backbone unidirecional e convoluções causais. A STFT (1024/256) ainda é centrada.
-- **Peso escolhido na val_unseen:** w = 0,15 para o S30 e para o S30hp.
-- **Ganho da mistura sobre o modelo sozinho**, no teste e com as soups:
+**Y3. Blend with Bext: offline ceiling of a streaming blend.**
+- **Bext** (`N_R_ext50_final`) is the spectral branch with a unidirectional backbone and causal convolutions. The STFT (1024/256) is still centred.
+- **Weight chosen on val_unseen:** w = 0.15 for S30 and for S30hp.
+- **Gain of the blend over the model alone**, on the test set and with the soups:
 
-| Mistura | PESQ‑WB | PESQ‑NB | SI‑SDR | STOI |
+| Blend | PESQ-WB | PESQ-NB | SI-SDR | STOI |
 |---|---|---|---|---|
-| S30 + W5 (w 0,25) | +0,040 | +0,036 | +0,38 dB | +0,002 |
-| S30 + Bext (w 0,15) | +0,011 | +0,014 | +0,12 dB | +0,001 |
-| S30hp + W5 (w 0,25) | +0,046 | +0,037 | +0,32 dB | +0,002 |
-| S30hp + Bext (w 0,15) | +0,018 | +0,015 | +0,09 dB | +0,001 |
+| S30 + W5 (w 0.25) | +0.040 | +0.036 | +0.38 dB | +0.002 |
+| S30 + Bext (w 0.15) | +0.011 | +0.014 | +0.12 dB | +0.001 |
+| S30hp + W5 (w 0.25) | +0.046 | +0.037 | +0.32 dB | +0.002 |
+| S30hp + Bext (w 0.15) | +0.018 | +0.015 | +0.09 dB | +0.001 |
 
-- **O ramo causal dá cerca de um terço do ganho do bidirecional.** E isso é o teto offline: em streaming, a normalização causal e a latência da STFT tirariam mais.
-- **Uma mistura em streaming renderia no máximo +0,01 a +0,02 de PESQ**, com +20M parâmetros e código novo. O passo "ramo espectral causal" cai para prioridade baixa.
+- **The causal branch gives about a third of the gain of the bidirectional one.** And that is the offline ceiling: in streaming, the causal normalization and the STFT latency would take away more.
+- **A streaming blend would give at most +0.01 to +0.02 PESQ**, with +20M parameters and new code. The "causal spectral branch" step drops to low priority.
 
-**YV. vctk_unseen: 80 locutores não vistos.**
-- **Construção** (detalhes no README de `Y_analysis`):
-  - fonte: VCTK 0.92 (CC BY 4.0, MD5 conferido), microfone 1;
-  - locutores: os 80 fora do VB‑DEMAND (48 mulheres e 32 homens; sotaques sobretudo americano, escocês, irlandês e canadense), 10 frases cada;
-  - processamento: 16 kHz e pico 0,493, como no VB‑DEMAND (`scripts/prepare_vctk_clean.py`, com `python -I`);
-  - ruído: os 5 ambientes DEMAND da val_unseen, nos SNRs do teste (P.56), com 40 arquivos por condição (`scripts/make_val_unseen.py --seed 2`).
-- **Calibração em p232 e p257:**
-  - o microfone 1 reproduz o VB‑DEMAND (correlação 0,994; o microfone 2 dá 0,946);
-  - o espectro abaixo de 200 Hz coincide dentro de 0,4 dB;
-  - os arquivos do 0.92 têm em média 0,26 s a mais de silêncio inicial.
-- **Dificuldade:** o PESQ do ruidoso é 1,971 (no teste, 1,97).
-- **STOI:** o valor absoluto é baixo (0,83). Alguns locutores têm um ronco forte abaixo de 50 Hz na gravação limpa, e ele atrapalha a remoção de quadros silenciosos do STOI. As diferenças pareadas não são afetadas.
+**YV. vctk_unseen: 80 unseen speakers.**
+- **Construction** (details in the README of `Y_analysis`):
+  - source: VCTK 0.92 (CC BY 4.0, MD5 checked), microphone 1;
+  - speakers: the 80 outside VB-DEMAND (48 women and 32 men; mostly American, Scottish, Irish and Canadian accents), 10 sentences each;
+  - processing: 16 kHz and peak 0.493, as in VB-DEMAND (`scripts/prepare_vctk_clean.py`, with `python -I`);
+  - noise: the 5 DEMAND environments of val_unseen, at the test SNRs (P.56), with 40 files per condition (`scripts/make_val_unseen.py --seed 2`).
+- **Calibration on p232 and p257:**
+  - microphone 1 reproduces VB-DEMAND (correlation 0.994; microphone 2 gives 0.946);
+  - the spectrum below 200 Hz matches within 0.4 dB;
+  - the 0.92 files have on average 0.26 s more leading silence.
+- **Difficulty:** the PESQ of the noisy audio is 1.971 (on the test set, 1.97).
+- **STOI:** the absolute value is low (0.83). Some speakers have strong rumble below 50 Hz in the clean recording, and it disturbs STOI's silent-frame removal. Paired differences are not affected.
 
-| Sistema (soup) | vctk_unseen: PESQ | Sem < 100 Hz | PESQ‑NB | SI‑SDR | Teste: PESQ |
+| System (soup) | vctk_unseen: PESQ | Without < 100 Hz | PESQ-NB | SI-SDR | Test: PESQ |
 |---|---|---|---|---|---|
-| Controle K0ext30p | 3,153 | 3,373 | 3,773 | 17,48 | 3,165 |
-| S30 | 3,325 | 3,447 | 3,828 | 17,30 | 3,335 |
-| S30hp | 3,256 | 3,453 | 3,827 | 17,47 | 3,280 |
-| S30 + W5 (w 0,25) | **3,365** | 3,483 | **3,862** | 17,63 | 3,375 |
-| S30hp + W5 (w 0,25) | 3,300 | **3,489** | 3,861 | **17,74** | 3,326 |
+| Control K0ext30p | 3.153 | 3.373 | 3.773 | 17.48 | 3.165 |
+| S30 | 3.325 | 3.447 | 3.828 | 17.30 | 3.335 |
+| S30hp | 3.256 | 3.453 | 3.827 | 17.47 | 3.280 |
+| S30 + W5 (w 0.25) | **3.365** | 3.483 | **3.862** | 17.63 | 3.375 |
+| S30hp + W5 (w 0.25) | 3.300 | **3.489** | 3.861 | **17.74** | 3.326 |
 
-Com as 3 sementes (média ± desvio padrão amostral): K0ext30p 3,148 ± 0,005; S30 3,321 ± 0,013; S30hp 3,252 ± 0,005.
+With the 3 seeds (mean ± sample standard deviation): K0ext30p 3.148 ± 0.005; S30 3.321 ± 0.013; S30hp 3.252 ± 0.005.
 
-**Diferenças pareadas.** IC 95% por bootstrap de locutores e a fração dos 80 locutores que melhoram. No WSS, menor é melhor.
+**Paired differences.** 95% CI by bootstrap over speakers, and the share of the 80 speakers that improve. For WSS, lower is better.
 
-| Comparação | PESQ‑WB | Sem < 100 Hz | PESQ‑NB | SI‑SDR | segSNR | WSS |
+| Comparison | PESQ-WB | Without < 100 Hz | PESQ-NB | SI-SDR | segSNR | WSS |
 |---|---|---|---|---|---|---|
-| S30 − controle | +0,173 [+0,159; +0,187], 100% | +0,074, 100% | +0,055 [+0,051; +0,059], 100% | −0,17 dB, 4% | −0,29, 0% | +0,08 [+0,04; +0,12], 40% |
-| S30hp − controle | +0,104 [+0,094; +0,115], 100% | +0,082, 98% | +0,055 [+0,050; +0,059], 100% | −0,00 dB, 48% | −0,04, 20% | +0,08 [+0,03; +0,12], 36% |
-| S30hp − S30 | −0,069 [−0,078; −0,060], 0% | +0,008 [+0,002; +0,015], 51% | −0,001 [−0,003; +0,001], 49% | **+0,17 dB**, 98% | **+0,25**, 100% | −0,01 [−0,06; +0,06], 56% |
-| S30 + W5 − S30 (soups) | +0,040 [+0,030; +0,051], 89% | +0,036, 90% | +0,034, 99% | +0,33 dB, 94% | +0,31, 98% | −0,32, 85% |
-| S30hp + W5 − S30hp (soups) | +0,044 [+0,034; +0,055], 90% | +0,036, 90% | +0,034, 100% | +0,28 dB, 94% | +0,24, 91% | −0,29, 88% |
+| S30 − control | +0.173 [+0.159, +0.187], 100% | +0.074, 100% | +0.055 [+0.051, +0.059], 100% | −0.17 dB, 4% | −0.29, 0% | +0.08 [+0.04, +0.12], 40% |
+| S30hp − control | +0.104 [+0.094, +0.115], 100% | +0.082, 98% | +0.055 [+0.050, +0.059], 100% | −0.00 dB, 48% | −0.04, 20% | +0.08 [+0.03, +0.12], 36% |
+| S30hp − S30 | −0.069 [−0.078, −0.060], 0% | +0.008 [+0.002, +0.015], 51% | −0.001 [−0.003, +0.001], 49% | **+0.17 dB**, 98% | **+0.25**, 100% | −0.01 [−0.06, +0.06], 56% |
+| S30 + W5 − S30 (soups) | +0.040 [+0.030, +0.051], 89% | +0.036, 90% | +0.034, 99% | +0.33 dB, 94% | +0.31, 98% | −0.32, 85% |
+| S30hp + W5 − S30hp (soups) | +0.044 [+0.034, +0.055], 90% | +0.036, 90% | +0.034, 100% | +0.28 dB, 94% | +0.24, 91% | −0.29, 88% |
 
-O STOI das misturas sobe +0,007, em 99% dos locutores; nas outras comparações fica igual. Os efeitos com sinal claro (PESQ‑WB e PESQ‑NB sobre o controle; PESQ‑WB, SI‑SDR e segSNR do S30hp − S30) têm o mesmo sinal nos 5 ruídos, nos 4 SNRs e nos dois gêneros.
+The STOI of the blends rises by +0.007, for 99% of the speakers; in the other comparisons it stays equal. The effects with a clear sign (PESQ-WB and PESQ-NB over the control; PESQ-WB, SI-SDR and segSNR of S30hp − S30) have the same sign across the 5 noises, the 4 SNRs and both genders.
 
-**14.9.1 Conclusões.**
-1. **Os resultados do teste valem para 80 locutores.**
-   - Os números absolutos e as diferenças ficam a ≤ 0,03 dos do teste, com a mesma ordem de sistemas.
-   - Com 80 locutores, o IC por locutor fica quase igual ao IC por arquivo. O problema de 14.8.2 era ter só 2 locutores por conjunto.
-2. **O ganho do discriminador na banda da fala é geral.**
-   - PESQ‑NB +0,055 sobre o controle, igual no S30 e no S30hp, positivo em todos os 80 locutores (mínimo +0,018).
-   - Ele cai com o SNR: +0,070 em 2,5 dB e +0,039 em 17,5 dB.
-3. **O S30hp não ganha PESQ do S30 em banda nenhuma.**
-   - PESQ‑NB −0,001 (49% dos locutores) e sem < 100 Hz +0,008 (51%).
-   - Suas vantagens são SI‑SDR (+0,17 dB, 98% dos locutores) e segSNR (+0,25, 100%), e ele empata com o controle no SI‑SDR.
-   - O WSS do teste não se repete: −0,01 contra o S30, e os dois ficam +0,08 acima do controle.
-4. **A mistura com o W5 é a melhora mais robusta:** todas as métricas melhoram, em 85–100% dos locutores (PESQ‑NB em 99–100%, STOI em 99%).
-5. **A parte abaixo de 100 Hz do ganho do S30 é a principal fonte de variação entre locutores.**
-   - Ela vai de −0,005 a +0,298, com média +0,099.
-   - O desvio padrão do ganho entre locutores é 0,066 no PESQ‑WB, 0,025 sem < 100 Hz e 0,019 no PESQ‑NB.
-   - Ela é maior nos locutores com menos energia em 50–100 Hz na fala limpa: Spearman −0,28 (p = 0,01), e −0,45 no resíduo do S30hp. O indício de 14.8.2 se confirma, mas a correlação é moderada.
-   - Nas mulheres é +0,110; nos homens, +0,082. O ganho no PESQ‑NB é igual nos dois (+0,055).
-   - **No S30hp − S30, o ganho sem < 100 Hz aparece onde o S30 ganhava mais abaixo de 100 Hz** (Spearman −0,73). Como o PESQ‑NB não muda (desvio entre locutores de 0,008), esse ganho vem da transição do corte ou de fora de 300–3400 Hz, não do meio da banda da fala.
-6. **A recomendação de 14.8.1 não muda.**
-   - Para o número de benchmark: a soup do S30 + W5 (teste 3,375; vctk_unseen 3,365) e a soup do S30 (3,335; 3,325).
-   - Para uso: as versões com o S30hp. Elas têm o mesmo ganho na banda da fala, sem o efeito de 50–100 Hz e sem a perda de SI‑SDR. O custo é −0,07 de PESQ‑WB (e de CSIG, CBAK e COVL, que seguem o PESQ).
-   - A escuta continua decidindo entre os dois.
-7. **Para relatar o ganho do discriminador**, usar o PESQ‑NB ao lado do PESQ‑WB: +0,055 em 80 locutores, contra +0,17 de PESQ‑WB que varia de +0,05 a +0,37 entre locutores.
+**14.9.1 Conclusions.**
+1. **The test results hold for 80 speakers.**
+   - The absolute numbers and the differences are within ≤ 0.03 of the test set, with the same ranking of systems.
+   - With 80 speakers, the per-speaker CI is almost equal to the per-file CI. The problem of 14.8.2 was having only 2 speakers per set.
+2. **The discriminator's speech-band gain is general.**
+   - PESQ-NB +0.055 over the control, the same for S30 and S30hp, positive for all 80 speakers (minimum +0.018).
+   - It falls with the SNR: +0.070 at 2.5 dB and +0.039 at 17.5 dB.
+3. **S30hp gains no PESQ over S30 in any band.**
+   - PESQ-NB −0.001 (49% of the speakers) and without < 100 Hz +0.008 (51%).
+   - Its advantages are SI-SDR (+0.17 dB, 98% of the speakers) and segSNR (+0.25, 100%), and it ties with the control in SI-SDR.
+   - The WSS of the test set does not repeat: −0.01 against S30, and both are +0.08 above the control.
+4. **The blend with W5 is the most robust improvement:** every metric improves, for 85–100% of the speakers (PESQ-NB for 99–100%, STOI for 99%).
+5. **The part of the S30 gain below 100 Hz is the main source of variation between speakers.**
+   - It goes from −0.005 to +0.298, with a mean of +0.099.
+   - The standard deviation of the gain between speakers is 0.066 in PESQ-WB, 0.025 without < 100 Hz and 0.019 in PESQ-NB.
+   - It is larger for the speakers with less 50–100 Hz energy in the clean speech: Spearman −0.28 (p = 0.01), and −0.45 in the S30hp residual. The hint of 14.8.2 is confirmed, but the correlation is moderate.
+   - For women it is +0.110; for men, +0.082. The PESQ-NB gain is the same for both (+0.055).
+   - **In S30hp − S30, the gain without < 100 Hz appears where S30 gained more below 100 Hz** (Spearman −0.73). Since PESQ-NB does not change (standard deviation between speakers of 0.008), that gain comes from the cutoff transition or from outside 300–3400 Hz, not from the middle of the speech band.
+6. **The recommendation of 14.8.1 does not change.**
+   - For the benchmark number: the S30 soup + W5 (test 3.375; vctk_unseen 3.365) and the S30 soup (3.335; 3.325).
+   - For use: the S30hp versions. They have the same speech-band gain, without the 50–100 Hz effect and without the SI-SDR loss. The cost is −0.07 PESQ-WB (and CSIG, CBAK and COVL, which follow PESQ).
+   - The listening test still decides between the two.
+7. **To report the discriminator gain**, use PESQ-NB next to PESQ-WB: +0.055 over 80 speakers, against +0.17 PESQ-WB that varies from +0.05 to +0.37 between speakers.
 
-**Próximos passos:**
-1. **Escuta** (depende do usuário): ainda sem respostas em 2026‑10‑19. A sugestão de trocar o bloco A para S30hp contra o controle continua de pé.
-2. **Conjunto independente para o relatório final.** O vctk_unseen usa os ruídos da val_unseen, que serviu para escolher os pesos. Repetir com os 5 ambientes DEMAND do teste (download do Zenodo) daria um conjunto sem nenhuma escolha feita nele. Opcional.
-3. **DNSMOS no vctk_unseen**, para ver o efeito no BAK com 80 locutores: ~20 min, opcional.
-4. **Prioridade baixa:** o corte mais íngreme (só se a escuta mostrar que a faixa importa), o ramo espectral causal (Y3) e a porta aprendida.
+**Next steps:**
+1. **Listening test** (up to the user): still no answers on 2026-10-19. The suggestion to change block A to S30hp against the control still stands.
+2. **Independent set for the final report.** vctk_unseen uses the val_unseen noises, which were used to choose the weights. Repeating it with the 5 DEMAND environments of the test set (download from Zenodo) would give a set on which no choice was made. Optional.
+3. **DNSMOS on vctk_unseen**, to see the effect on BAK with 80 speakers: ~20 min, optional.
+4. **Low priority:** the steeper cutoff (only if the listening test shows the band matters), the causal spectral branch (Y3) and the learned gate.

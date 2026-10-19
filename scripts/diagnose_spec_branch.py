@@ -44,6 +44,7 @@ SR = 16000
 
 
 def load_model(ckpt_path, device):
+    """Load a CleanUNet2 Lightning checkpoint (architecture from its hyper-parameters) in eval mode."""
     ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     model = CleanUNet2(**ckpt["hyper_parameters"]["model"]["architecture"])
     model.load_cleanunet2_weights(ckpt_path)
@@ -51,6 +52,7 @@ def load_model(ckpt_path, device):
 
 
 def framing(S):
+    """STFT framing of a Spectrogram: (n_fft, hop_length, win_length, alignment)."""
     return (S.n_fft, S.hop_length, S.win_length, S.alignment)
 
 
@@ -62,6 +64,7 @@ class Acc:
         self.c = np.zeros((len(BANDS_HZ) - 1, n_snr))
 
     def add(self, err, band_idx, snr_bin):
+        """Accumulate the squared error of one file per frequency band and input-SNR bin."""
         e = err.cpu().numpy()[0]
         for b in range(len(BANDS_HZ) - 1):
             sel = e[band_idx == b]
@@ -70,6 +73,7 @@ class Acc:
 
 
 def main():
+    """Run the diagnostics for every --spec_ckpt and write the tables (and JSON) to --out."""
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--wave_ckpt", default=None, help="Lightning checkpoint of the waveform-only model (D2)")
     ap.add_argument("--spec_ckpt", action="append", required=True, help="NAME=checkpoint with a CleanSpecNet")

@@ -257,6 +257,7 @@ class ObjectiveMetricsPredictor:
 
 
 def main():
+    """Score clean/distorted file pairs (or two folders) and write the per-file and mean metrics to JSON."""
     parser = argparse.ArgumentParser(description="Compute PESQ/STOI/SI-SDR for clean/distorted audio pairs.")
     parser.add_argument("--input_dir_clean", "-i", type=str, default="samples/0", help="Input clean folder (or single file)")
     parser.add_argument("--input_dir_dist", "-r", type=str, default="samples/0", help="Input distorted folder (or single file)")

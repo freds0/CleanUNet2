@@ -1,3 +1,8 @@
+"""Shared pytest setup: puts the repository root on sys.path and defines paths and skip markers.
+
+Tests that need the official CleanUMamba checkpoint (../cleanumamba), the dataset or CUDA are skipped when those
+are missing.
+"""
 import os
 import sys
 
@@ -15,6 +20,7 @@ requires_cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA n
 
 
 def has_mamba_ssm():
+    """True if the mamba_ssm CUDA kernels can be used (package installed and a GPU present)."""
     from cleanunet.sequence import HAS_MAMBA_SSM
     return HAS_MAMBA_SSM and torch.cuda.is_available()
 

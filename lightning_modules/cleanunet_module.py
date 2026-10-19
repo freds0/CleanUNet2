@@ -1,3 +1,9 @@
+"""Lightning module that trains CleanUNet2 and its waveform-only / spectrogram-only variants.
+
+It builds the model and the losses from the YAML config, runs the training step (optionally with the metric
+discriminator, distillation teachers, polarity augmentation and fusion dropout), computes whole-utterance
+validation metrics and sets up AdamW with linear warm-up and cosine decay.
+"""
 import functools
 import math
 
@@ -20,16 +26,23 @@ SPEC_TERMS = ("l1", "mse", "wave", "phase", "complex", "consistency")
 
 
 class CleanUNetLightningModule(pl.LightningModule):
-    """
-    PyTorch Lightning module for training CleanUNet2 (and its waveform-only / spectrogram-only stages).
+    """PyTorch Lightning module for training CleanUNet2 and its waveform-only / spectrogram-only stages.
 
     Config sections (see configs/*.yaml):
-      model:      architecture (CleanUNet2 kwargs), init (pretrained weights), train_cleanunet / train_cleanspecnet
-      loss:       mode = hybrid | waveform | spec, waveform/spectral/phase weights, MR-STFT settings,
-                  cmag (compressed-magnitude loss), metric_gan (metric discriminator)
-      optim:      AdamW + linear warmup + cosine decay, per-submodule LR scales
-      augment:    Remix / BandMask / Shift / Gain / SNR probabilities (applied on GPU)
-      validation: whole-utterance metrics (PESQ-WB, STOI, SI-SDR) on the validation split
+      model:              architecture (CleanUNet2 kwargs), init (pretrained weights),
+                          train_cleanunet / train_cleanspecnet (freezing)
+      loss:               mode = hybrid | waveform | spec; waveform, spectral and phase weights; MR-STFT settings;
+                          cmag (compressed-magnitude loss); metric_gan (metric discriminator, optional highpass_hz)
+      optim:              AdamW + linear warm-up + cosine decay, per-submodule LR scales
+      augment:            Remix / BandMask / Shift / Gain / SNR probabilities (applied on GPU)
+      augment_polarity:   probability of multiplying a training pair by -1
+      fusion_dropout:     probability of running a training step with the fusion disabled
+      fusion_curriculum:  oracle-condition curriculum for fusion models
+      distill:            distillation from frozen teachers (one checkpoint, or a list with optional spectral blends)
+      validation:         whole-utterance metrics (PESQ-WB, STOI, SI-SDR) on the validation split
+
+    With metric_gan > 0 the module uses manual optimization (one discriminator and one generator step per batch)
+    and clips the gradients itself.
     """
 
     def __init__(self, config: dict):
@@ -233,6 +246,7 @@ class CleanUNetLightningModule(pl.LightningModule):
         return self._pesq_pool
 
     def on_train_end(self):
+        """Close the PESQ process pool of the metric discriminator."""
         if getattr(self, "_pesq_pool", None) is not None:
             self._pesq_pool.close()
             self._pesq_pool.join()
@@ -248,13 +262,16 @@ class CleanUNetLightningModule(pl.LightningModule):
 
     def on_train_epoch_start(self):
         # Frozen submodules stay in eval mode (no dropout / BatchNorm statistics updates)
+        """Keep frozen submodules in eval mode (no dropout, no BatchNorm updates)."""
         for m in self._frozen_modules():
             m.eval()
 
     def forward(self, noisy: torch.Tensor):
+        """Run the model on a noisy batch (B, 1, L); returns the CleanUNet2 output dict."""
         return self.model(noisy)
 
     def on_after_batch_transfer(self, batch, dataloader_idx):
+        """Apply the GPU batch augmentation to training batches."""
         if self.trainer is not None and self.trainer.training and self.augmenter.enabled:
             noisy, clean, ids = batch
             noisy, clean = self.augmenter(noisy, clean)
@@ -358,6 +375,11 @@ class CleanUNetLightningModule(pl.LightningModule):
     # Training
     # -------------------------
     def training_step(self, batch, batch_idx):
+        """One training step on (noisy, clean, ids).
+
+        Order: optional oracle-condition schedule, polarity flip, then either the metric-GAN step (manual optimization)
+        or the regular losses (+ distillation). Returns the total loss (detached under manual optimization).
+        """
         noisy, clean, _ = batch
         if self.oracle_prob0 > 0:
             self.model.oracle_prob = self.oracle_prob0 * max(0.0, 1.0 - self.global_step / self.oracle_steps)
@@ -414,6 +436,7 @@ class CleanUNetLightningModule(pl.LightningModule):
     # Validation (whole utterances, batch_size=1)
     # -------------------------
     def validation_step(self, batch, batch_idx):
+        """Log the validation losses and keep the enhanced utterance for the epoch metrics."""
         noisy, clean, ids = batch
         total, out, logs = self._compute_losses(noisy, clean)
         bs = noisy.shape[0]
@@ -431,6 +454,7 @@ class CleanUNetLightningModule(pl.LightningModule):
         return total
 
     def on_validation_epoch_end(self):
+        """Compute PESQ-WB, STOI and SI-SDR over the validation outputs and log them (val/pesq, ...)."""
         if not self._val_outputs:
             return
         results = evaluate_many(self._val_outputs, sample_rate=self.sample_rate, full=False,
@@ -467,6 +491,11 @@ class CleanUNetLightningModule(pl.LightningModule):
     # Optimizers
     # -------------------------
     def configure_optimizers(self):
+        """AdamW with per-submodule learning-rate scales, linear warm-up and cosine decay (per step).
+
+        Weight decay applies only to weights with two or more dimensions (never to biases, norms, Mamba A_log / D).
+        With the metric discriminator, a second AdamW optimizer for the discriminator is returned as well.
+        """
         optim_cfg = self.hparams.get("optim", {}) or {}
         lr = float(optim_cfg.get("lr", 1e-4))
         weight_decay = float(optim_cfg.get("weight_decay", 0.0))

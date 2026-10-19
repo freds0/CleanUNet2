@@ -1,6 +1,12 @@
-# cleanunet.py
-# Refactored CleanUNet + Transformer utilities with English comments and clearer structure.
-# Original code adapted from NVIDIA/other sources; MIT / original licenses apply where appropriate.
+"""CleanUNet: waveform U-Net denoiser, with Transformer utilities and a configurable bottleneck.
+
+Encoder: ``encoder_n_layers`` blocks of Conv1d(kernel_size, stride) -> ReLU -> 1x1 Conv -> GLU; the channels double
+from ``channels_H`` up to ``max_H``. Bottleneck: 1x1 Conv -> sequence model (Transformer, Mamba, Mamba2 or LSTM)
+-> 1x1 Conv. Decoder: the mirror image with transposed convolutions and additive skip connections. The Mamba
+variant uses the CleanUMamba layout, so its official checkpoints load directly.
+
+Adapted from NVIDIA CleanUNet (MIT) and CleanUMamba (MIT); the original licenses apply.
+"""
 
 import numpy as np
 import torch
@@ -29,6 +35,10 @@ class ScaledDotProductAttention(nn.Module):
         # q: (B, n_head, L_q, d_k)
         # k: (B, n_head, L_k, d_k)
         # v: (B, n_head, L_v, d_v)
+        """Attention of q (B, H, Lq, d) over k, v (B, H, Lk, d).
+
+        ``mask`` broadcasts to (B, H, Lq, Lk); positions where it is 0 are excluded. Returns (output, attention).
+        """
         attn = torch.matmul(q / self.temperature, k.transpose(-2, -1))  # (..., L_q, L_k)
 
         if mask is not None:
@@ -116,6 +126,7 @@ class PositionwiseFeedForward(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x: torch.Tensor):
+        """Two-layer feed-forward block with a residual connection and LayerNorm."""
         residual = x
         x = self.w_2(self.activation(self.w_1(x)))
         x = self.dropout(x)
@@ -154,6 +165,7 @@ class PositionalEncoding(nn.Module):
 
     def forward(self, x: torch.Tensor):
         # x shape: (batch, seq_len, d_model)
+        """Add the sinusoidal encoding to x (B, T, d_model)."""
         return x + self.pos_table[:, :x.size(1)].clone().detach()
 
 
@@ -165,6 +177,7 @@ class EncoderLayer(nn.Module):
         self.pos_ffn = PositionwiseFeedForward(d_model, d_inner, dropout=dropout)
 
     def forward(self, enc_input: torch.Tensor, slf_attn_mask: torch.Tensor = None):
+        """Self-attention followed by the feed-forward block. Returns (output, attention)."""
         enc_output, enc_slf_attn = self.slf_attn(enc_input, enc_input, enc_input, mask=slf_attn_mask)
         enc_output = self.pos_ffn(enc_output)
         return enc_output, enc_slf_attn
@@ -257,6 +270,7 @@ class Activation(nn.Module):
         self.bypass_channels = bypass_channels
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Gated activation: the first ``bypass_channels`` pass unchanged, the rest are a * act(b)."""
         nX = self.bypass_channels
         if nX == 0:
             a, b = x.chunk(2, dim=1)
@@ -412,6 +426,7 @@ class CleanUNet(nn.Module):
     # ------------------------------------------------------------------
     @property
     def total_stride(self) -> int:
+        """Downsampling factor between the waveform and the bottleneck (stride ** n_layers)."""
         return self.stride ** self.encoder_n_layers
 
     def fusion_points(self) -> dict:

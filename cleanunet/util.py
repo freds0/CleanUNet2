@@ -1,3 +1,8 @@
+"""Utilities kept from the original CleanUNet code.
+
+The models only use ``weight_scaling_init``. The schedulers, the checkpoint helpers and ``loss_fn`` belong to the
+original training loop, which ``train.py`` (PyTorch Lightning) replaced; they are kept for reference.
+"""
 import os
 import time 
 import functools
@@ -15,10 +20,12 @@ from .logger import Logger
 
 
 def flatten(v):
+    """Flatten a list of lists."""
     return [x for y in v for x in y]
 
 
 def rescale(x):
+    """Min-max rescale a tensor to [0, 1]."""
     return (x - x.min()) / (x.max() - x.min())
 
 
@@ -78,15 +85,18 @@ def print_size(net, keyword=None):
 
 
 def anneal_linear(start, end, proportion):
+    """Linear interpolation from ``start`` to ``end`` at ``proportion`` in [0, 1]."""
     return start + proportion * (end - start)
 
 
 def anneal_cosine(start, end, proportion):
+    """Cosine interpolation from ``start`` to ``end`` at ``proportion`` in [0, 1]."""
     cos_val = cos(pi * proportion) + 1
     return end + (start - end) / 2 * cos_val
 
 
 class Phase:
+    """One phase of a learning-rate schedule (legacy training loop)."""
     def __init__(self, start, end, n_iter, cur_iter, anneal_fn):
         self.start, self.end = start, end
         self.n_iter = n_iter
@@ -94,19 +104,23 @@ class Phase:
         self.n = cur_iter
 
     def step(self):
+        """Advance one iteration and return the new value."""
         self.n += 1
 
         return self.anneal_fn(self.start, self.end, self.n / self.n_iter)
 
     def reset(self):
+        """Restart the phase."""
         self.n = 0
 
     @property
     def is_done(self):
+        """True once the phase has run ``n_iter`` iterations."""
         return self.n >= self.n_iter
 
 
 class LinearWarmupCosineDecay:
+    """Linear warm-up then cosine decay of the learning rate (legacy training loop)."""
     def __init__(
         self,
         optimizer,
@@ -138,6 +152,7 @@ class LinearWarmupCosineDecay:
             self.phase = 1
 
     def step(self):
+        """Set the learning rate of the next iteration and return it."""
         lr = self.lr_phase[self.phase].step()
 
         for group in self.optimizer.param_groups:
@@ -185,7 +200,7 @@ def sampling(net, noisy_audio):
 
 
 def loss_fn(net, X, ell_p, ell_p_lambda, stft_lambda, mrstftloss, **kwargs):
-    """
+    r"""
     Loss function in CleanUNet
 
     Parameters:
@@ -233,6 +248,7 @@ def loss_fn(net, X, ell_p, ell_p_lambda, stft_lambda, mrstftloss, **kwargs):
 
 
 def load_checkpoint(checkpoint_path, model):
+    """Load ``state_dict`` from a legacy CleanUNet checkpoint into ``model``."""
     assert os.path.isfile(checkpoint_path)
     print("Loading checkpoint '{}'".format(checkpoint_path))
     checkpoint_dict = torch.load(checkpoint_path, map_location='cpu')    
@@ -242,6 +258,7 @@ def load_checkpoint(checkpoint_path, model):
 
 
 def save_checkpoint(model, optimizer, learning_rate, iteration, filepath):
+    """Save model, optimizer, learning rate and iteration (legacy format)."""
     print("Saving model and optimizer state at iteration {} to {}".format(
         iteration, filepath))
     torch.save({'iteration': iteration,
@@ -251,6 +268,7 @@ def save_checkpoint(model, optimizer, learning_rate, iteration, filepath):
     
 
 def prepare_directories_and_logger(output_dir, log_dir, ckpt_dir, rank):
+    """Create the output, log and checkpoint directories and return a Logger (rank 0)."""
     if rank == 0:
         if not os.path.isdir(output_dir):
             os.makedirs(output_dir)

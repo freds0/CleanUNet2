@@ -20,6 +20,12 @@ import torch.nn.functional as F
 
 
 class Spectrogram(nn.Module):
+    """The single STFT of the model (Hann window), used for inputs, the spectral loss and resynthesis.
+
+    ``alignment`` sets where frame j sits relative to its hop (``center``: window centered on the hop region;
+    ``causal``: window ending at the end of the hop region, no lookahead). Magnitudes are divided by the window
+    energy, and ``compression`` (log1p, power or none) gives the network-domain spectrogram.
+    """
     def __init__(self, n_fft: int = 1024, hop_length: int = 256, win_length: int = 1024,
                  alignment: str = "center", compression: str = "log1p", compression_power: float = 0.3):
         super().__init__()
@@ -40,9 +46,11 @@ class Spectrogram(nn.Module):
 
     @property
     def n_freq(self) -> int:
+        """Number of frequency bins, n_fft // 2 + 1."""
         return self.n_fft // 2 + 1
 
     def num_frames(self, length: int) -> int:
+        """Frames for a signal of ``length`` samples: ceil(length / hop_length)."""
         return math.ceil(length / self.hop_length)
 
     def _pad(self, x: torch.Tensor):
@@ -94,6 +102,7 @@ class Spectrogram(nn.Module):
         return y[:, pad_left:pad_left + length].unsqueeze(1)
 
     def compress(self, mag: torch.Tensor) -> torch.Tensor:
+        """Linear (window-normalized) magnitude -> network domain (log1p, power or unchanged)."""
         if self.compression == "log1p":
             return torch.log1p(mag)
         if self.compression == "pow":

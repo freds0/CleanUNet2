@@ -1,3 +1,4 @@
+"""Lightning data module for the VoiceBank-DEMAND style (clean, noisy) file lists."""
 import pytorch_lightning as pl
 import torch
 from torch.utils.data import DataLoader
@@ -45,6 +46,7 @@ class CleanUNetDataModule(pl.LightningDataModule):
             print(f"[INFO] CleanUNetDataModule ignores keys: {sorted(unused)}")
 
     def setup(self, stage=None):
+        """Build the training set (random crops, optional external noise) and the validation set (whole files)."""
         self.train_dataset = PairDataset(self.data_dir, self.train_list_path, segment_size=self.segment_size,
                                          sample_rate=self.sample_rate, concat_utterances=self.concat_utterances,
                                          crossfade=self.crossfade, ext_noise=self.ext_noise)
@@ -52,10 +54,12 @@ class CleanUNetDataModule(pl.LightningDataModule):
                                        sample_rate=self.sample_rate, max_files=self.val_max_files)
 
     def train_dataloader(self):
+        """Shuffled training batches; drop_last, seeded workers."""
         return DataLoader(self.train_dataset, batch_size=self.batch_size, shuffle=True, drop_last=True,
                           num_workers=self.num_workers, persistent_workers=self.persistent_workers,
                           pin_memory=True, worker_init_fn=seed_worker)
 
     def val_dataloader(self):
+        """Validation utterances one at a time, in a fixed order."""
         return DataLoader(self.val_dataset, batch_size=1, shuffle=False, num_workers=min(4, self.num_workers),
                           persistent_workers=self.persistent_workers, worker_init_fn=seed_worker)

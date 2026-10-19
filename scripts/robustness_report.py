@@ -26,6 +26,7 @@ import numpy as np
 
 
 def read_csv(path):
+    """{file: row} of a metrics.csv, without failed rows."""
     with open(path) as fh:
         return {r["file"]: r for r in csv.DictReader(fh) if not r.get("error")}
 
@@ -47,6 +48,7 @@ def per_file(runs, split, metric):
 
 
 def run_means(runs, split, metric):
+    """Mean of a metric for each run that has the split."""
     out = []
     for r in runs:
         path = os.path.join(r, split, "metrics.csv")
@@ -59,6 +61,7 @@ def run_means(runs, split, metric):
 
 
 def read_labels(path):
+    """{id: (noise, SNR)} from a log file, or {} when there is none."""
     labels = {}
     if path and os.path.exists(path):
         with open(path) as fh:
@@ -70,6 +73,7 @@ def read_labels(path):
 
 
 def cell(values, fmt="{:.4f}"):
+    """Format one value, or mean ± sample sd of several."""
     if not values:
         return "-"
     if len(values) == 1:
@@ -78,6 +82,7 @@ def cell(values, fmt="{:.4f}"):
 
 
 def split_table(spec, split, info):
+    """Markdown table of one split, one row per system of the JSON spec, against its reference system."""
     systems, ref_name = spec["systems"], spec["ref"]
     ref = per_file(systems[ref_name], split, "pesq_wb")
     ref_mean = float(np.mean(list(ref.values()))) if ref else None
@@ -121,6 +126,7 @@ def split_table(spec, split, info):
 
 
 def main():
+    """Read the JSON spec and write the robustness report."""
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--spec", required=True)
     ap.add_argument("--out", required=True)

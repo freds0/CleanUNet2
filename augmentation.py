@@ -1,3 +1,8 @@
+"""File-level augmentation with torch-audiomentations (original repository, not used by the training code).
+
+``train.py`` uses ``augment.Augmenter`` (GPU batch augmentation) instead. This script augments a folder of audio
+files with the transforms listed in a JSON config.
+"""
 import os
 import argparse
 import json
@@ -12,6 +17,7 @@ from torch_audiomentations import (
 )
 
 class AudioAugmenter:
+    """Compose of torch-audiomentations transforms built from a list of {name, params} entries."""
     def __init__(self, augmentations, device='cpu', seed=42):
         self.augmentations = augmentations
         self.device = device
@@ -47,6 +53,7 @@ class AudioAugmenter:
 
     def apply(self, waveform, sr):
         # Set seed for reproducibility
+        """Augment one mono waveform at ``sr`` (re-seeds torch and random before each call). Returns (1, L)."""
         if self.seed is not None:
             self.seed += random.randint(1, 1000)
             torch.manual_seed(self.seed) 
@@ -61,6 +68,7 @@ class AudioAugmenter:
         return augmented_waveform
 
 def main():
+    """Augment every file that matches ``--search_pattern`` in ``--input_dir`` and write it to ``--output_dir``."""
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', '-c', type=str, default="configs/config.json", help='Path to config.json')
     parser.add_argument('--input_dir', '-i', type=str, default="dataset/wavs", help='Input directory')

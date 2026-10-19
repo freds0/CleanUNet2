@@ -17,26 +17,31 @@ C3 = {"input_estimate": True, "points": {"bott_pre": {"op": "film_tanh"}, "out":
 
 
 def hybrid_arch():
+    """Architecture of a small hybrid with the C3 fusion (no waveform conditioning)."""
     return dict(cleanunet_params=UNET, cleanspecnet_params=SPEC, spectrogram=STFT, conditioning_type="none",
                 fusion=C3)
 
 
 def wave_arch():
+    """Architecture of a small waveform-only model."""
     return dict(cleanunet_params=UNET, use_spec_branch=False)
 
 
 def batch():
+    """A fixed random (noisy, clean, ids) batch of two 2048-sample examples."""
     torch.manual_seed(0)
     return torch.randn(2, 1, 2048) * 0.1, torch.randn(2, 1, 2048) * 0.1, ["a", "b"]
 
 
 def make_module(arch, **cfg):
+    """A Lightning module for ``arch`` with a constant learning rate and extra config sections."""
     torch.manual_seed(0)
     return CleanUNetLightningModule({"model": {"architecture": arch}, "loss": {"mode": cfg.pop("mode", "hybrid")},
                                      "optim": {"schedule": "constant"}, **cfg})
 
 
 def fusion_grads(module):
+    """Gradients of the fusion parameters (fusion hub, post-filter, input estimate)."""
     return [p.grad for n, p in module.model.named_parameters()
             if n.split(".")[0] in ("fusion_hub", "postfilter", "input_estimate")]
 
@@ -65,6 +70,7 @@ def test_condition_dropout_rejects_p_one():
 
 
 def save_lightning(tmp_path, arch, seed):
+    """Save a randomly initialized model as a minimal Lightning checkpoint and return its path."""
     from cleanunet.cleanunet2 import CleanUNet2
     torch.manual_seed(seed)
     model = CleanUNet2(**arch)

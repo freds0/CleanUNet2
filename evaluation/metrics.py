@@ -34,6 +34,7 @@ def highpass(x: np.ndarray, cutoff_hz: float = BAND_LIMIT_HZ, sample_rate: int =
 
 
 def si_sdr(reference: np.ndarray, estimate: np.ndarray, eps: float = 1e-8) -> float:
+    """Scale-invariant SDR in dB (both signals mean-removed)."""
     reference = reference - reference.mean()
     estimate = estimate - estimate.mean()
     alpha = np.dot(estimate, reference) / (np.dot(reference, reference) + eps)

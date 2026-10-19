@@ -52,6 +52,7 @@ class SubbandSpecNet(nn.Module):
         nn.init.zeros_(self.sub_out.bias)
 
     def forward(self, x: Tensor, return_hidden: bool = False):
+        """Enhanced spectrogram (B, F, T), plus the hidden features with ``return_hidden``."""
         out = self.run(x)
         return (out["spec"], out["hidden"]) if return_hidden else out["spec"]
 

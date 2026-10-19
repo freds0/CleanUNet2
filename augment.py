@@ -38,6 +38,10 @@ def _lowpass(x: torch.Tensor, cutoff: float, sample_rate: int, taps: int = 101) 
 
 
 class Augmenter(torch.nn.Module):
+    """GPU batch augmentation (Remix, BandMask, Shift, Gain, SNR) with per-transform probabilities.
+
+    Calling it on (noisy, clean) returns an augmented pair; the noise is recovered as noisy - clean.
+    """
     def __init__(self, sample_rate: int = 16000, remix_p: float = 0.0, bandmask_p: float = 0.0,
                  bandmask_maxwidth: float = 0.2, bandmask_bands: int = 120, shift_p: float = 0.0,
                  shift_max: int = 8000, gain_p: float = 0.0, gain_db: float = 6.0,
@@ -54,6 +58,7 @@ class Augmenter(torch.nn.Module):
 
     @property
     def enabled(self) -> bool:
+        """True if any transform has a non-zero probability."""
         return any(p > 0 for p in (self.remix_p, self.bandmask_p, self.shift_p, self.gain_p, self.snr_p))
 
     def _bandmask(self, x: torch.Tensor) -> torch.Tensor:

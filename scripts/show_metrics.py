@@ -12,6 +12,7 @@ from tensorboard.backend.event_processing.event_accumulator import EventAccumula
 
 
 def main():
+    """Print the last and best value of the selected TensorBoard scalars."""
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("log_dir", help="TensorBoard run directory (searched recursively for event files)")
     parser.add_argument("--tags", nargs="*", default=["val/pesq", "val/stoi", "val/si_sdr", "val_loss",

@@ -24,6 +24,7 @@ import numpy as np
 
 
 def read_metrics(path, metric):
+    """{file: value} of one metric from a metrics.csv, skipping failed rows."""
     rows = {}
     with open(path) as fh:
         for r in csv.DictReader(fh):
@@ -34,6 +35,7 @@ def read_metrics(path, metric):
 
 
 def holm(pvals):
+    """Holm-Bonferroni adjustment of a list of p-values."""
     order = np.argsort(pvals)
     adj = np.empty(len(pvals))
     running = 0.0
@@ -44,6 +46,7 @@ def holm(pvals):
 
 
 def main():
+    """Compare each run with the reference per file (bootstrap CI, Wilcoxon test with Holm correction) and print a table."""
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--ref", nargs="+", required=True, help="reference run dir(s); averaged per file")
     ap.add_argument("--runs", nargs="+", required=True, help="run dirs (globs allowed)")

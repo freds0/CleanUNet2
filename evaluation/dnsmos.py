@@ -78,6 +78,7 @@ def _score_file(args):
 
 
 def main():
+    """Score the listed files with both DNSMOS models and write a per-file CSV and a JSON summary."""
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--models", required=True, help="directory with sig_bak_ovr.onnx and model_v8.onnx")
     p.add_argument("--audio_dir", required=True, help="directory with <name>.flac / <name>.wav files")

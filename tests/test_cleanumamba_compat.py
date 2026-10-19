@@ -13,6 +13,7 @@ from conftest import CLEANUMAMBA_DIR, DATA_DIR, E8_CKPT, ROOT, requires_data, re
 
 
 def e8_model():
+    """The E8 waveform-only CleanUNet2 with the official CleanUMamba-3N-E8 weights."""
     arch = resolve_architecture(os.path.join(ROOT, "configs/model/cleanunet_mamba_e8.yaml"))
     model = CleanUNet2(**arch)
     model.load_cleanumamba_weights(E8_CKPT)

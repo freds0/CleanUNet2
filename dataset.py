@@ -94,6 +94,7 @@ class PairDataset(torch.utils.data.Dataset):
             self.ext_snr = tuple(float(v) for v in ext_noise.get("snr_db", (-5.0, 20.0)))
 
     def __len__(self) -> int:
+        """Number of (clean, noisy) pairs in the file list."""
         return len(self.files)
 
     def _load_pair(self, index: int):
@@ -115,6 +116,12 @@ class PairDataset(torch.utils.data.Dataset):
         return torch.cat([a[:-n], a[-n:] * (1 - ramp) + b[:n] * ramp, b[n:]])
 
     def __getitem__(self, index: int):
+        """(noisy, clean, id), signals of shape (1, L).
+
+        Training: optionally concatenates utterances, then takes a random crop of ``segment_size`` samples (zero-padded
+        when shorter). With probability ``ext_p`` the noisy crop is replaced by the clean crop plus an external noise at a
+        random SNR, and both are peak-normalized. Validation (``segment_size=None``): the whole utterance.
+        """
         clean_rel, _ = self.files[index]
         clean, noisy = self._load_pair(index)
         for _ in range(self.concat_utterances - 1):

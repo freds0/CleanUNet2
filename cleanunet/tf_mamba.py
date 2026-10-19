@@ -39,6 +39,7 @@ class FrameNorm(nn.Module):
         self.eps = eps
 
     def forward(self, x):
+        """Normalize each example over channels and frequency, with a learnable affine."""
         mean = x.mean(dim=(1, 2), keepdim=True)
         var = x.var(dim=(1, 2), keepdim=True, unbiased=False)
         return (x - mean) / torch.sqrt(var + self.eps) * self.weight + self.bias
@@ -55,10 +56,12 @@ class CausalConv2d(nn.Module):
         self.conv = nn.Conv2d(cin, cout, kernel, stride=stride, padding=(kf // 2, 0))
 
     def forward(self, x):
+        """Pad (causally in time when requested) and convolve."""
         return self.conv(F.pad(x, self.pad_t))
 
 
 class ConvBlock2d(nn.Module):
+    """Conv2d -> FrameNorm -> PReLU, causal along time when requested."""
     def __init__(self, cin: int, cout: int, kernel=(3, 3), stride=(1, 1), causal: bool = True):
         super().__init__()
         self.conv = CausalConv2d(cin, cout, kernel, stride, causal)
@@ -66,6 +69,7 @@ class ConvBlock2d(nn.Module):
         self.act = nn.PReLU(cout)
 
     def forward(self, x):
+        """Apply the block."""
         return self.act(self.norm(self.conv(x)))
 
 
@@ -79,6 +83,7 @@ class UpBlock2d(nn.Module):
         self.act = nn.PReLU(cout)
 
     def forward(self, x, n_freq: int):
+        """Transposed conv along frequency, cropped or padded to ``n_freq`` bins."""
         x = self.up(x)
         if x.shape[2] < n_freq:
             x = F.pad(x, (0, 0, 0, n_freq - x.shape[2]), mode="replicate")
@@ -97,6 +102,7 @@ class TFMambaBlock(nn.Module):
         self.freq_layers, self.freq_norm = build_mamba_layers(channels, 1, bidirectional=True, **kw)
 
     def forward(self, x: Tensor) -> Tensor:
+        """Mamba along time for every frequency, then Mamba along frequency for every frame."""
         B, C, Fq, T = x.shape
         t = x.permute(0, 2, 3, 1).reshape(B * Fq, T, C).contiguous()
         t = run_mamba_layers(self.time_layers, self.time_norm, t)
@@ -167,6 +173,7 @@ class TFMambaSpecNet(nn.Module):
         self.hidden_proj = nn.Linear(C * hidden_subbands, hidden_dim)
 
     def forward(self, x: Tensor, return_hidden: bool = False):
+        """Enhanced spectrogram (B, F, T), plus the hidden features with ``return_hidden``."""
         out = self.run(x)
         return (out["spec"], out["hidden"]) if return_hidden else out["spec"]
 

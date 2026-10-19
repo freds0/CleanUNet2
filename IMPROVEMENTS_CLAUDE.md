@@ -1,158 +1,158 @@
-# Propostas de melhorias arquiteturais: CleanUNet2‑Mamba
+# Architecture improvement proposals: CleanUNet2-Mamba
 
-*Autor: Claude (Opus 5.5) · 2026‑10‑12 · branch `feature/mamba`*
+*Author: Claude (Opus 5.5) · 2026-10-12 · branch `feature/mamba`*
 
-Este documento lista mudanças de arquitetura para avaliar experimentalmente no CleanUNet2‑Mamba. Cada proposta traz:
-- a motivação, apoiada em medições deste repositório;
-- a hipótese a testar;
-- o custo estimado;
-- o desenho do experimento;
-- o critério de sucesso.
+This document lists architecture changes to evaluate experimentally on CleanUNet2-Mamba. Each proposal gives:
+- the motivation, backed by measurements from this repository;
+- the hypothesis to test;
+- the estimated cost;
+- the design of the experiment;
+- the success criterion.
 
-Marcações usadas no texto:
+Markers used in the text:
 
-| Marca | Significado |
+| Marker | Meaning |
 |---|---|
-| ✔ | Medido neste repositório (scripts e números na seção 1) |
-| ◇ | Estimativa, a confirmar |
-| ⚑ | Já existe como opção de configuração; falta só rodar o experimento |
+| ✔ | Measured in this repository (scripts and numbers in section 1) |
+| ◇ | Estimate, to be confirmed |
+| ⚑ | Already exists as a configuration option; only the experiment is missing |
 
 ---
 
-## 0. Resumo: as prioridades
+## 0. Summary: the priorities
 
-| # | Proposta | Motivo principal | Implementação | GPU (triagem) |
+| # | Proposal | Main reason | Implementation | GPU (screening) |
 |---|---|---|---|---|
-| 1 | **A0** Upsampler exato e rápido | O upsampler é ~83% do tempo de um passo do híbrido ✔. A reformulação exata é 4,3× mais rápida ✔ | ~30 linhas, pesos inalterados | nenhuma |
-| 2 | **A5** Controles (LR, sementes, condição embaralhada) | Sem eles não dá para atribuir ganhos ao ramo espectral | ~20 linhas | ~2 h |
-| 3 | **C1** Normalização causal | Toda a perda do streaming (−0,16 PESQ ✔) vem da normalização causal | ~40 linhas | 0 h (só inferência) a 1 h |
-| 4 | **A1** Upsampler sensível à frequência | O upsampler atual não consegue ponderar bandas de frequência ✔ (análise) e reduz tudo a 1 canal | ~80 linhas | ~1 h por variante ◇ |
-| 5 | **A2/A3** Fusão no gargalo e multiescala | Hop da STFT (256) = stride total do U‑Net (2⁸): a fusão é natural e barata | ⚑ / ~60 linhas | ~1 h por variante ◇ |
-| 6 | **D2** Termo de SI‑SDR na perda | O ajuste fino subiu o PESQ (+0,27) mas baixou o SI‑SDR (−0,37 dB, p≈1e‑14) ✔ | ~15 linhas | ~1 h |
-| 7 | **B1** CleanSpecNet residual ou máscara | Hoje o ramo espectral regride a magnitude diretamente, sem ligação da entrada para a saída | ~20 linhas | ~30 min |
-| 8 | **C2** Gargalo BiMamba (modo offline) | Mede o custo da causalidade; pode partir dos pesos do DNS sem perda inicial | ~40 linhas | ~1 h |
+| 1 | **A0** Exact, fast upsampler | The upsampler takes ~83% of a hybrid training step ✔. The exact reformulation is 4.3× faster ✔ | ~30 lines, weights unchanged | none |
+| 2 | **A5** Controls (LR, seeds, shuffled condition) | Without them, gains cannot be attributed to the spectral branch | ~20 lines | ~2 h |
+| 3 | **C1** Causal normalization | The whole streaming loss (−0.16 PESQ ✔) comes from the causal normalization | ~40 lines | 0 h (inference only) to 1 h |
+| 4 | **A1** Frequency-aware upsampler | The current upsampler cannot weigh frequency bands ✔ (analysis) and reduces everything to 1 channel | ~80 lines | ~1 h per variant ◇ |
+| 5 | **A2/A3** Bottleneck and multi-scale fusion | STFT hop (256) = total U-Net stride (2⁸): fusion is natural and cheap | ⚑ / ~60 lines | ~1 h per variant ◇ |
+| 6 | **D2** SI-SDR term in the loss | Fine-tuning raised PESQ (+0.27) but lowered SI-SDR (−0.37 dB, p≈1e-14) ✔ | ~15 lines | ~1 h |
+| 7 | **B1** Residual or mask CleanSpecNet | Today the spectral branch regresses the magnitude directly, with no input-to-output path | ~20 lines | ~30 min |
+| 8 | **C2** BiMamba bottleneck (offline mode) | Measures the cost of causality; can start from the DNS weights with no initial loss | ~40 lines | ~1 h |
 
 ---
 
-## 1. Evidências medidas
+## 1. Measured evidence
 
-### 1.1 Resultados no teste (VoiceBank‑DEMAND, 824 arquivos) ✔
+### 1.1 Test results (VoiceBank-DEMAND, 824 files) ✔
 
-Todos estes resultados usam o **modelo só de onda**: CleanUNet com gargalo Mamba, igual ao CleanUMamba‑E8, 41,4M parâmetros.
+All these results use the **waveform-only model**: CleanUNet with a Mamba bottleneck, identical to CleanUMamba-E8, 41.4M parameters.
 
-| Sistema | PESQ‑WB | STOI | SI‑SDR | CSIG | CBAK | COVL |
+| System | PESQ-WB | STOI | SI-SDR | CSIG | CBAK | COVL |
 |---|---|---|---|---|---|---|
-| Ruidoso | 1,97 | 0,921 | 8,4 | 3,49 | 2,55 | 2,74 |
-| CleanUMamba‑E8 (DNS), zero‑shot | 2,82 | 0,942 | 18,9 | 4,18 | 3,59 | 3,55 |
-| Estágio A (E8 ajustado 20 épocas) | **3,09** | **0,953** | 18,6 | **4,57** | **3,67** | **3,90** |
-| Estágio A, streaming (16 ms de passo) | 2,93 | 0,945 | 17,4 | 4,46 | 3,57 | 3,76 |
+| Noisy | 1.97 | 0.921 | 8.4 | 3.49 | 2.55 | 2.74 |
+| CleanUMamba-E8 (DNS), zero-shot | 2.82 | 0.942 | 18.9 | 4.18 | 3.59 | 3.55 |
+| Stage A (E8 fine-tuned for 20 epochs) | **3.09** | **0.953** | 18.6 | **4.57** | **3.67** | **3.90** |
+| Stage A, streaming (16 ms hop) | 2.93 | 0.945 | 17.4 | 4.46 | 3.57 | 3.76 |
 
-CSIG, CBAK e COVL usam a implementação Python do CMGAN/CleanUMamba. No áudio ruidoso ela dá ~0,1 acima dos valores publicados (feitos em MATLAB), então só compare essas três métricas entre resultados deste repositório.
+CSIG, CBAK and COVL use the Python implementation of CMGAN/CleanUMamba. On noisy audio it gives ~0.1 more than the published values (computed in MATLAB), so compare these three metrics only between results of this repository.
 
-### 1.2 Híbrido × só onda (validação, 770 arquivos, preliminar) ✔
+### 1.2 Hybrid vs waveform-only (validation, 770 files, preliminary) ✔
 
-PESQ‑WB por época. O híbrido usa o mesmo ramo de onda iniciado do DNS, mais o CleanSpecNet‑Mamba e FiLM com inicialização zero.
+PESQ-WB per epoch. The hybrid uses the same waveform branch initialized from DNS, plus the CleanSpecNet-Mamba and zero-initialized FiLM.
 
-| Época | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 |
+| Epoch | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| Só onda (estágio A) | 2,666 | 2,644 | 2,662 | 2,673 | 2,674 | 2,671 | 2,677 | 2,726 | 2,699 | 2,701 | 2,722 |
-| Híbrido | 2,638 | 2,684 | 2,680 | 2,672 | 2,712 | 2,670 | 2,714 | 2,738 | 2,703 | 2,742 | 2,732 |
-| Diferença | −0,03 | +0,04 | +0,02 | 0,00 | +0,04 | 0,00 | +0,04 | +0,01 | 0,00 | +0,04 | +0,01 |
+| Waveform-only (stage A) | 2.666 | 2.644 | 2.662 | 2.673 | 2.674 | 2.671 | 2.677 | 2.726 | 2.699 | 2.701 | 2.722 |
+| Hybrid | 2.638 | 2.684 | 2.680 | 2.672 | 2.712 | 2.670 | 2.714 | 2.738 | 2.703 | 2.742 | 2.732 |
+| Difference | −0.03 | +0.04 | +0.02 | 0.00 | +0.04 | 0.00 | +0.04 | +0.01 | 0.00 | +0.04 | +0.01 |
 
-A diferença média é **+0,015**: pequena, ruidosa e com um fator de confusão. O ramo de onda treina com LR efetivo de 3e‑5 no híbrido (1e‑4 × 0,3) e de 5e‑5 no estágio A (ver A5).
+The mean difference is **+0.015**: small, noisy and confounded. The waveform branch trains with an effective LR of 3e-5 in the hybrid (1e-4 × 0.3) and of 5e-5 in stage A (see A5).
 
-### 1.3 Onde está o custo ✔
+### 1.3 Where the cost is ✔
 
-**FLOPs**, contados com `torch.utils.flop_counter` num forward de 2 s, batch 1:
+**FLOPs**, counted with `torch.utils.flop_counter` on a 2 s forward pass, batch 1:
 
-| Modelo | Total | CleanUNet | CleanSpecNet | SpecUpsampler |
+| Model | Total | CleanUNet | CleanSpecNet | SpecUpsampler |
 |---|---|---|---|---|
-| Híbrido Mamba | 24,4 GMAC | 21,3 (87%) | 1,39 (6%) | 1,72 (7%) |
-| Híbrido Transformer (E0) | 24,7 GMAC | 22,0 (89%) | 0,92 (4%) | 1,72 (7%) |
-| Só onda Mamba | 21,3 GMAC | 21,3 | — | — |
+| Mamba hybrid | 24.4 GMAC | 21.3 (87%) | 1.39 (6%) | 1.72 (7%) |
+| Transformer hybrid (E0) | 24.7 GMAC | 22.0 (89%) | 0.92 (4%) | 1.72 (7%) |
+| Mamba waveform-only | 21.3 GMAC | 21.3 | — | — |
 
-As operações elementares do scan do Mamba não entram nessa contagem.
+The elementwise operations of the Mamba scan are not included in this count.
 
-**Tempo por passo** (forward + backward, bf16, batch 2, com a GPU dividida com outro treino):
+**Time per step** (forward + backward, bf16, batch 2, with the GPU shared with another training job):
 
-| Variante | Tempo |
+| Variant | Time |
 |---|---|
-| Híbrido completo | 145 ms |
-| Híbrido com o upsampler trocado por uma operação trivial | 24 ms |
-| Só o CleanUNet | 18 ms |
-| Só o CleanSpecNet | 6 ms |
-| Só o upsampler, em bf16 | 121 ms (o forward sozinho: 108 ms) |
-| Só o upsampler, em fp32 | 56 ms |
+| Full hybrid | 145 ms |
+| Hybrid with the upsampler replaced by a trivial operation | 24 ms |
+| CleanUNet only | 18 ms |
+| CleanSpecNet only | 6 ms |
+| Upsampler only, in bf16 | 121 ms (forward alone: 108 ms) |
+| Upsampler only, in fp32 | 56 ms |
 
-**Memória do upsampler:** pico de 1,8 GB com batch 2, ou seja ~14 GB com batch 16 ◇. Isso explica os ~17,7 GB de GPU usados pelos treinos híbridos.
+**Upsampler memory:** a 1.8 GB peak with batch 2, i.e. ~14 GB with batch 16 ◇. This explains the ~17.7 GB of GPU memory used by the hybrid trainings.
 
-**Conclusão:** o upsampler representa 7% das contas, mas ~83% do tempo. O gargalo é de implementação: a `ConvTranspose2d` com stride igual ao kernel no tempo cai num kernel cuDNN lento em bf16, com ativações enormes de (B, 32, 513, 16T). O resto do híbrido custa só ~1,3× o modelo só de onda.
+**Conclusion:** the upsampler is 7% of the arithmetic but ~83% of the time. The bottleneck is an implementation issue: the `ConvTranspose2d` with stride equal to the kernel along time falls into a slow cuDNN kernel in bf16, with huge activations of shape (B, 32, 513, 16T). The rest of the hybrid costs only ~1.3× the waveform-only model.
 
-### 1.4 Limitação de projeto do SpecUpsampler (análise do código) ✔
+### 1.4 Design limitation of the SpecUpsampler (code analysis) ✔
 
-As duas `ConvTranspose2d` usam kernel 3 com stride 1 na frequência, ou seja, os mesmos pesos para todas as bandas. Depois delas vem a média sobre as 513 bandas. Consequências:
-- O sinal de condicionamento de cada amostra é, essencialmente, a média de uma mesma função não linear aplicada a vizinhanças locais do espectro.
-- O módulo **não consegue dar pesos diferentes a bandas diferentes**: energia a 200 Hz e a 6 kHz contam igual.
-- Toda a informação espectral chega ao CleanUNet como **um único canal**.
+Both `ConvTranspose2d` layers use kernel 3 with stride 1 along frequency, i.e. the same weights for every band. They are followed by a mean over the 513 bands. Consequences:
+- The conditioning signal of each sample is essentially the mean of one nonlinear function applied to local neighbourhoods of the spectrum.
+- The module **cannot give different weights to different bands**: energy at 200 Hz and at 6 kHz counts the same.
+- All spectral information reaches CleanUNet as **a single channel**.
 
-### 1.5 Desempenho por SNR de entrada (teste) ✔
+### 1.5 Performance per input SNR (test) ✔
 
-**PESQ‑WB:**
+**PESQ-WB:**
 
-| SNR de entrada | < 5 dB (n=218) | 5–10 (n=209) | 10–15 (n=206) | ≥ 15 (n=191) |
+| Input SNR | < 5 dB (n=218) | 5–10 (n=209) | 10–15 (n=206) | ≥ 15 (n=191) |
 |---|---|---|---|---|
-| Ruidoso | 1,46 | 1,74 | 2,15 | 2,61 |
-| Zero‑shot | 2,43 | 2,76 | 2,96 | 3,19 |
-| Estágio A | 2,68 | 3,02 | 3,23 | 3,50 |
-| Streaming | 2,66 | 2,92 | 3,03 | 3,16 |
+| Noisy | 1.46 | 1.74 | 2.15 | 2.61 |
+| Zero-shot | 2.43 | 2.76 | 2.96 | 3.19 |
+| Stage A | 2.68 | 3.02 | 3.23 | 3.50 |
+| Streaming | 2.66 | 2.92 | 3.03 | 3.16 |
 
-**SI‑SDR (dB):**
+**SI-SDR (dB):**
 
-| SNR de entrada | < 5 dB | 5–10 | 10–15 | ≥ 15 |
+| Input SNR | < 5 dB | 5–10 | 10–15 | ≥ 15 |
 |---|---|---|---|---|
-| Zero‑shot | 16,3 | 18,6 | 19,9 | 21,2 |
-| Estágio A | 16,0 | 17,8 | 19,4 | 21,4 |
-| Streaming | 16,1 | 17,5 | 18,0 | 18,0 |
+| Zero-shot | 16.3 | 18.6 | 19.9 | 21.2 |
+| Stage A | 16.0 | 17.8 | 19.4 | 21.4 |
+| Streaming | 16.1 | 17.5 | 18.0 | 18.0 |
 
-O que esses números mostram:
-- **Há mais espaço para melhorar em SNR baixo:** PESQ 2,68 abaixo de 5 dB, contra 3,50 acima de 15 dB. Depois do estágio A, 58 arquivos ainda ficam com PESQ < 2,0.
-- **O ajuste fino trocou SI‑SDR por PESQ** justamente nas faixas de SNR baixo e médio. A perda é L1 + MR‑STFT, sem nenhum termo de SI‑SDR.
-- **A perda do streaming cresce com o SNR:** −0,02, −0,10, −0,20 e −0,34 de PESQ nas quatro faixas. O SI‑SDR satura em ~18 dB. Esse é o padrão de um **ganho variando no tempo**, como seria de esperar da normalização acumulada.
+What these numbers show:
+- **There is more room for improvement at low SNR:** PESQ 2.68 below 5 dB, against 3.50 above 15 dB. After stage A, 58 files still have PESQ < 2.0.
+- **Fine-tuning traded SI-SDR for PESQ** precisely in the low and middle SNR ranges. The loss is L1 + MR-STFT, with no SI-SDR term.
+- **The streaming loss grows with the SNR:** −0.02, −0.10, −0.20 and −0.34 PESQ in the four ranges. SI-SDR saturates at ~18 dB. This is the pattern of a **time-varying gain**, as expected from the cumulative normalization.
 
-### 1.6 Origem da perda do streaming ✔
+### 1.6 Origin of the streaming loss ✔
 
-Com a normalização desligada, o streaming reproduz o modo offline exatamente:
-- em float64, a diferença é de 2,5e‑14;
-- em fp32/CUDA sobre fala real, a concordância é acima de 40 dB.
+With the normalization disabled, streaming reproduces the offline mode exactly:
+- in float64, the difference is 2.5e-14;
+- in fp32/CUDA on real speech, the agreement is above 40 dB.
 
-Logo, a perda de −0,16 PESQ (p≈2,5e‑50) vem **inteira da normalização causal**. O streamer divide a entrada pela média acumulada dos desvios‑padrão por quadro, enquanto o modelo foi treinado com o desvio‑padrão global da utterance.
+So the −0.16 PESQ loss (p≈2.5e-50) comes **entirely from the causal normalization**. The streamer divides the input by the running mean of the per-frame standard deviations, while the model was trained with the global standard deviation of the utterance.
 
-### 1.7 Poder estatístico ✔
+### 1.7 Statistical power ✔
 
-- Desvio‑padrão das diferenças de PESQ pareadas por arquivo: ~0,33, o que dá um erro padrão de 0,012 nos 824 arquivos do teste. Diferenças de ~0,03 se distinguem do ruído entre arquivos.
-- A **variância entre sementes ainda não foi medida** (proposta A5b). Até lá, diferenças < 0,03 entre execuções únicas não são conclusivas.
+- Standard deviation of the per-file paired PESQ differences: ~0.33, which gives a standard error of 0.012 over the 824 test files. Differences of ~0.03 stand out from the file-to-file noise.
+- The **variance between seeds has not been measured yet** (proposal A5b). Until then, differences < 0.03 between single runs are not conclusive.
 
 ---
 
-## 2. Propostas
+## 2. Proposals
 
-Formato de cada proposta: **Motivação** · **Mudança** · **Hipótese** · **Custo** · **Experimento** · **Sucesso** · **Riscos**.
+Format of each proposal: **Motivation** · **Change** · **Hypothesis** · **Cost** · **Experiment** · **Success** · **Risks**.
 
-Salvo indicação, as comparações usam:
-- treino de 20 épocas, partindo dos pesos do DNS no ramo de onda;
-- seleção do checkpoint pelo PESQ de validação;
-- uma semente na triagem e três na confirmação.
+Unless stated otherwise, comparisons use:
+- 20 training epochs, starting the waveform branch from the DNS weights;
+- checkpoint selection by validation PESQ;
+- one seed for screening and three for confirmation.
 
-### Grupo A: ligação entre os ramos (fusão)
+### Group A: link between the branches (fusion)
 
-#### A0. Upsampler exato e rápido (engenharia, pré‑requisito)
-- **Motivação:** 1.3.
-- **Mudança:** com stride igual ao kernel no tempo (16), cada `ConvTranspose2d` equivale exatamente a uma `Conv2d` com kernel (3, 1), com os pesos invertidos na frequência e reorganizados, seguida de um rearranjo dos canais no tempo (pixel shuffle). Os parâmetros continuam os mesmos, então os checkpoints seguem compatíveis.
-- **Verificado em protótipo:**
-  - diferença máxima em relação ao original: 1,0e‑5 ✔;
-  - forward + backward em bf16 com batch 4: 238 → 55 ms ✔.
+#### A0. Exact, fast upsampler (engineering, prerequisite)
+- **Motivation:** 1.3.
+- **Change:** with stride equal to the kernel along time (16), each `ConvTranspose2d` is exactly equivalent to a `Conv2d` with kernel (3, 1), with the weights flipped along frequency and rearranged, followed by a channel-to-time rearrangement (pixel shuffle). The parameters stay the same, so checkpoints remain compatible.
+- **Verified with a prototype:**
+  - maximum difference from the original: 1.0e-5 ✔;
+  - forward + backward in bf16 with batch 4: 238 → 55 ms ✔.
 
-  O núcleo do protótipo (válido quando `stride[1] == kernel[1]` e `padding[1] == 0`):
+  The core of the prototype (valid when `stride[1] == kernel[1]` and `padding[1] == 0`):
   ```python
   def convT_as_conv(x, convT):                      # x: (B, Cin, F, T) -> (B, Cout, F, T*kt)
       W = convT.weight                              # (Cin, Cout, kf, kt)
@@ -163,237 +163,237 @@ Salvo indicação, as comparações usam:
       y = y.view(B, Cout, kt, Fq, T).permute(0, 1, 3, 4, 2).reshape(B, Cout, Fq, T * kt)
       return y + convT.bias.view(1, -1, 1, 1)
   ```
-- **Efeito esperado:** passo do híbrido de ~145 para ~52 ms (≈2,8×), estimado a partir das medições da seção 1.3 ◇.
-- **Experimento:** nenhum para métricas. Basta um teste de regressão (equivalência numérica) e cronometrar uma época.
-- **Sucesso:** época do híbrido ≤ 3,5 min (hoje ~8 min).
+- **Expected effect:** hybrid step from ~145 to ~52 ms (≈2.8×), estimated from the measurements of section 1.3 ◇.
+- **Experiment:** none for metrics. A regression test (numerical equivalence) and timing one epoch are enough.
+- **Success:** hybrid epoch ≤ 3.5 min (today ~8 min).
 
-#### A1. Upsampler sensível à frequência, leve e multicanal
-- **Motivação:** 1.3 e 1.4.
-- **Mudança:** um novo módulo (`upsampler.type: freq_proj`) com três camadas:
-  1. `Conv1d(513 → C, k=1)`: pesos próprios para cada banda;
+#### A1. Frequency-aware, lightweight, multi-channel upsampler
+- **Motivation:** 1.3 and 1.4.
+- **Change:** a new module (`upsampler.type: freq_proj`) with three layers:
+  1. `Conv1d(513 → C, k=1)`: separate weights for each band;
   2. `ConvTranspose1d(C, C, 16, stride 16)` + GELU;
-  3. `ConvTranspose1d(C, K, 16, stride 16)`, produzindo (B, K, 256·T), cortado no tamanho L.
-  
-  Duas formas de injetar o resultado no ramo de onda:
-  - **(i) FiLM**, com o `Conditioner` aceitando `cond_channels = K` (ele já aceita);
-  - **(ii) concatenação na primeira camada do encoder:** `channels_input = 1 + K`. Os pesos de `encoder.0.0` são estendidos com zeros para os K canais novos, então o modelo começa idêntico ao ramo pré‑treinado.
-- **Hipótese H1:** um condicionamento mais rico dá híbrido ≥ estágio A + 0,03 de PESQ na validação, com o ganho concentrado em SNR < 10 dB.
-- **Custo** ◇: ~0,03 GMAC por 2 s (contra 1,7 do original) e ativações ~50× menores.
-- **Experimento:** K ∈ {1, 8} × forma ∈ {FiLM, concatenação} = 4 execuções de triagem, comparadas com o híbrido atual (R3) e com o estágio A no mesmo LR (A5a).
-- **Riscos:** deixa de reproduzir exatamente o artigo do CleanUNet2. O upsampler original continua disponível como `upsampler.type: original`.
+  3. `ConvTranspose1d(C, K, 16, stride 16)`, producing (B, K, 256·T), cropped to length L.
 
-#### A2. Fusão no gargalo ⚑ (com variantes)
-- **Motivação:** com hop 256 = 2⁸, o quadro *j* da STFT e o token *j* do gargalo andam no mesmo passo (ver `../PLANO_CleanUNet2_Mamba.md`, seção 2.1). A opção já existe como `bottleneck_fusion: true` (FiLM com inicialização zero).
-- **Variantes:**
-  - (a) FiLM (já implementado);
-  - (b) concatenação + `Linear(2·d → d)`, iniciada como identidade na metade do ramo de onda;
-  - (c) **ajuste de alinhamento** de ∈ {−1, 0, +1} quadro. Com `alignment: center`, o centro do quadro *j* fica em 256j+128, enquanto o campo receptivo do token *j* ([256j, 256j+766)) está centrado em 256j+383, cerca de um quadro adiante;
-  - (d) **fusão só no gargalo**, sem o condicionamento na forma de onda (`use_waveform_conditioning: false`). Seria o híbrido mais barato: ~24 ms por passo, contra 18 ms do modelo só de onda (seção 1.3).
-- **Hipótese H2:** a fusão no gargalo iguala ou supera o condicionamento na forma de onda, a uma fração do custo.
-- **Custo:** +0,5M parâmetros; computação desprezível.
+  Two ways to inject the result into the waveform branch:
+  - **(i) FiLM**, with the `Conditioner` accepting `cond_channels = K` (it already does);
+  - **(ii) concatenation at the first encoder layer:** `channels_input = 1 + K`. The weights of `encoder.0.0` are extended with zeros for the K new channels, so the model starts identical to the pretrained branch.
+- **Hypothesis H1:** a richer conditioning gives hybrid ≥ stage A + 0.03 PESQ on validation, with the gain concentrated at SNR < 10 dB.
+- **Cost** ◇: ~0.03 GMAC per 2 s (against 1.7 for the original) and ~50× smaller activations.
+- **Experiment:** K ∈ {1, 8} × form ∈ {FiLM, concatenation} = 4 screening runs, compared with the current hybrid (R3) and with stage A at the same LR (A5a).
+- **Risks:** it no longer reproduces the CleanUNet2 paper exactly. The original upsampler stays available as `upsampler.type: original`.
 
-#### A3. Fusão multiescala
-- **Mudança:** além do gargalo, aplicar FiLM com inicialização zero nas entradas dos dois níveis seguintes do decoder (stride 128 e 64), repetindo as features do CleanSpecNet 2× e 4×. Requer ganchos por nível no `CleanUNet.forward` (`decoder_hooks`).
-- **Hipótese H3:** melhora sobretudo as faixas de SNR baixo (1.5).
-- **Experimento:** A2(a) contra A2(a)+A3.
+#### A2. Bottleneck fusion ⚑ (with variants)
+- **Motivation:** with hop 256 = 2⁸, STFT frame *j* and bottleneck token *j* advance in lockstep (see `../PLANO_CleanUNet2_Mamba.md`, section 2.1). The option already exists as `bottleneck_fusion: true` (zero-initialized FiLM).
+- **Variants:**
+  - (a) FiLM (already implemented);
+  - (b) concatenation + `Linear(2·d → d)`, initialized as the identity on the waveform-branch half;
+  - (c) **alignment shift** ∈ {−1, 0, +1} frame. With `alignment: center`, the centre of frame *j* is at 256j+128, while the receptive field of token *j* ([256j, 256j+766)) is centred at 256j+383, about one frame ahead;
+  - (d) **bottleneck-only fusion**, without the waveform conditioning (`use_waveform_conditioning: false`). This would be the cheapest hybrid: ~24 ms per step, against 18 ms for the waveform-only model (section 1.3).
+- **Hypothesis H2:** bottleneck fusion matches or beats the waveform conditioning, at a fraction of the cost.
+- **Cost:** +0.5M parameters; negligible compute.
 
-#### A4. Pós‑filtro espectral (fusão tardia)
-- **Mudança:**
-  1. Calcular `Y = STFT(ŷ)` da saída do CleanUNet.
-  2. Montar as entradas `[compress|Y|, Ŝ (saída do CleanSpecNet)]`.
-  3. Passar por uma rede pequena (conv + 2 camadas Mamba no tempo, d=128) que produz uma máscara limitada `M = 1 + α·tanh(Δ)`, com Δ começando em zero (identidade).
-  4. A saída final é `ŷ' = iSTFT(M ⊙ Y)`.
-- **Hipótese H4:** reduz o ruído residual (CBAK e SSNR sobem), sobretudo ruído estacionário em frequências altas.
-- **Custo:** baixo em computação. Em streaming, acrescenta a latência da janela da STFT.
-- **Riscos:** artefatos de iSTFT; a fase não é corrigida.
+#### A3. Multi-scale fusion
+- **Change:** besides the bottleneck, apply zero-initialized FiLM at the inputs of the next two decoder levels (stride 128 and 64), repeating the CleanSpecNet features 2× and 4×. Requires per-level hooks in `CleanUNet.forward` (`decoder_hooks`).
+- **Hypothesis H3:** it mostly improves the low-SNR ranges (1.5).
+- **Experiment:** A2(a) against A2(a)+A3.
 
-#### A5. Controles (necessários para interpretar o grupo A)
-- **(a) LR igualado:** repetir o estágio A com o LR do ramo de onda igual ao do híbrido (3e‑5), ou o híbrido com 5e‑5.
-- **(b) Variância entre sementes:** 3 sementes do estágio A (~30 min cada) para estimar σ entre execuções.
-- **(c) Condição embaralhada:** o ramo de onda recebe o espectrograma de *outra* utterance do batch (uma permutação). Se o PESQ ficar igual ao do híbrido normal, o condicionamento não está carregando informação útil.
-- **Implementação:** a flag `shuffle_condition` no CleanUNet2, usada só no treino e na avaliação do controle.
+#### A4. Spectral post-filter (late fusion)
+- **Change:**
+  1. Compute `Y = STFT(ŷ)` of the CleanUNet output.
+  2. Build the inputs `[compress|Y|, Ŝ (CleanSpecNet output)]`.
+  3. Pass them through a small network (conv + 2 Mamba layers over time, d=128) that produces a bounded mask `M = 1 + α·tanh(Δ)`, with Δ starting at zero (identity).
+  4. The final output is `ŷ' = iSTFT(M ⊙ Y)`.
+- **Hypothesis H4:** it reduces residual noise (CBAK and SSNR go up), especially stationary high-frequency noise.
+- **Cost:** low compute. In streaming it adds the latency of the STFT window.
+- **Risks:** iSTFT artefacts; the phase is not corrected.
 
-### Grupo B: ramo espectral (CleanSpecNet)
+#### A5. Controls (needed to interpret group A)
+- **(a) Matched LR:** repeat stage A with the waveform-branch LR equal to the hybrid's (3e-5), or the hybrid with 5e-5.
+- **(b) Variance between seeds:** 3 seeds of stage A (~30 min each) to estimate σ between runs.
+- **(c) Shuffled condition:** the waveform branch receives the spectrogram of *another* utterance of the batch (a permutation). If PESQ stays the same as with the normal hybrid, the conditioning carries no useful information.
+- **Implementation:** a `shuffle_condition` flag in CleanUNet2, used only for training and evaluating the control.
 
-#### B1. Saída residual ou por máscara
-- **Motivação:** a `output_layer` regride a magnitude comprimida diretamente, sem nenhuma ligação da entrada para a saída.
-- **Mudança** (`output_mode`):
-  - `residual`: `Ŝ = relu(X + Δ)`, com a última camada iniciada em zero (começa como identidade);
-  - `mask`: `Ŝ = compress(M ⊙ |X|)`, com `M = β·σ(m)` e β ≈ 1,5;
-  - `direct`: o comportamento atual.
-- **Hipótese H5:** convergência mais rápida e menor L1 espectral, o que melhora o condicionamento.
-- **Experimento:** estágio B (só o ramo espectral, 10 épocas) comparando o L1 de validação; o melhor modo segue para o híbrido.
+### Group B: spectral branch (CleanSpecNet)
 
-#### B2. Backbone tempo‑frequência (dual‑path Mamba)
-- **Motivação:** hoje as 513 bandas viram canais de uma `Conv1d`, e a estrutura de frequência se perde logo na primeira camada.
-- **Mudança** (`backbone.type: tf_mamba`):
-  1. Front‑end `Conv2d` 1→32 canais, reduzindo a frequência a ~129 bandas (dois strides de 2).
-  2. N = 4 blocos alternando: Mamba ao longo do tempo para cada banda (causal) e BiMamba ao longo da frequência para cada quadro (a frequência não precisa ser causal).
-  3. Decoder `ConvTranspose2d` de volta a 513 bandas.
-- **Hipótese H6:** melhor estimativa espectral, sobretudo em SNR baixo. Arquiteturas da literatura que modelam tempo e frequência explicitamente (como as da família MP‑SENet/SEMamba) costumam ir bem no VoiceBank. Isso é uma hipótese, não um número a reproduzir.
-- **Custo** ◇: ~16k tokens por exemplo por bloco, com d=32–64; é preciso medir o tempo antes de escalar.
-- **Riscos:** memória e tempo. Só depois de A0/A1.
+#### B1. Residual or mask output
+- **Motivation:** the `output_layer` regresses the compressed magnitude directly, with no input-to-output path.
+- **Change** (`output_mode`):
+  - `residual`: `Ŝ = relu(X + Δ)`, with the last layer initialized at zero (starts as the identity);
+  - `mask`: `Ŝ = compress(M ⊙ |X|)`, with `M = β·σ(m)` and β ≈ 1.5;
+  - `direct`: the current behaviour.
+- **Hypothesis H5:** faster convergence and lower spectral L1, which improves the conditioning.
+- **Experiment:** stage B (spectral branch only, 10 epochs) comparing the validation L1; the best mode moves on to the hybrid.
 
-#### B3. Representação da entrada ⚑ (parcial)
-- Compressão `log1p` contra potência 0,3 (⚑ `spectrogram.compression: pow`).
-- Entrada complexa comprimida (parte real e imaginária, 2×F canais), para o ramo espectral ver a fase.
-- Barato: 2 a 3 execuções do estágio B.
+#### B2. Time-frequency backbone (dual-path Mamba)
+- **Motivation:** today the 513 bands become channels of a `Conv1d`, and the frequency structure is lost in the first layer.
+- **Change** (`backbone.type: tf_mamba`):
+  1. `Conv2d` front end with 1→32 channels, reducing frequency to ~129 bands (two strides of 2).
+  2. N = 4 alternating blocks: Mamba along time for each band (causal) and BiMamba along frequency for each frame (frequency need not be causal).
+  3. `ConvTranspose2d` decoder back to 513 bands.
+- **Hypothesis H6:** better spectral estimates, especially at low SNR. Architectures from the literature that model time and frequency explicitly (such as the MP-SENet/SEMamba family) usually do well on VoiceBank. This is a hypothesis, not a number to reproduce.
+- **Cost** ◇: ~16k tokens per example per block, with d=32–64; time must be measured before scaling up.
+- **Risks:** memory and time. Only after A0/A1.
 
-#### B4. Causalidade separada e versão bidirecional offline ⚑ (parcial)
-- Separar as flags `conv_causal` e `backbone_causal`. Isso permite reproduzir exatamente o CleanUNet2 original (atenção causal com convoluções não causais).
-- Medir o **custo da causalidade** no ramo espectral com `cleanunet2_mamba_e8_bidir.yaml` ⚑.
+#### B3. Input representation ⚑ (partial)
+- `log1p` compression against power 0.3 (⚑ `spectrogram.compression: pow`).
+- Compressed complex input (real and imaginary parts, 2×F channels), so the spectral branch sees the phase.
+- Cheap: 2 to 3 stage-B runs.
 
-#### B5. Ramo espectral com estimativa de fase (decoders de magnitude e de fase)
-- Produz uma estimativa espectral completa, o que permite combinar as duas estimativas (onda e espectro) por pesos aprendidos em tempo‑frequência.
-- Custo alto; fica para depois de B2.
+#### B4. Separate causality and an offline bidirectional version ⚑ (partial)
+- Separate the `conv_causal` and `backbone_causal` flags. This allows reproducing the original CleanUNet2 exactly (causal attention with non-causal convolutions).
+- Measure the **cost of causality** in the spectral branch with `cleanunet2_mamba_e8_bidir.yaml` ⚑.
 
-### Grupo C: ramo de onda (CleanUNet‑Mamba)
+#### B5. Spectral branch with phase estimation (magnitude and phase decoders)
+- Produces a full spectral estimate, which makes it possible to combine the two estimates (waveform and spectrum) with learned time-frequency weights.
+- High cost; postponed until after B2.
 
-#### C1. Normalização causal (fechar o gap do streaming)
-- **Motivação:** 1.5 e 1.6.
-- **Passo 1, sem treino** (só no `StreamingCleanUNet`), avaliar o modelo do estágio A em streaming com:
-  - (i) a média acumulada do std por quadro (a atual);
-  - (ii) RMS com média móvel exponencial, τ ∈ {0,5, 1, 2} s;
-  - (iii) aquecimento seguido de congelamento: estimar nos primeiros 0,5 s e depois fixar;
-  - (iv) o std acumulado verdadeiro, sobre todas as amostras já vistas.
-- **Passo 2, com treino:** treinar com a mesma normalização causal (`normalization.type: cumulative | ema`), ou sem normalização e com augmentação de ganho de ±12 dB.
-- **Sucesso:** gap do streaming ≤ 0,05 de PESQ, sem dependência do SNR.
+### Group C: waveform branch (CleanUNet-Mamba)
 
-#### C2. Gargalo bidirecional (modo offline)
-- **Mudança:** um `BiMambaMixer` no gargalo (a classe já existe em `sequence.py`).
-  - O ramo direto recebe os pesos do DNS.
-  - O ramo reverso começa como cópia, com `out_proj` zerado. Assim o modelo começa idêntico ao causal.
-  - O carregador precisa remapear `mixer.*` → `mixer.fwd.*`.
-- **Hipótese H7:** ganho offline de pelo menos +0,05 de PESQ, o que quantifica o custo da causalidade no ramo de onda.
+#### C1. Causal normalization (closing the streaming gap)
+- **Motivation:** 1.5 and 1.6.
+- **Step 1, no training** (only in `StreamingCleanUNet`): evaluate the stage-A model in streaming with:
+  - (i) the running mean of the per-frame std (the current one);
+  - (ii) RMS with an exponential moving average, τ ∈ {0.5, 1, 2} s;
+  - (iii) warm-up then freeze: estimate over the first 0.5 s, then fix;
+  - (iv) the true cumulative std over all samples seen so far.
+- **Step 2, with training:** train with the same causal normalization (`normalization.type: cumulative | ema`), or without normalization and with ±12 dB gain augmentation.
+- **Success:** streaming gap ≤ 0.05 PESQ, with no SNR dependence.
 
-#### C3. Mamba em múltiplas escalas
-- **Mudança:** uma camada Mamba em cada um dos dois níveis mais profundos do decoder (stride 128 e 64), projetando 768 → 256 canais, com `out_proj` zerado.
-- **Custo** ◇: +3 a 5M parâmetros. O streaming continua viável (um token por nível a cada 128 ou 64 amostras), mas exige estado por nível.
-- **Hipótese:** modelar o contexto longo também em resolução temporal mais fina ajuda nos transientes.
+#### C2. Bidirectional bottleneck (offline mode)
+- **Change:** a `BiMambaMixer` in the bottleneck (the class already exists in `sequence.py`).
+  - The forward branch gets the DNS weights.
+  - The backward branch starts as a copy, with `out_proj` zeroed. So the model starts identical to the causal one.
+  - The loader must remap `mixer.*` → `mixer.fwd.*`.
+- **Hypothesis H7:** an offline gain of at least +0.05 PESQ, which quantifies the cost of causality in the waveform branch.
 
-#### C4. Skip connections com porta, ou projeção residual ⚑ (parcial)
-- **Porta:** `x + g ⊙ skip`, com `g = σ(conv1x1([x, skip]))`, viés inicial +4 (g ≈ 1, preserva os pesos pré‑treinados).
-- **Projeção residual:** `residual_projection` ⚑ já existe, mas é iniciada aleatoriamente, o que quebraria a inicialização do DNS. É preciso iniciá‑la como identidade.
+#### C3. Mamba at multiple scales
+- **Change:** one Mamba layer in each of the two deepest decoder levels (stride 128 and 64), projecting 768 → 256 channels, with `out_proj` zeroed.
+- **Cost** ◇: +3 to 5M parameters. Streaming stays possible (one token per level every 128 or 64 samples), but needs per-level state.
+- **Hypothesis:** modelling long context at a finer time resolution as well helps with transients.
 
-#### C5. Escala do Mamba ⚑
-- Variações: `n_layers` ∈ {3, 5}, `d_state` ∈ {16, 64, 128}, `expand` ∈ {2, 4}, e Mamba2 ⚑.
-- Só no ramo de onda, do zero, 30 épocas (~40 min cada). Isso complementa as execuções só‑onda MHA × Mamba da fila 2.
+#### C4. Gated skip connections, or residual projection ⚑ (partial)
+- **Gate:** `x + g ⊙ skip`, with `g = σ(conv1x1([x, skip]))` and an initial bias of +4 (g ≈ 1, which preserves the pretrained weights).
+- **Residual projection:** `residual_projection` ⚑ already exists, but it is initialized randomly, which would break the DNS initialization. It must be initialized as the identity.
 
-#### C6. Latência: E6, E7 e E8 ⚑ (parcial)
-- E6: 190 amostras = 12 ms de antecipação; existe checkpoint do DNS (`CleanUMamba-3N-E6-high`).
-- E7: 382 amostras = 24 ms.
-- E8: 766 amostras = 48 ms.
-- Objetivo: a curva PESQ × latência, também em streaming.
+#### C5. Mamba scale ⚑
+- Variations: `n_layers` ∈ {3, 5}, `d_state` ∈ {16, 64, 128}, `expand` ∈ {2, 4}, and Mamba2 ⚑.
+- Waveform branch only, from scratch, 30 epochs (~40 min each). This complements the waveform-only MHA × Mamba runs of queue 2.
 
-#### C7. Ablações baratas ⚑
-- `glu_activation` (SiLU/GELU) e `encoder_norm: batch` (do CleanUNet_MambaSSM).
-- Só treinando do zero, porque os pesos pré‑treinados assumem a GLU com sigmoid e nenhuma normalização.
+#### C6. Latency: E6, E7 and E8 ⚑ (partial)
+- E6: 190 samples = 12 ms of lookahead; a DNS checkpoint exists (`CleanUMamba-3N-E6-high`).
+- E7: 382 samples = 24 ms.
+- E8: 766 samples = 48 ms.
+- Goal: the PESQ × latency curve, also in streaming.
 
-### Grupo D: objetivos de treino ligados à arquitetura
+#### C7. Cheap ablations ⚑
+- `glu_activation` (SiLU/GELU) and `encoder_norm: batch` (from CleanUNet_MambaSSM).
+- Only when training from scratch, because the pretrained weights assume a sigmoid GLU and no normalization.
 
-#### D1. Perda de consistência entre os ramos
-- `L1(compress|STFT(ŷ)|, sg(Ŝ))`: a saída de onda passa a concordar com a estimativa espectral. Também vale testar a versão simétrica.
-- Pesos ∈ {0,1, 0,5}.
+### Group D: training objectives tied to the architecture
 
-#### D2. Termo de SI‑SDR
-- **Motivação:** 1.5 e 1.7. O PESQ subiu +0,27 enquanto o SI‑SDR caiu −0,37 dB.
-- **Mudança:** somar `λ·(−SI‑SDR)` à perda, com λ ∈ {0,01, 0,05, 0,1} na escala adequada.
-- **Saída do experimento:** a fronteira PESQ × SI‑SDR.
+#### D1. Consistency loss between the branches
+- `L1(compress|STFT(ŷ)|, sg(Ŝ))`: the waveform output is made to agree with the spectral estimate. The symmetric version is also worth testing.
+- Weights ∈ {0.1, 0.5}.
 
-#### D3. Discriminador de métrica (estilo MetricGAN)
-- Uma rede que aprende a prever o PESQ e é usada como discriminador.
-- Risco de artefatos e de instabilidade. Prioridade baixa.
+#### D2. SI-SDR term
+- **Motivation:** 1.5 and 1.7. PESQ went up +0.27 while SI-SDR went down −0.37 dB.
+- **Change:** add `λ·(−SI-SDR)` to the loss, with λ ∈ {0.01, 0.05, 0.1} at the appropriate scale.
+- **Output of the experiment:** the PESQ × SI-SDR frontier.
 
-### Grupo E: eficiência e uso em tempo real
+#### D3. Metric discriminator (MetricGAN style)
+- A network that learns to predict PESQ and is used as a discriminator.
+- Risk of artefacts and instability. Low priority.
 
-#### E1. Destilação: híbrido offline → modelo só de onda causal
-- **Professor:** o melhor híbrido offline (B4 ou C2 bidirecional).
-- **Aluno:** o modelo só de onda causal, E8 ou E6.
-- **Perdas:** L1 + MR‑STFT contra o áudio limpo, mais L1 contra a saída do professor. Opcionalmente, KD de features nas skips, como no CleanUMamba (`cleanumamba/src/util/util.py:259-290`).
-- **Hipótese:** o aluno fecha pelo menos metade da diferença entre os dois.
+### Group E: efficiency and real-time use
 
-#### E2. Poda estruturada (portar o CleanUMamba)
-- Os nomes dos módulos já são compatíveis (`tsfm_Mamba_layers`, `norm_f`).
-- Tamanhos‑alvo: 5M, 2M e 1M parâmetros, com KD.
+#### E1. Distillation: offline hybrid → causal waveform-only model
+- **Teacher:** the best offline hybrid (B4 or bidirectional C2).
+- **Student:** the causal waveform-only model, E8 or E6.
+- **Losses:** L1 + MR-STFT against the clean audio, plus L1 against the teacher output. Optionally, feature KD on the skips, as in CleanUMamba (`cleanumamba/src/util/util.py:259-290`).
+- **Hypothesis:** the student closes at least half of the gap between the two.
 
-#### E3. Streaming do híbrido
-- `Spectrogram(alignment="causal")` ⚑, mais o `step` do Mamba no CleanSpecNet e um buffer de STFT quadro a quadro.
-- Avaliar `n_fft` 512 (janela de 32 ms) para conter a latência.
+#### E2. Structured pruning (port from CleanUMamba)
+- The module names are already compatible (`tsfm_Mamba_layers`, `norm_f`).
+- Target sizes: 5M, 2M and 1M parameters, with KD.
+
+#### E3. Streaming of the hybrid
+- `Spectrogram(alignment="causal")` ⚑, plus the Mamba `step` in CleanSpecNet and a frame-by-frame STFT buffer.
+- Evaluate `n_fft` 512 (32 ms window) to contain the latency.
 
 ---
 
-## 3. Protocolo experimental
+## 3. Experimental protocol
 
-1. **Dados:** treino com 10.802 arquivos, validação com 770 (p226/p287) e teste com 824. Seleção pelo PESQ‑WB de validação; o teste só é usado uma vez, ao final.
-2. **Triagem:** uma semente.
-   - 20 épocas quando o ramo de onda parte dos pesos do DNS; 30 épocas quando o modelo treina do zero.
-   - Passa para a confirmação o que superar a referência pareada (mesma inicialização, LR e número de épocas) em ≥ 0,03 de PESQ na validação, ou em ≥ 2σ entre sementes, quando A5b estiver medido.
-3. **Confirmação:** 3 sementes. Reportar média ± desvio.
-4. **Testes estatísticos:** Wilcoxon pareado por arquivo no teste (PESQ, STOI e SI‑SDR), com correção de Holm.
-5. **Relatório obrigatório para cada variante:**
-   - parâmetros, GMAC por segundo de áudio, tempo por passo e memória de pico;
-   - RTF e latência algorítmica;
-   - resultados por faixa de SNR (as quatro faixas da seção 1.5);
-   - métricas em streaming, quando a variante for causal.
-6. **Comparações de eficiência:** comparar com orçamento igual de épocas e também de tempo de GPU.
-7. **Ferramentas existentes:**
-   - `evaluate.py` (métricas por arquivo e `summary.json`);
-   - `scripts/show_metrics.py` (curvas de treino);
+1. **Data:** training with 10,802 files, validation with 770 (p226/p287) and test with 824. Selection by validation PESQ-WB; the test set is used only once, at the end.
+2. **Screening:** one seed.
+   - 20 epochs when the waveform branch starts from the DNS weights; 30 epochs when the model trains from scratch.
+   - A variant moves on to confirmation if it beats the paired reference (same initialization, LR and number of epochs) by ≥ 0.03 validation PESQ, or by ≥ 2σ between seeds once A5b is measured.
+3. **Confirmation:** 3 seeds. Report mean ± standard deviation.
+4. **Statistical tests:** per-file paired Wilcoxon test on the test set (PESQ, STOI and SI-SDR), with Holm correction.
+5. **Mandatory report for each variant:**
+   - parameters, GMAC per second of audio, time per step and peak memory;
+   - RTF and algorithmic latency;
+   - results per SNR range (the four ranges of section 1.5);
+   - streaming metrics, when the variant is causal.
+6. **Efficiency comparisons:** compare at an equal budget of epochs and also of GPU time.
+7. **Existing tools:**
+   - `evaluate.py` (per-file metrics and `summary.json`);
+   - `scripts/show_metrics.py` (training curves);
    - `torch.utils.flop_counter` (FLOPs).
 
-## 4. Roteiro e orçamento de GPU (RTX 4090)
+## 4. Roadmap and GPU budget (RTX 4090)
 
-Referências de tempo por época:
-- só onda: ~1,3 min ✔;
-- híbrido atual: ~8 min ✔;
-- híbrido com A0: ~3 min ◇;
-- híbrido com A1 ou fusão só no gargalo: ~1,7–2 min ◇.
+Reference times per epoch:
+- waveform-only: ~1.3 min ✔;
+- current hybrid: ~8 min ✔;
+- hybrid with A0: ~3 min ◇;
+- hybrid with A1 or bottleneck-only fusion: ~1.7–2 min ◇.
 
-| Fase | Conteúdo | GPU ◇ | Depende de |
+| Phase | Content | GPU ◇ | Depends on |
 |---|---|---|---|
-| 0 | A0; C1 passo 1 (só inferência); A5 (a, b, c); terminar a fila atual | ~3 h | — |
-| 1 | Fusão: A1 (4 variantes), A2 (b, c, d), A3 | ~6–8 h | A0, A5 |
-| 2 | Ramo espectral: B1, B3, B4; depois B2 | ~6–10 h | Fase 1 |
-| 3 | Ramo de onda: C1 passo 2, C2, C5, C6, C4/C7 | ~8–12 h | A5b |
-| 4 | Objetivos: D1, D2 (varredura de λ); D3 opcional | ~3–5 h | Fases 1–3 |
-| 5 | Implantação: E1, E3, E2 | ~8–12 h | Fases 1–4 |
-| — | Confirmação com 3 sementes dos finalistas | +~50% | — |
+| 0 | A0; C1 step 1 (inference only); A5 (a, b, c); finish the current queue | ~3 h | — |
+| 1 | Fusion: A1 (4 variants), A2 (b, c, d), A3 | ~6–8 h | A0, A5 |
+| 2 | Spectral branch: B1, B3, B4; then B2 | ~6–10 h | Phase 1 |
+| 3 | Waveform branch: C1 step 2, C2, C5, C6, C4/C7 | ~8–12 h | A5b |
+| 4 | Objectives: D1, D2 (λ sweep); D3 optional | ~3–5 h | Phases 1–3 |
+| 5 | Deployment: E1, E3, E2 | ~8–12 h | Phases 1–4 |
+| — | 3-seed confirmation of the finalists | +~50% | — |
 
-## 5. Onde mexer no código
+## 5. Where to change the code
 
-| Proposta | Arquivos | Configuração nova | Teste a acrescentar |
+| Proposal | Files | New configuration | Test to add |
 |---|---|---|---|
-| A0 | `cleanunet/cleanunet2.py` (`SpecUpsampler.forward`) | — | equivalência com `ConvTranspose2d` |
-| A1 | `cleanunet2.py` (nova classe); `cleanunet.py` (`channels_input > 1`); `checkpoint_io.py` (estender `encoder.0.0` com zeros) | `upsampler: {type: freq_proj, channels: 64, out_channels: K}`; `conditioning_type: encoder_concat` | inicialização zero ⇒ saída igual ao ramo de onda |
-| A2 | `cleanunet2.py` (`BottleneckFusion`) | `bottleneck_fusion: {type: film\|concat, shift: 0}`; `use_waveform_conditioning` | idem |
-| A3 | `cleanunet.py` (`decoder_hooks`); `cleanunet2.py` | `multiscale_fusion: [256, 128, 64]` | idem |
-| A4 | novo `cleanunet/postfilter.py` | `postfilter: {...}` | identidade na inicialização |
+| A0 | `cleanunet/cleanunet2.py` (`SpecUpsampler.forward`) | — | equivalence with `ConvTranspose2d` |
+| A1 | `cleanunet2.py` (new class); `cleanunet.py` (`channels_input > 1`); `checkpoint_io.py` (extend `encoder.0.0` with zeros) | `upsampler: {type: freq_proj, channels: 64, out_channels: K}`; `conditioning_type: encoder_concat` | zero initialization ⇒ output equal to the waveform branch |
+| A2 | `cleanunet2.py` (`BottleneckFusion`) | `bottleneck_fusion: {type: film\|concat, shift: 0}`; `use_waveform_conditioning` | same |
+| A3 | `cleanunet.py` (`decoder_hooks`); `cleanunet2.py` | `multiscale_fusion: [256, 128, 64]` | same |
+| A4 | new `cleanunet/postfilter.py` | `postfilter: {...}` | identity at initialization |
 | A5c | `cleanunet2.py` | `shuffle_condition: true` | — |
-| B1 | `cleanspecnet.py` | `output_mode: direct\|residual\|mask` | identidade na inicialização (residual) |
-| B2 | novo `cleanunet/tf_mamba.py` | `backbone: {type: tf_mamba, ...}` | shapes; causalidade no tempo |
+| B1 | `cleanspecnet.py` | `output_mode: direct\|residual\|mask` | identity at initialization (residual) |
+| B2 | new `cleanunet/tf_mamba.py` | `backbone: {type: tf_mamba, ...}` | shapes; causality along time |
 | B3 | `spectral.py` | `compression: pow`; `representation: complex` | — |
-| B4 | `cleanspecnet.py` | `conv_causal`, `backbone_causal` | causalidade |
-| C1 | `streaming.py`; `cleanunet2.py` | `normalization: {type: global\|cumulative\|ema\|warmup, tau}` | streaming = offline com a mesma normalização |
-| C2 | `sequence.py`; `checkpoint_io.py` | `bottleneck: {bidirectional: true}` | identidade na inicialização contra o modelo causal |
-| C3 | `cleanunet.py` | `decoder_mamba_levels: [...]` | causalidade; streaming |
-| C4 | `cleanunet.py` | `skip_gate: true` | identidade aproximada na inicialização |
+| B4 | `cleanspecnet.py` | `conv_causal`, `backbone_causal` | causality |
+| C1 | `streaming.py`; `cleanunet2.py` | `normalization: {type: global\|cumulative\|ema\|warmup, tau}` | streaming = offline with the same normalization |
+| C2 | `sequence.py`; `checkpoint_io.py` | `bottleneck: {bidirectional: true}` | identity at initialization against the causal model |
+| C3 | `cleanunet.py` | `decoder_mamba_levels: [...]` | causality; streaming |
+| C4 | `cleanunet.py` | `skip_gate: true` | approximate identity at initialization |
 | D1, D2 | `lightning_modules/cleanunet_module.py` | `loss.weight_consistency`, `loss.weight_sisdr` | — |
-| E1 | `lightning_modules/` (professor congelado) | `teacher: {architecture, checkpoint}` | — |
-| E3 | `streaming.py` | — | streaming = offline (híbrido) |
+| E1 | `lightning_modules/` (frozen teacher) | `teacher: {architecture, checkpoint}` | — |
+| E3 | `streaming.py` | — | streaming = offline (hybrid) |
 
-Princípio comum: **todo módulo novo começa como identidade**, com a última camada zerada ou uma porta perto de 1. Assim cada variante parte exatamente do modelo de referência pré‑treinado, e a comparação mede o efeito do módulo em vez de uma pior inicialização.
+Common principle: **every new module starts as the identity**, with the last layer zeroed or a gate close to 1. Each variant then starts exactly from the pretrained reference model, and the comparison measures the effect of the module rather than a worse initialization.
 
-## 6. Pontos de decisão e riscos
+## 6. Decision points and risks
 
-**Decisões depois da fila atual:**
+**Decisions after the current queue:**
 
-| Resultado da fila | Decisão |
+| Queue result | Decision |
 |---|---|
-| Híbrido com pesos do DNS (R3) − estágio A no mesmo LR < 0,03, e o controle A5c igual a R3 | O condicionamento atual não ajuda. Priorizar A1/A2 e considerar remover o condicionamento na forma de onda (A2d) |
-| Mamba híbrido do zero (R5) ≥ Transformer (E0), com custo igual ou menor | Mamba vira o backbone padrão nas fases seguintes |
-| C1, passo 1, já fecha o gap do streaming | Não é preciso retreinar com normalização causal |
+| Hybrid with DNS weights (R3) − stage A at the same LR < 0.03, and the A5c control equal to R3 | The current conditioning does not help. Prioritize A1/A2 and consider removing the waveform conditioning (A2d) |
+| Mamba hybrid from scratch (R5) ≥ Transformer (E0), at equal or lower cost | Mamba becomes the default backbone in the next phases |
+| C1, step 1, already closes the streaming gap | No need to retrain with causal normalization |
 
-**Riscos:**
-- **VoiceBank é pequeno** (9,4 h): variantes maiores (B2, C3) podem sofrer overfitting. Mitigação: partir dos pesos do DNS, usar augmentação e early stopping na validação.
-- **Generalização para outros dados:** se o conjunto de teste do DNS (sem reverberação) for baixado, avaliar os finalistas nele sem retreino.
-- **Métricas compostas:** a implementação em Python dá valores diferentes dos publicados (seção 1.1). Comparar só dentro deste repositório.
+**Risks:**
+- **VoiceBank is small** (9.4 h): larger variants (B2, C3) may overfit. Mitigation: start from the DNS weights, use augmentation and early stopping on validation.
+- **Generalization to other data:** if the DNS test set (no reverb) is downloaded, evaluate the finalists on it without retraining.
+- **Composite metrics:** the Python implementation gives values different from the published ones (section 1.1). Compare only within this repository.

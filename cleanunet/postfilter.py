@@ -18,6 +18,11 @@ from .fusion import CausalConv1d, ChannelNorm, init_last
 
 
 class SpectralPostFilter(nn.Module):
+    """Bounded magnitude mask on the STFT of the CleanUNet output (see the module docstring).
+
+    The mask comes from the compressed |Y|, the noisy |X| and a frame-rate condition through a causal convolutional
+    network whose last layer starts at zero, so the module is the identity at initialization.
+    """
     def __init__(self, n_freq: int, cond_dim: int, channels: int = 256, kernel: int = 3, zero_init: str = "last"):
         super().__init__()
         in_dim = 2 * n_freq + cond_dim

@@ -13,6 +13,7 @@ SMALL_UNET = dict(channels_H=16, max_H=64, encoder_n_layers=4, kernel_size=4, st
 
 
 def small_cleanunet2(bottleneck, specnet_backbone, **kw):
+    """A small hybrid CleanUNet2 with the given bottleneck and CleanSpecNet backbone, for fast tests."""
     return CleanUNet2(
         cleanunet_params={**SMALL_UNET, "bottleneck": bottleneck},
         cleanspecnet_params={"conv_hidden_dim": 16, "hidden_dim": 32,

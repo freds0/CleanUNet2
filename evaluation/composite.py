@@ -15,6 +15,7 @@ from scipy.linalg import toeplitz
 
 def wss(clean_speech, processed_speech, sample_rate):
     # Check the length of the clean and processed speech, which must be the same.
+    """Weighted spectral slope distance (Klatt), per frame; returns the frame values used by CSIG/CBAK/COVL."""
     clean_length = np.size(clean_speech)
     processed_length = np.size(processed_speech)
     if clean_length != processed_length:
@@ -212,6 +213,7 @@ def wss(clean_speech, processed_speech, sample_rate):
 
 def llr(clean_speech, processed_speech, sample_rate):
     # Check the length of the clean and processed speech.  Must be the same.
+    """Log-likelihood ratio between the LPC models of clean and processed speech, per frame."""
     clean_length = np.size(clean_speech)
     processed_length = np.size(processed_speech)
     if clean_length != processed_length:
@@ -256,6 +258,7 @@ def llr(clean_speech, processed_speech, sample_rate):
 
 def lpcoeff(speech_frame, model_order):
     # (1) Compute Autocorrelation Lags
+    """Autocorrelation and LPC coefficients of one frame (Levinson-Durbin). Returns (acorr, refcoeff, lpparams)."""
     winlength = np.size(speech_frame)
     R = np.empty(model_order + 1)
     E = np.empty(model_order + 1)
@@ -285,6 +288,7 @@ def lpcoeff(speech_frame, model_order):
 
 def snr(clean_speech, processed_speech, sample_rate):
     # Check the length of the clean and processed speech. Must be the same.
+    """Overall SNR and per-frame segmental SNR (clipped to [-10, 35] dB), as in the MATLAB composite measures."""
     clean_length = len(clean_speech)
     processed_length = len(processed_speech)
     if clean_length != processed_length:

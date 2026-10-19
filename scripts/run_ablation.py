@@ -111,10 +111,15 @@ N9_SCALE = {"conv1d": {"N9_deep": {"backbone.n_layers": 8}, "N9_narrow": {"hidde
 
 
 def log(msg):
+    """Print a timestamped line (the queue log is stdout)."""
     print(f"[{time.strftime('%m-%d %H:%M:%S')}] {msg}", flush=True)
 
 
 class Queue:
+    """Runs trainings, evaluations and scripts one at a time, skipping steps whose results exist.
+
+    Each step waits for enough free GPU memory; ``dry_run`` only prints what would run.
+    """
     def __init__(self, dry_run=False):
         self.dry_run = dry_run
         os.makedirs(LOGS, exist_ok=True)
@@ -123,11 +128,13 @@ class Queue:
     # ------------------------------------------------------------ GPU / processes
     @staticmethod
     def free_mib():
+        """Free memory of GPU 0 in MiB (nvidia-smi)."""
         out = subprocess.run(["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits"],
                              capture_output=True, text=True).stdout
         return int(out.split()[0])
 
     def wait_gpu(self, need):
+        """Block until at least ``need`` MiB are free (no-op in dry-run mode)."""
         announced = False
         while not self.dry_run:
             free = self.free_mib()
@@ -218,6 +225,7 @@ class Queue:
         return None
 
     def evaluate(self, name, ckpt, out_dir, args=(), need=4000):
+        """Run evaluate.py on a checkpoint into ``out_dir`` unless its summary.json exists. Returns success."""
         if os.path.exists(f"{out_dir}/summary.json"):
             return True
         if not self.dry_run and not os.path.exists(ckpt):
@@ -230,6 +238,7 @@ class Queue:
         return rc == 0
 
     def script(self, name, cmd, marker, need=4000):
+        """Run a command unless ``marker`` exists (the command is expected to create it). Returns success."""
         if os.path.exists(marker):
             return True
         self.wait_gpu(need)
@@ -240,6 +249,7 @@ class Queue:
 
 # ------------------------------------------------------------------ helpers
 def arch_path(name):
+    """Path of a fusion preset relative to configs/ablation/ (configs/model/fusion/<name>.yaml)."""
     return f"../model/fusion/{name}.yaml"
 
 
@@ -260,10 +270,12 @@ def spec_branch(q):
 
 
 def spec_tag(spec):
+    """Short name of a spectral-branch spec (B+, B++, Bext); 'Bplus' when unset."""
     return spec.get("tag", "Bplus")
 
 
 def spec_arch(spec):
+    """Architecture of a spectral-branch spec (conv1d, tf_mamba or subband), read from its overrides."""
     for o in spec["overrides"]:
         if o.startswith(f"{SPEC}="):
             return (yaml.safe_load(o.split("=", 1)[1]) or {}).get("architecture", "conv1d")
@@ -271,6 +283,7 @@ def spec_arch(spec):
 
 
 def spec_epochs(spec):
+    """Training epochs of a spectral-branch spec (default 100)."""
     return int(spec.get("epochs", 100))
 
 
@@ -339,6 +352,7 @@ def variant(q, vid, arch, arch_ovr=(), pc1_ovr=(), pc2_ovr=(), seed=1, skip_pc1=
 
 
 def k0(q, seed, epochs=5, name=None, test=False):
+    """Train and evaluate the waveform-only control K0 for one seed (configs/ablation/k0.yaml)."""
     name = name or f"K0_s{seed}"
     ck = q.train(name, "configs/ablation/k0.yaml", [f"seed={seed}", f"trainer.max_epochs={epochs}"])
     if ck:
@@ -356,6 +370,7 @@ def base_run(q, w):
 
 
 def compare(q, name, runs, refs=("K0_s1", "K0_s2", "K0_s3"), split="val"):
+    """Write results/abl/<name>.md: each run against the reference runs (scripts/compare_runs.py)."""
     refs = [f"{RESULTS}/{r}" for r in refs if os.path.exists(f"{RESULTS}/{r}/{split}/metrics.csv")]
     if not refs or q.dry_run:
         return
@@ -384,6 +399,7 @@ def delta_min(refs=("K0_s1", "K0_s2", "K0_s3")):
 def phase0(q):
     # D0: CleanSpecNet candidates (30 epochs each), selection by D1 (PESQ of the CleanSpecNet magnitude
     # with the noisy phase on whole validation utterances), then B+ = winner trained for 100 epochs.
+    """Phase 0: CleanSpecNet candidates (D0) and B+, diagnostics D1-D3, the K0 control and K1 (see the module docstring)."""
     names = []
     for cand, ovr in D0_CANDIDATES.items():
         if q.train(f"D0_{cand}", "configs/ablation/stageB_plus.yaml", list(ovr), need=6000):
@@ -427,6 +443,7 @@ PHASE1 = ["P1_enc_s2", "P2_enc_fine", "P3_bott_pre", "P4_bott_post", "P5_dec_coa
 
 
 def phase1(q):
+    """Phase 1: the injection points P1-P8 against K0 and K1."""
     for p in PHASE1:
         variant(q, p, p)
     compare(q, "phase1", ["K1_F0", *PHASE1])
@@ -437,6 +454,7 @@ def _sig(signal):
 
 
 def phase2(q, w):
+    """Phase 2: the condition signals (S2-S5), the noisy / oracle controls and the spectral-branch quality."""
     runs = []
     for vid, sig, pc2 in (("S2_spec", "spec", []), ("S3_mask", "mask", []), ("S4_hidden_mask", "[spec_hidden, mask]", []),
                           ("K2_noisy", "noisy_spec", ["loss.mode=waveform"]),
@@ -463,6 +481,7 @@ def phase2(q, w):
 
 
 def phase3(q, w, signal=None):
+    """Phase 3: fusion operators, condition generator, resampling and alignment on the phase-1 winner."""
     arch = read_arch(w)
     points = arch["fusion"]["points"]
     frame_rate = all(p in ("bott_pre", "bott_post", "enc_s256", "dec_s256", "skip_s256") for p in points)
@@ -513,6 +532,7 @@ def _final_ovr(w, signal, operator):
 
 
 def phase4(q, w, signal=None, operator=None):
+    """Phase 4: training variants of the fusion (warm-up, fusion learning rate, detach, spectral-loss weight, initialization, oracle curriculum)."""
     ovr = _final_ovr(w, signal, operator)
     tag = f"{w}" + (f"+{signal}" if signal else "") + (f"+{operator}" if operator else "")
     lr5 = "optim.lr_scale={clean_unet: 0.2, clean_spec_net: 0.2, fusion_hub: 5.0, postfilter: 5.0, input_estimate: 5.0}"
@@ -574,6 +594,7 @@ def resolve_finalists(q, finalists, winner):
 
 
 def phase5(q, w, signal=None, operator=None):
+    """Phase 5: regimes, Z1 trained from scratch for 30 epochs and Z2 with the E6 waveform branch."""
     ovr = _final_ovr(w, signal, operator)
     sp = spec_branch(q)
     scratch = ["model.init={}", "optim.lr_scale={}", "trainer.max_epochs=30", *arch_overrides_of(sp["overrides"]),
@@ -650,6 +671,7 @@ def n_run(q, name, overrides, need=8000):
 
 
 def n_overrides(name, base):
+    """Overrides of a track-N run: the base overrides for 'ref', else the ones stored in its spec.json."""
     if name == "ref":
         return list(base)
     with open(f"{RESULTS}/N/{name}/spec.json") as fh:
@@ -669,6 +691,7 @@ def n_score(name):
 
 
 def phaseN(q, with_nc=False, final_factor=10 / 3):
+    """Track N: the CleanSpecNet variants trained and evaluated alone, then B++ (see the module docstring)."""
     sp = bplus(q)
     base = list(sp["overrides"])
     mode = next((o.split("=", 1)[1] for o in base if o.startswith(f"{SPEC}.output_mode=")), "direct")
@@ -955,6 +978,7 @@ EXT_SETTINGS = {"ext50": {"dir": MUSAN, "p": 0.5, "snr_db": [-5, 20]},
 
 def ext_overrides(setting):
     # the external noise is read and mixed in the DataLoader workers
+    """Overrides that add the external noise ``setting`` to a training run."""
     return [f"data.ext_noise={_flow(setting)}", "data.num_workers=16"]
 
 
@@ -969,6 +993,7 @@ def r_eval(q, name, ckpt, split):
 
 
 def r_metrics(name, split):
+    """Diagnostics JSON of a spectral-branch run on a split, or None."""
     path = f"{RESULTS}/N/{name}" + ("" if split == "val" else f"_{split}") + "/diagnostics.json"
     if not os.path.exists(path):
         return None
@@ -977,6 +1002,7 @@ def r_metrics(name, split):
 
 
 def r_score(name, split):
+    """Stand-alone PESQ-WB of a spectral branch (its magnitude with the noisy phase) on a split, or None."""
     m = r_metrics(name, split)
     key = f"cleanspecnet_{name}+noisy_phase"
     return m[key]["pesq_wb"] if m and key in m else None
@@ -1171,6 +1197,7 @@ V6_WEIGHTS = (0.5, 1.0)
 
 
 def load_bext():
+    """The Bext spectral-branch spec chosen by phase R (results/abl/bext.json)."""
     path = f"{RESULTS}/bext.json"
     if not os.path.exists(path):
         raise SystemExit("results/abl/bext.json not found: run phase R first")
@@ -1191,17 +1218,20 @@ def dmin_split(refs, split):
 
 
 def mean_pesq(runs, split):
+    """Mean PESQ-WB of runs on a split; None unless every run has a result."""
     vals = [s["pesq_wb"] for s in (summary_of(r, split) for r in runs) if s]
     return statistics.mean(vals) if len(vals) == len(runs) and vals else None
 
 
 def write_json(name, obj):
+    """Write a decision file results/abl/<name>.json and log it."""
     with open(f"{RESULTS}/{name}.json", "w") as fh:
         json.dump(obj, fh, indent=2)
     log(f"decision written to {RESULTS}/{name}.json: {json.dumps(obj)}")
 
 
 def read_json(name):
+    """Read results/abl/<name>.json, or None."""
     path = f"{RESULTS}/{name}.json"
     if not os.path.exists(path):
         return None
@@ -1609,6 +1639,7 @@ W_DRY = {"W1": {"alpha": 0.5, "blend_w": 0.25, "tta": "flip", "soup_ok": True},
 
 
 def decision(q, name):
+    """Decision file of an earlier phase; in dry-run mode a placeholder when it does not exist yet."""
     d = read_json(name)
     if d is None and q.dry_run:
         return dict(W_DRY.get(name, {}))
@@ -1624,6 +1655,7 @@ def eval_args(split, extra=()):
 
 
 def w_eval(q, run, ckpt, splits, extra=()):
+    """Evaluate a checkpoint on several splits with the arguments of each split."""
     for split in splits:
         q.evaluate(f"{run}_{split}", ckpt, f"{RESULTS}/{run}/{split}", eval_args(split, extra))
 
@@ -1661,6 +1693,7 @@ def ensemble(q, name, inputs, weights, split, robust=False, tag=""):
 
 
 def best_key(scores, default):
+    """Key with the highest score, ignoring None; ``default`` when no score is available."""
     scores = {k: v for k, v in scores.items() if v is not None}
     return max(scores, key=scores.get) if scores else default
 
@@ -2041,6 +2074,7 @@ def phaseWF(q, w):
 
 
 def w_soups(q, w):
+    """Weight soups of the final runs: {soup name: the runs it averages} (control, simple model)."""
     control, simple, _, fix = w_final_runs(q, w)
     soups = {"K0extfull_soup": K0EXTFULL, ("K0ext30p_soup" if fix else "K0ext30_soup"): control}
     if simple:
@@ -2119,6 +2153,7 @@ def phaseWR(q, w):
 
 
 def main():
+    """Parse the arguments and run the requested phases in order."""
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--phases", nargs="+", required=True,
                     choices=["0", "1", "N", "Nd", "Nx", "2", "3", "4", "C", "5", "6", "U", "R", "RT",

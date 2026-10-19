@@ -31,6 +31,7 @@ def average(paths, weights):
 
 
 def main():
+    """Average enhanced waveforms of several systems (optionally weighted) and score the average."""
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--inputs", nargs="+", required=True, help="directories with the enhanced <file>.flac")
     ap.add_argument("--weights", nargs="+", type=float, help="one weight per input (normalized; default: equal)")

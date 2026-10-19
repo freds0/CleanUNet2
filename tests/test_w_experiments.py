@@ -83,9 +83,11 @@ def test_ensemble_teacher_is_the_weighted_mean_of_its_members(tmp_path):
 
 class _Pairs(torch.utils.data.Dataset):
     def __len__(self):
+        """Eight examples."""
         return 8
 
     def __getitem__(self, i):
+        """A reproducible (noisy, clean, id) example of 2048 samples."""
         g = torch.Generator().manual_seed(i)
         clean = torch.randn(1, 2048, generator=g) * 0.1
         return clean + torch.randn(1, 2048, generator=g) * 0.05, clean, str(i)

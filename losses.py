@@ -1,3 +1,10 @@
+"""Training losses.
+
+- ``CleanUNet2Loss``: L1 on the waveform plus the multi-resolution STFT loss (spectral convergence + log magnitude).
+- ``CompressedMagnitudeLoss``: MSE between power-compressed STFT magnitudes.
+- ``AntiWrappingPhaseLoss`` and ``phase_losses``: phase losses with anti-wrapping (MP-SENet style).
+- ``CleanUnetLoss``, ``naive_loss_fn``, ``ComplexL1Loss``: losses of the original code, kept for reference.
+"""
 import math
 
 import torch
@@ -6,12 +13,14 @@ import torch.nn.functional as F
 
 
 def naive_loss_fn(clean_audio, denoised_audio, clean_spec, denoised_spec):
+    """MSE on the waveform plus L1 on the spectrogram (original code, unused)."""
     loss_audio = F.mse_loss(denoised_audio, clean_audio)
     loss_spec = F.l1_loss(denoised_spec, clean_spec)
     return loss_audio + loss_spec
 
 
 class CleanUnetLoss():
+    """CleanUNet loss: L1 or L2 on the waveform plus the weighted multi-resolution STFT loss."""
     def __init__(self, ell_p, ell_p_lambda, stft_lambda, mrstftloss, **kwargs):
         self.ell_p = ell_p
         self.ell_p_lambda = ell_p_lambda
@@ -19,6 +28,7 @@ class CleanUnetLoss():
         self.mrstftloss = mrstftloss
 
     def __call__(self, clean_audio, denoised_audio):
+        """Return (loss, components) for (B, 1, L) waveforms."""
         B, C, L = clean_audio.shape
         output_dic = {}
         loss = 0.0
@@ -54,11 +64,13 @@ class CleanUNet2Loss:
         self.cleanunet_loss = CleanUnetLoss(ell_p, ell_p_lambda, stft_lambda, mrstftloss)
 
     def __call__(self, clean_audio, denoised_audio, return_components=False):
+        """Waveform loss in float32; with ``return_components`` also the per-term values."""
         loss, components = self.cleanunet_loss(clean_audio.float(), denoised_audio.float())
         return (loss, components) if return_components else loss
 
 
 def stft(x, fft_size, shift_size, win_length, window):
+    """Complex STFT with a centered window."""
     window = window.to(x.device)
     x_stft = torch.stft(
         x, n_fft=fft_size, hop_length=shift_size, win_length=win_length,
@@ -68,16 +80,21 @@ def stft(x, fft_size, shift_size, win_length, window):
 
 
 class SpectralConvergenceLoss(nn.Module):
+    """Spectral convergence: ||Y - X||_F / ||Y||_F between magnitudes."""
     def forward(self, x_mag, y_mag):
+        """x_mag: estimate, y_mag: reference; both (B, F, T)."""
         return torch.norm(y_mag - x_mag, p="fro") / torch.norm(y_mag, p="fro")
 
 
 class LogSTFTMagnitudeLoss(nn.Module):
+    """L1 distance between log magnitudes."""
     def forward(self, x_mag, y_mag):
+        """x_mag: estimate, y_mag: reference; both (B, F, T)."""
         return F.l1_loss(torch.log(torch.clamp(y_mag, min=1e-7)), torch.log(torch.clamp(x_mag, min=1e-7)))
 
 
 class STFTLoss(nn.Module):
+    """Spectral convergence and log-magnitude losses at one STFT resolution (``band='high'``: upper half only)."""
     def __init__(self, fft_size=1024, shift_size=120, win_length=600, window="hann_window", band="full"):
         super().__init__()
         self.fft_size = fft_size
@@ -89,6 +106,7 @@ class STFTLoss(nn.Module):
         self.log_stft_magnitude_loss = LogSTFTMagnitudeLoss()
 
     def forward(self, x, y):
+        """Return (sc_loss, mag_loss) for waveforms x (estimate) and y (reference), (B, L)."""
         x_mag = stft(x, self.fft_size, self.shift_size, self.win_length, self.window).abs()
         y_mag = stft(y, self.fft_size, self.shift_size, self.win_length, self.window).abs()
 
@@ -103,6 +121,7 @@ class STFTLoss(nn.Module):
 
 
 class MultiResolutionSTFTLoss(nn.Module):
+    """Average of ``STFTLoss`` over several resolutions, weighted by sc_lambda and mag_lambda."""
     def __init__(
         self,
         fft_sizes=[1024, 2048, 512],
@@ -123,6 +142,7 @@ class MultiResolutionSTFTLoss(nn.Module):
         ])
 
     def forward(self, x, y):
+        """Return (weighted sc_loss, weighted mag_loss) for (B, L) or (B, 1, L) waveforms."""
         if len(x.shape) == 3:
             x = x.view(-1, x.size(2))
             y = y.view(-1, y.size(2))
@@ -152,16 +172,19 @@ class CompressedMagnitudeLoss(nn.Module):
         self.register_buffer("window", torch.hann_window(n_fft), persistent=False)
 
     def magnitude(self, x):
+        """Power-compressed STFT magnitude (B, F, T) in float32."""
         x = x.float().reshape(x.shape[0], -1)
         X = torch.stft(x, self.n_fft, self.hop_length, self.n_fft, self.window.to(x.device), return_complex=True)
         return (X.real ** 2 + X.imag ** 2 + 1e-9).sqrt() ** self.power
 
     def forward(self, est, ref):
+        """MSE between the compressed magnitudes of estimate and reference."""
         with torch.autocast(device_type=est.device.type, enabled=False):
             return F.mse_loss(self.magnitude(est), self.magnitude(ref))
 
 
 class AntiWrappingPhaseLoss(nn.Module):
+    """Instantaneous phase, group delay and instantaneous frequency losses with anti-wrapping."""
     def __init__(self, n_fft=1024, hop_length=256, win_length=1024, window="hann_window", eps=1e-8):
         super().__init__()
         self.n_fft = n_fft
@@ -209,7 +232,9 @@ class AntiWrappingPhaseLoss(nn.Module):
 
 # Alternative to AntiWrappingPhaseLoss
 class ComplexL1Loss(nn.Module):
+    """Mean absolute difference of complex STFTs (n_fft 1024); original code, unused."""
     def forward(self, est_wave, clean_wave):
+        """est_wave, clean_wave: (B, L)."""
         est_stft = torch.stft(est_wave, n_fft=1024, return_complex=True)
         clean_stft = torch.stft(clean_wave, n_fft=1024, return_complex=True)
         

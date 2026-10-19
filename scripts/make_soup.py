@@ -13,6 +13,7 @@ import torch
 
 
 def soup(paths):
+    """Average the state dicts of checkpoints with the same architecture (integer buffers: the first one's). Returns {state_dict, hyper_parameters, soup_of}."""
     ckpts = [torch.load(p, map_location="cpu", weights_only=False) for p in paths]
     arch = ckpts[0]["hyper_parameters"]["model"]["architecture"]
     for p, c in zip(paths[1:], ckpts[1:]):
@@ -32,6 +33,7 @@ def soup(paths):
 
 
 def main():
+    """Average --ckpts into --out."""
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--ckpts", nargs="+", required=True)
     ap.add_argument("--out", required=True)

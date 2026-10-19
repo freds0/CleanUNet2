@@ -25,6 +25,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def load16(path):
+    """Read a 48 kHz VCTK file, downmix to mono and resample to 16 kHz."""
     x, fs = sf.read(path, dtype="float64")
     if x.ndim > 1:
         x = x.mean(1)
@@ -34,6 +35,7 @@ def load16(path):
 
 
 def vb_speakers(data_dir):
+    """Speaker IDs used by VoiceBank-DEMAND (train and test)."""
     return {os.path.basename(f)[:4] for split in ("train", "test")
             for f in glob.glob(os.path.join(data_dir, split, "clean", "*.flac"))}
 
@@ -49,6 +51,7 @@ def align(ref, x):
 
 
 def calibrate(args):
+    """Compare VoiceBank-DEMAND test files with mic1 / mic2 of VCTK: correlation, gain, offset and length."""
     files = sorted(glob.glob(os.path.join(args.data_dir, "test", "clean", "*.flac")))[::10]
     rows = {m: [] for m in ("mic1", "mic2")}
     for f in files:
@@ -75,6 +78,7 @@ def calibrate(args):
 
 
 def make(args):
+    """Write --per_speaker clean utterances of every unused speaker and the clean filelist."""
     rng = np.random.default_rng(args.seed)
     root = os.path.join(args.vctk_dir, "wav48_silence_trimmed")
     used = vb_speakers(args.data_dir)
@@ -111,6 +115,7 @@ def make(args):
 
 
 def main():
+    """Parse the arguments and run ``calibrate`` or ``make``."""
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--vctk_dir", default="/home/fred/DATASETS/VCTK_dl_20261016/extracted")
     ap.add_argument("--data_dir", default="/home/fred/DATASETS/VoiceBank-DEMAND-16k")

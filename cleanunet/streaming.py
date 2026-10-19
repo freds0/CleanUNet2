@@ -22,6 +22,13 @@ from .sequence import make_inference_params
 
 
 class StreamingCleanUNet:
+    """Constant-memory streaming wrapper around a Mamba CleanUNet.
+
+    Audio is fed in chunks of any size; every hop of ``total_stride`` samples produces one bottleneck token, so the
+    Mamba layers run in single-token mode with cached states. The encoder and decoder keep the small buffers their
+    convolutions need. The output matches offline inference except for the input normalization, which here is a
+    running estimate (see ``__init__``).
+    """
     def __init__(self, net, normalize_input: bool = True, prior_std: float = None, prior_frames: float = 0.0):
         """With normalize_input, every frame is divided by the running mean of the per-frame std. `prior_std` /
         `prior_frames` start that mean from `prior_frames` pseudo-frames at `prior_std`: without them the first
@@ -42,6 +49,7 @@ class StreamingCleanUNet:
         self.reset()
 
     def reset(self):
+        """Clear all buffers and states before a new utterance."""
         p = next(self.net.parameters())
         self.pending = torch.zeros(self.net.channels_input, 0, device=p.device, dtype=p.dtype)
         self.state = {}
@@ -52,6 +60,7 @@ class StreamingCleanUNet:
 
     @property
     def time_per_frame(self) -> float:
+        """Mean processing time per frame so far, in seconds."""
         return self.total_time / self.frames if self.frames else 0.0
 
     @torch.no_grad()

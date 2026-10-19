@@ -63,11 +63,14 @@ class ChannelNorm(nn.Module):
         self.norm = nn.LayerNorm(channels, elementwise_affine=affine)
 
     def forward(self, x):
+        """LayerNorm over the channel axis of (B, C, T)."""
         return self.norm(x.transpose(1, 2)).transpose(1, 2)
 
 
 class CausalConv1d(nn.Conv1d):
+    """Conv1d with left padding only, so output frame t depends on frames <= t."""
     def forward(self, x):
+        """Left-pad by kernel_size - 1 and convolve."""
         k = self.kernel_size[0]
         return super().forward(F.pad(x, (k - 1, 0)) if k > 1 else x)
 
@@ -90,6 +93,7 @@ class CondTrunk(nn.Module):
         self.out_dim = dim
 
     def forward(self, c):
+        """Shared trunk: normalized condition (B, D, T) -> features for the per-point heads."""
         return self.net(self.in_norm(c))
 
 
@@ -238,6 +242,7 @@ class FusionHub(nn.Module):
                                             zero_init=zero_init, pool=pool, **opts)
 
     def hooks(self, cond: torch.Tensor) -> dict:
+        """Run the trunk once and return {point name: hook(features) -> modulated features}."""
         z = self.trunk(cond)
         return {name: (lambda h, m=m: m(h, z)) for name, m in self.points.items()}
 
@@ -254,6 +259,7 @@ class InputEstimateFusion(nn.Module):
         init_last(self.out, zero_init)
 
     def forward(self, h: torch.Tensor, est: torch.Tensor, cleanunet) -> torch.Tensor:
+        """Add a projection of the spectral waveform estimate to the first encoder features."""
         from .cleanunet import padding
         e = padding(est.to(h.dtype), cleanunet.encoder_n_layers, cleanunet.kernel_size, cleanunet.stride)
         e = self.out(self.act(self.conv(e)))

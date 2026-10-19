@@ -149,6 +149,7 @@ class TorchMamba(nn.Module):
         return self.out_proj(y.to(self.out_proj.weight.dtype)).unsqueeze(1).to(dtype)
 
     def allocate_inference_cache(self, batch_size, max_seqlen=1, dtype=None, **kwargs):
+        """Zero convolution and SSM states for single-token (streaming) steps."""
         device = self.out_proj.weight.device
         cd = self._compute_dtype()
         conv_state = torch.zeros(batch_size, self.d_inner, self.d_conv, device=device, dtype=cd)

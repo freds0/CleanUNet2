@@ -17,16 +17,19 @@ F_BINS = 33
 
 
 def conv1d_net(**kw):
+    """A small 1-D CleanSpecNet with a Mamba backbone."""
     return CleanSpecNet(input_channels=F_BINS, conv_hidden_dim=8, hidden_dim=16, num_conv_layers=2,
                         backbone=MAMBA, **kw)
 
 
 def tf_net(**kw):
+    """A small dual-path time-frequency Mamba spectral branch."""
     return TFMambaSpecNet(input_channels=F_BINS, channels=8, n_blocks=2, d_state=8, hidden_dim=16,
                           hidden_subbands=4, backend="torch", **kw)
 
 
 def subband_net(**kw):
+    """A small sub-band spectral branch with a 1-D full-band model."""
     return SubbandSpecNet(input_channels=F_BINS, neighbors=3, d_model=8, n_layers=1, d_state=8, backend="torch",
                           fullband={"conv_hidden_dim": 8, "hidden_dim": 16, "num_conv_layers": 2,
                                     "backbone": MAMBA}, **kw)
@@ -105,6 +108,7 @@ def test_phase_losses_ignore_wrapping():
 
 
 def hybrid(spec_params, spectrogram=None, **kw):
+    """A small hybrid CleanUNet2 (Mamba bottleneck) with the given spectral-branch parameters."""
     torch.manual_seed(0)
     return CleanUNet2(
         cleanunet_params=dict(channels_H=8, max_H=16, encoder_n_layers=4, kernel_size=4, stride=2,

@@ -47,6 +47,7 @@ class SpecUpsampler(nn.Module):
         self.act2 = nn.LeakyReLU(leaky_slope)
 
     def forward(self, spec: torch.Tensor) -> torch.Tensor:
+        """(B, F, T) spectrogram -> (B, 1, T * hop) waveform-rate condition."""
         x = spec.unsqueeze(1) if spec.dim() == 3 else spec      # (B, 1, F, T)
         x = self.act2(self.up2(self.act1(self.up1(x))))
         return x.mean(dim=2)                                     # (B, 1, T * hop)
@@ -95,6 +96,7 @@ class Conditioner(nn.Module):
             raise ValueError(f"Unknown conditioning method '{method}'. Use: addition, concatenation, film")
 
     def forward(self, waveform: torch.Tensor, condition: torch.Tensor) -> torch.Tensor:
+        """Combine the waveform (B, C, L) with the upsampled condition (B, C', L)."""
         if self.method == "addition":
             return waveform + (self.alpha * condition if self.zero_init else condition)
         if self.method == "concatenation":
@@ -130,6 +132,15 @@ class BottleneckFusion(nn.Module):
 
 
 class CleanUNet2(nn.Module):
+    """Hybrid denoiser: CleanSpecNet on the spectrogram feeds CleanUNet on the waveform.
+
+    The input is normalized once by its standard deviation, and the model computes its own STFT
+    (``cleanunet.spectral.Spectrogram``), so training, inference and the spectral loss share one transform. The
+    spectral branch can condition the waveform branch in three ways, alone or together: the original upsampled
+    waveform condition (``conditioning_type``), FiLM in the CleanUNet bottleneck (``bottleneck_fusion``), and the
+    generic fusion hub (``fusion``: named injection points, post-filter, input estimate, Mamba exchange).
+    ``use_spec_branch: false`` gives a waveform-only CleanUNet with the same checkpoint layout.
+    """
     def __init__(self,
                  conditioning_type: str = "addition",
                  cleanunet_params: dict = None,

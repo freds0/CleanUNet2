@@ -16,6 +16,7 @@ import yaml
 
 
 def deep_merge(base: dict, override: dict) -> dict:
+    """Recursively merge ``override`` into a copy of ``base`` (dicts are merged, other values replaced)."""
     out = copy.deepcopy(base)
     for k, v in (override or {}).items():
         if isinstance(v, dict) and isinstance(out.get(k), dict):
@@ -26,6 +27,7 @@ def deep_merge(base: dict, override: dict) -> dict:
 
 
 def load_yaml(path: str) -> dict:
+    """Load a YAML file and resolve its ``base`` inheritance (paths relative to the file)."""
     with open(path, "r", encoding="utf-8") as fh:
         cfg = yaml.safe_load(fh) or {}
     bases = cfg.pop("base", None)

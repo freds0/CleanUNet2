@@ -42,6 +42,7 @@ TTA_SHIFTS = (0, 64, 128, 192)
 
 
 def build_model(args):
+    """Build CleanUNet2 from --config, --architecture or the config stored in a Lightning checkpoint, and load the weights."""
     from cleanunet.cleanunet2 import CleanUNet2
     if args.config:
         arch = load_config(args.config)["model"]["architecture"]
@@ -65,6 +66,7 @@ def _fit_length(x: torch.Tensor, L: int) -> torch.Tensor:
 
 
 def input_snr(clean: np.ndarray, noisy: np.ndarray) -> float:
+    """SNR of the noisy input in dB, with noise = noisy - clean."""
     noise = noisy - clean
     return float(10 * np.log10((clean ** 2).sum() / max((noise ** 2).sum(), 1e-12) + 1e-12))
 
@@ -132,6 +134,7 @@ def snr_summary(results, snrs, edges):
 
 
 def default_snr_edges(filelist: str) -> str:
+    """Input-SNR bin edges for the per-SNR breakdown of a file list."""
     return "5,10,15" if "test" in os.path.basename(filelist) else "2.5,7.5,12.5"
 
 
@@ -148,6 +151,7 @@ def write_results(out_dir, names, snrs, results, summary, args_dict):
 
 
 def print_summary(summary):
+    """Print the averaged metrics and PESQ-WB per input-SNR bin."""
     print(json.dumps({k: round(v, 4) if isinstance(v, float) else v for k, v in summary.items()
                       if k != "by_snr"}, indent=2))
     print("PESQ-WB by input SNR: " + ", ".join(f"{k}: {v.get('pesq_wb', float('nan')):.3f} (n={v['n_files']})"
@@ -155,6 +159,7 @@ def print_summary(summary):
 
 
 def main():
+    """Parse the arguments, enhance every file of the list, compute the metrics and write metrics.csv / summary.json."""
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--config", help="training YAML (its model.architecture is used)")
     p.add_argument("--architecture", help="model architecture YAML (alternative to --config)")

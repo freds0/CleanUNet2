@@ -1,3 +1,10 @@
+"""CleanSpecNet: the spectrogram denoiser of CleanUNet2.
+
+It maps a compressed noisy magnitude (B, F, T) to an enhanced one with a front end (convolutional blocks or a
+per-frame linear projection), a sequence backbone over time frames (Transformer, Mamba, Mamba2 or LSTM, causal or
+bidirectional) and a 1-D output layer. The output can be a direct estimate, a residual correction or a bounded mask.
+``safe_atan2`` gives the optional phase head a bounded gradient.
+"""
 from typing import Optional
 
 import torch
@@ -45,12 +52,14 @@ class _SafeAtan2(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, y: Tensor, x: Tensor, eps: float) -> Tensor:
+        """atan2(y, x); saves the inputs for the bounded backward pass."""
         ctx.save_for_backward(y, x)
         ctx.eps = eps
         return torch.atan2(y, x)
 
     @staticmethod
     def backward(ctx, grad: Tensor):
+        """Gradient of atan2 with eps added to x^2 + y^2, so it stays bounded near the origin."""
         y, x = ctx.saved_tensors
         r2 = x * x + y * y + ctx.eps
         return grad * x / r2, -grad * y / r2, None

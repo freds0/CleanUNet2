@@ -77,6 +77,7 @@ class BiMambaMixer(nn.Module):
         self.bwd = mixer_fn()
 
     def forward(self, x, inference_params=None):
+        """Sum of a forward Mamba and a Mamba run on the time-reversed sequence (offline only)."""
         if inference_params is not None:
             raise RuntimeError("Bidirectional Mamba cannot run in streaming mode")
         return self.fwd(x) + self.bwd(x.flip(1)).flip(1)
@@ -92,6 +93,7 @@ class MambaBlock(nn.Module):
         self.residual_in_fp32 = residual_in_fp32
 
     def forward(self, hidden_states, residual=None, inference_params=None):
+        """Pre-norm residual block (mamba_ssm layout). Returns (hidden_states, residual)."""
         residual = hidden_states if residual is None else hidden_states + residual
         hidden_states = self.norm(residual.to(dtype=self.norm.weight.dtype))
         if self.residual_in_fp32:
@@ -147,6 +149,7 @@ class MambaStack(nn.Module):
         self.layers, self.norm_f = build_mamba_layers(d_model, n_layers, **kwargs)
 
     def forward(self, x, inference_params=None):
+        """(B, T, d_model) -> (B, T, d_model) through the blocks and the final norm."""
         return run_mamba_layers(self.layers, self.norm_f, x, inference_params)
 
 
@@ -159,4 +162,5 @@ class LSTMStack(nn.Module):
         self.proj = nn.Linear(2 * d_model, d_model) if bidirectional else nn.Identity()
 
     def forward(self, x, inference_params=None):
+        """(B, T, d_model) -> (B, T, d_model); a bidirectional LSTM is projected back to d_model."""
         return self.proj(self.lstm(x)[0])

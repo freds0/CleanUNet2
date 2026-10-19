@@ -42,6 +42,7 @@ def _instantiate(cfg: dict, registry: dict, kind: str):
 
 
 def build_callbacks(callbacks_config: dict):
+    """Instantiate the callbacks of the ``callbacks`` config section (ModelCheckpoint, ...)."""
     callbacks = [_instantiate(c, _CALLBACKS, "Callback") for c in (callbacks_config or {}).values()
                  if isinstance(c, dict)]
     return [c for c in callbacks if c is not None]
@@ -63,6 +64,10 @@ def build_logger(logger_config: dict):
 
 
 def train(config: dict):
+    """Train with a resolved config: seed, data module, Lightning module, logger, callbacks and Trainer.
+
+    Resumes from ``resume_from_checkpoint`` when that file exists (a missing file starts a new run).
+    """
     for section in ("data", "trainer", "model"):
         if section not in config:
             raise KeyError(f"Missing '{section}' section in config.")
@@ -96,6 +101,7 @@ def train(config: dict):
 
 
 def parse_args():
+    """``--config`` plus dotted ``key=value`` overrides."""
     parser = argparse.ArgumentParser(description="Train CleanUNet2 using a YAML configuration.")
     parser.add_argument("--config", type=str, required=True, help="Path to YAML config file.")
     parser.add_argument("overrides", nargs="*", help="Dotted overrides, e.g. trainer.max_steps=1000")

@@ -38,11 +38,13 @@ TEST_SNRS = (2.5, 7.5, 12.5, 17.5)
 
 
 def snr_db(clean, noise, fs, p56):
+    """SNR of (clean, noise) in dB, with the P.56 active speech level or the plain mean power."""
     speech = active_speech_power(clean, fs) if p56 else float(np.mean(clean ** 2))
     return 10 * np.log10(speech / max(float(np.mean(noise ** 2)), 1e-20))
 
 
 def read_log(path):
+    """{id: (noise label, SNR)} from a VoiceBank-DEMAND log file."""
     with open(path) as fh:
         return {f[0]: (f[1], float(f[2])) for f in (line.split() for line in fh) if len(f) == 3}
 
@@ -72,6 +74,7 @@ def check(args):
 
 
 def make(args):
+    """Mix the clean utterances of --filelist with the unused DEMAND environments and write the new split."""
     rng = np.random.default_rng(args.seed)
     noises = {}
     for env, label in DEMAND_UNUSED.items():
@@ -131,6 +134,7 @@ def make(args):
 
 
 def main():
+    """Build a split, or only compare SNR measures with --check_log."""
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--data_dir", default="/home/fred/DATASETS/VoiceBank-DEMAND-16k")
     ap.add_argument("--demand_dir", default="/home/fred/DATASETS/DEMAND")
