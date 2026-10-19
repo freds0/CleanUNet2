@@ -1,0 +1,3 @@
+# P4: bottleneck after the Mamba layers (before tsfm_conv2).
+base: base.yaml
+fusion: {points: {bott_post: {op: film_tanh}}}

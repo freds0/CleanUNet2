@@ -1,0 +1,4 @@
+# E6 ablation - Mamba2 bottleneck (requires the mamba_ssm CUDA kernels).
+base: cleanunet_mamba_e8.yaml
+cleanunet_params:
+  bottleneck: {type: mamba2, n_layers: 3, d_model: 512, d_state: 64, d_conv: 4, expand: 2, headdim: 64, backend: cuda}

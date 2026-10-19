@@ -1,0 +1,2 @@
+# K1/F0: original CleanUNet2 conditioning (SpecUpsampler + zero-init FiLM on the waveform).
+base: ../cleanunet2_mamba_e8.yaml

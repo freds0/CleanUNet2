@@ -1,0 +1,3 @@
+# P8: late TF fusion (O8): bounded spectral mask on the CleanUNet output. Offline (adds STFT lookahead).
+base: base.yaml
+fusion: {points: {out: {channels: 256, kernel: 3}}}

@@ -1,0 +1,5 @@
+# E4 - offline variant: non-causal CleanSpecNet with a bidirectional Mamba backbone.
+base: cleanunet2_mamba_e8.yaml
+cleanspecnet_params:
+  causal: false
+  backbone: {type: mamba, n_layers: 5, d_state: 64, d_conv: 4, expand: 2, bidirectional: true, backend: auto}

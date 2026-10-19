@@ -1,0 +1,18 @@
+# Short protocol, step 2 (IMPROVEMENT_PLAN.md 3.2): joint fine-tuning from the last checkpoint of PC-1.
+base: ../base.yaml
+trainer:
+  max_epochs: 5
+  limit_val_batches: 0           # the final checkpoint (LR -> 0) is evaluated with evaluate.py
+  num_sanity_val_steps: 0
+model:
+  architecture: ../model/fusion/P3_bott_pre.yaml
+  init:
+    full_checkpoint: logs/abl/pc1/checkpoints/last.ckpt
+loss: {mode: hybrid}
+optim:
+  lr: 1.0e-4
+  lr_scale: {clean_unet: 0.2, clean_spec_net: 0.2}
+callbacks:
+  best_checkpoint: {monitor: null, save_top_k: 1, filename: "epoch{epoch}", dirpath: logs/abl/pc2/checkpoints}
+logger:
+  tensorboard: {name: abl/pc2}

@@ -1,0 +1,9 @@
+# E6 ablation - unidirectional LSTM bottleneck.
+use_spec_branch: false
+cleanunet_params:
+  channels_H: 64
+  max_H: 768
+  encoder_n_layers: 8
+  kernel_size: 4
+  stride: 2
+  bottleneck: {type: lstm, n_layers: 3, d_model: 512}

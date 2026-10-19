@@ -1,0 +1,9 @@
+# E0 - corrected CleanUNet2 baseline (Transformer bottleneck + Transformer CleanSpecNet), from scratch.
+base: base.yaml
+model:
+  architecture: model/cleanunet2_transformer.yaml
+callbacks:
+  best_checkpoint: {dirpath: logs/e0_transformer/checkpoints}
+logger:
+  tensorboard: {name: e0_transformer}
+  wandb: {name: e0_transformer}

@@ -1,0 +1,11 @@
+# CleanUNet2-Mamba: Mamba bottleneck (CleanUMamba-E8 layout) + causal Mamba CleanSpecNet (~52.6M params).
+# Zero-initialized FiLM conditioning: at initialization the model equals its waveform branch.
+base: cleanunet_mamba_e8.yaml
+use_spec_branch: true
+conditioning_type: film
+conditioning_zero_init: true
+bottleneck_fusion: false
+spectrogram: {n_fft: 1024, hop_length: 256, win_length: 1024, alignment: center, compression: log1p}
+cleanspecnet_params:
+  causal: true
+  backbone: {type: mamba, n_layers: 5, d_state: 64, d_conv: 4, expand: 2, backend: auto}

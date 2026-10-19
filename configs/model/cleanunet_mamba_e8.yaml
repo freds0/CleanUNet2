@@ -1,0 +1,18 @@
+# Stage A - waveform-only CleanUNet with a 3-layer Mamba bottleneck (identical to CleanUMamba-3N-E8, 41.4M).
+# Lookahead 48 ms (frame 766 samples, hop 256). Loads the official CleanUMamba checkpoints directly.
+use_spec_branch: false
+cleanunet_params:
+  channels_H: 64
+  max_H: 768
+  encoder_n_layers: 8
+  kernel_size: 4
+  stride: 2
+  bottleneck:
+    type: mamba
+    n_layers: 3
+    d_model: 512
+    d_state: 64          # = d_model / n_head in CleanUMamba
+    d_conv: 4
+    expand: 4            # = d_inner / d_model in CleanUMamba
+    residual_in_fp32: true
+    backend: auto        # auto | cuda | torch

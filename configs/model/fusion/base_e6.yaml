@@ -1,0 +1,6 @@
+# Fusion ablation Z2: E6 waveform branch (6 levels, 12 ms lookahead, CleanUMamba-3N-E6 layout) with a
+# causal STFT (frame j uses samples up to (j+1)*256). 4 bottleneck tokens per STFT frame.
+base: base.yaml
+cleanunet_params:
+  encoder_n_layers: 6
+spectrogram: {alignment: causal}

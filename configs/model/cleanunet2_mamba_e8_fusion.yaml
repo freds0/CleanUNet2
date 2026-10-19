@@ -1,0 +1,4 @@
+# E5 - CleanUNet2-Mamba + bottleneck fusion (CleanSpecNet hidden features FiLM the CleanUNet bottleneck;
+# STFT hop 256 == U-Net total stride 2^8). Fusion is identity at initialization.
+base: cleanunet2_mamba_e8.yaml
+bottleneck_fusion: true

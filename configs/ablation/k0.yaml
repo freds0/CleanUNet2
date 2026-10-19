@@ -1,0 +1,17 @@
+# K0 control (IMPROVEMENT_PLAN.md 3.3): waveform-only stage A with the same extra training as PC-2
+# (5 epochs, waveform-branch LR 2e-5). Run with seeds 1, 2, 3.
+base: ../base.yaml
+trainer:
+  max_epochs: 5
+  limit_val_batches: 0
+  num_sanity_val_steps: 0
+model:
+  architecture: ../model/cleanunet_mamba_e8.yaml
+  init:
+    cleanunet_checkpoint: logs/stageA_cleanunet_mamba/checkpoints/best-epoch016-pesq2.755.ckpt
+loss: {mode: waveform}
+optim: {lr: 2.0e-5}
+callbacks:
+  best_checkpoint: {monitor: null, save_top_k: 1, filename: "epoch{epoch}", dirpath: logs/abl/K0/checkpoints}
+logger:
+  tensorboard: {name: abl/K0}

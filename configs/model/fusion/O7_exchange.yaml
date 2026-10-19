@@ -1,0 +1,3 @@
+# O7: bidirectional exchange between the CleanUNet bottleneck Mamba stack and the CleanSpecNet backbone.
+base: base.yaml
+fusion: {exchange: true}

@@ -1,0 +1,4 @@
+# P6: fine decoder levels (strides 16-2).
+base: base.yaml
+fusion:
+  points: {dec_s16: {op: film_tanh}, dec_s8: {op: film_tanh}, dec_s4: {op: film_tanh}, dec_s2: {op: film_tanh}}

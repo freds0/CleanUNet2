@@ -1,0 +1,9 @@
+# E6 ablation - causal multi-head attention bottleneck (original CleanUNet, 3 layers).
+use_spec_branch: false
+cleanunet_params:
+  channels_H: 64
+  max_H: 768
+  encoder_n_layers: 8
+  kernel_size: 4
+  stride: 2
+  bottleneck: {type: transformer, n_layers: 3, n_head: 8, d_model: 512, d_inner: 2048, causal: true}

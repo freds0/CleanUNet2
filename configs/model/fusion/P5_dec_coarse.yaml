@@ -1,0 +1,4 @@
+# P5: coarse decoder levels (strides 256-32).
+base: base.yaml
+fusion:
+  points: {dec_s256: {op: film_tanh}, dec_s128: {op: film_tanh}, dec_s64: {op: film_tanh}, dec_s32: {op: film_tanh}}

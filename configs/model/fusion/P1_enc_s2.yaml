@@ -1,0 +1,3 @@
+# P1: per-channel FiLM after the first encoder level (learned filterbank, stride 2).
+base: base.yaml
+fusion: {points: {enc_s2: {op: film_tanh}}}

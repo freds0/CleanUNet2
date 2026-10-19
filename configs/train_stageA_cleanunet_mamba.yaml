@@ -1,0 +1,16 @@
+# Stage A2 - waveform-only CleanUNet-Mamba (E8) fine-tuned from the official CleanUMamba DNS checkpoint.
+# Stage A1 (from scratch): add the override  model.init={}  and  optim.lr=1e-4
+base: base.yaml
+model:
+  architecture: model/cleanunet_mamba_e8.yaml
+  init:
+    cleanunet_from_cleanumamba: ../cleanumamba/checkpoints/models/CleanUMamba-3N-E8-full.pkl
+loss:
+  mode: waveform
+optim:
+  lr: 5.0e-5
+callbacks:
+  best_checkpoint: {dirpath: logs/stageA_cleanunet_mamba/checkpoints}
+logger:
+  tensorboard: {name: stageA_cleanunet_mamba}
+  wandb: {name: stageA_cleanunet_mamba}

@@ -1,0 +1,4 @@
+# P2: fine encoder levels (strides 2-16).
+base: base.yaml
+fusion:
+  points: {enc_s2: {op: film_tanh}, enc_s4: {op: film_tanh}, enc_s8: {op: film_tanh}, enc_s16: {op: film_tanh}}

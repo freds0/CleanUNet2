@@ -1,0 +1,4 @@
+# S5: time-domain estimate iSTFT(CleanSpecNet magnitude, noisy phase) added at the first encoder level.
+# Offline (the iSTFT adds up to 64 ms of lookahead).
+base: base.yaml
+fusion: {input_estimate: true}

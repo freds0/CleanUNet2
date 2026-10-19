@@ -1,0 +1,16 @@
+# Stage B - CleanSpecNet-Mamba alone (L1 on the compressed spectrogram); the waveform branch is frozen/unused.
+base: base.yaml
+model:
+  architecture: model/cleanunet2_mamba_e8.yaml
+  train_cleanunet: false
+loss:
+  mode: spec
+callbacks:
+  best_checkpoint:
+    monitor: val_loss
+    mode: min
+    filename: "best-epoch{epoch:03d}-loss{val_loss:.4f}"
+    dirpath: logs/stageB_cleanspecnet_mamba/checkpoints
+logger:
+  tensorboard: {name: stageB_cleanspecnet_mamba}
+  wandb: {name: stageB_cleanspecnet_mamba}

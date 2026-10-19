@@ -1,0 +1,17 @@
+# CleanUNet2-Mamba with the dual-path time-frequency Mamba CleanSpecNet (IMPROVEMENT_PLAN.md, N2):
+# Mamba over time (causal, per frequency bin) + bidirectional Mamba over frequency (per frame),
+# power-law compression and a bounded mask output.
+base: cleanunet2_mamba_e8.yaml
+spectrogram: {compression: pow}
+cleanspecnet_params:
+  architecture: tf_mamba
+  backbone: null                 # the conv1d backbone settings of the base file do not apply
+  causal: true
+  output_mode: mask
+  channels: 64
+  full_res_channels: 16
+  n_blocks: 4
+  freq_downsample: 2
+  d_state: 16
+  predict_phase: false
+  input_features: mag            # mag | mag_phase

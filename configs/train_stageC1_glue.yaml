@@ -1,0 +1,18 @@
+# Stage C1 - both pretrained branches frozen; only the upsampler + (zero-init) conditioner are trained.
+# Set the two checkpoint paths to the best checkpoints of stages A and B.
+base: base.yaml
+trainer:
+  max_steps: 5000
+  max_epochs: -1
+model:
+  architecture: model/cleanunet2_mamba_e8.yaml
+  init:
+    cleanunet_checkpoint: logs/stageA_cleanunet_mamba/checkpoints/last.ckpt
+    cleanspecnet_checkpoint: logs/stageB_cleanspecnet_mamba/checkpoints/last.ckpt
+  train_cleanunet: false
+  train_cleanspecnet: false
+callbacks:
+  best_checkpoint: {dirpath: logs/stageC1_glue/checkpoints}
+logger:
+  tensorboard: {name: stageC1_glue}
+  wandb: {name: stageC1_glue}

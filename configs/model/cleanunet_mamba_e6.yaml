@@ -1,0 +1,4 @@
+# Low-latency variant: 6 encoder levels (lookahead 12 ms, frame 190 samples, hop 64), like CleanUMamba-3N-E6.
+base: cleanunet_mamba_e8.yaml
+cleanunet_params:
+  encoder_n_layers: 6

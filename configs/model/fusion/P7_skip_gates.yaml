@@ -1,0 +1,12 @@
+# P7: gates on all 8 skip connections (O9).
+base: base.yaml
+fusion:
+  points:
+    skip_s2: {op: gate}
+    skip_s4: {op: gate}
+    skip_s8: {op: gate}
+    skip_s16: {op: gate}
+    skip_s32: {op: gate}
+    skip_s64: {op: gate}
+    skip_s128: {op: gate}
+    skip_s256: {op: gate}

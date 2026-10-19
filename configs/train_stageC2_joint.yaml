@@ -1,0 +1,14 @@
+# Stage C2 - joint fine-tuning of the whole CleanUNet2-Mamba starting from stage C1.
+base: base.yaml
+model:
+  architecture: model/cleanunet2_mamba_e8.yaml
+  init:
+    full_checkpoint: logs/stageC1_glue/checkpoints/last.ckpt
+optim:
+  lr: 1.0e-4
+  lr_scale: {clean_unet: 0.2, clean_spec_net: 0.2}
+callbacks:
+  best_checkpoint: {dirpath: logs/stageC2_joint/checkpoints}
+logger:
+  tensorboard: {name: stageC2_joint}
+  wandb: {name: stageC2_joint}

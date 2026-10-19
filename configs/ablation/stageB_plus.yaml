@@ -1,0 +1,12 @@
+# D0: CleanSpecNet-Mamba trained alone (spectral L1) for the fusion ablations (IMPROVEMENT_PLAN.md).
+# Candidates differ in model.architecture.cleanspecnet_params.output_mode / model.architecture.spectrogram.compression.
+base: ../train_stageB_cleanspecnet_mamba.yaml
+trainer: {max_epochs: 30}
+model:
+  architecture: ../model/cleanunet2_mamba_e8.yaml
+optim:
+  lr: 5.0e-4
+callbacks:
+  best_checkpoint: {dirpath: logs/abl/stageB_plus/checkpoints}
+logger:
+  tensorboard: {name: abl/stageB_plus}

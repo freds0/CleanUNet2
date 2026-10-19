@@ -1,0 +1,11 @@
+# E8 ablation - "light" preset from CleanUNet_MambaSSM (H=32, max_H=256, k=5, BatchNorm, 1 Mamba layer).
+# Note: kernel_size != 2*stride, so this preset cannot run in streaming mode.
+use_spec_branch: false
+cleanunet_params:
+  channels_H: 32
+  max_H: 256
+  encoder_n_layers: 8
+  kernel_size: 5
+  stride: 2
+  encoder_norm: batch
+  bottleneck: {type: mamba, n_layers: 1, d_model: 512, d_state: 16, d_conv: 4, expand: 2, backend: auto}

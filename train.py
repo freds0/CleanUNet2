@@ -1,200 +1,109 @@
 # train.py
 """
-Training entrypoint for CleanUNet2 with safer callback/logger instantiation.
-Supports TensorBoard and WandB.
+Training entrypoint for CleanUNet2 (PyTorch Lightning). Supports TensorBoard and WandB.
 
 Usage:
-    python train.py --config configs/train.yaml
+    python train.py --config configs/train_stageA_cleanunet_mamba.yaml
+    python train.py --config configs/train.yaml trainer.max_steps=1000 data.batch_size=8   # dotted overrides
 """
 
-import yaml
 import argparse
-from argparse import Namespace
-import logging
 import copy
+import logging
+import os
+
+import pytorch_lightning as pl
 import torch
 from pytorch_lightning import Trainer
-from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
+from pytorch_lightning.callbacks import EarlyStopping, LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger
 
-# Make sure these imports point to the correct modules in your repo
+from config_utils import load_config
 from lightning_modules.cleanunet_module import CleanUNetLightningModule
 from lightning_modules.data_module import CleanUNetDataModule
 
-# Configure a simple logger for console output (INFO level)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 logger = logging.getLogger("train")
 
-def _safe_instantiate_callbacks(callbacks_config: dict):
-    """
-    Instantiate callbacks from a config dict in a safe, explicit manner.
-    We do not evaluate arbitrary code or call constructors by string automatically.
-    Supported: ModelCheckpoint, EarlyStopping.
-    """
-    callbacks = []
-    for name, cb_cfg in (callbacks_config or {}).items():
-        if not isinstance(cb_cfg, dict):
-            logger.warning("Callback config for '%s' is not a dict; skipping.", name)
-            continue
+_CALLBACKS = {"ModelCheckpoint": ModelCheckpoint, "EarlyStopping": EarlyStopping,
+              "LearningRateMonitor": LearningRateMonitor}
+_LOGGERS = {"TensorBoardLogger": TensorBoardLogger, "WandbLogger": WandbLogger}
 
-        cfg = copy.deepcopy(cb_cfg)  # don't mutate original
-        target = cfg.pop("_target_", None)
-        if target is None:
-            logger.warning("Callback '%s' has no '_target_' field; skipping.", name)
-            continue
 
-        # Choose known callbacks explicitly (avoid dynamic eval)
-        if "ModelCheckpoint" in target:
-            logger.info("Instantiating ModelCheckpoint for callback '%s'.", name)
-            callbacks.append(ModelCheckpoint(**cfg))
-        elif "EarlyStopping" in target:
-            logger.info("Instantiating EarlyStopping for callback '%s'.", name)
-            callbacks.append(EarlyStopping(**cfg))
-        else:
-            logger.warning("Callback '%s' with target '%s' is not supported and will be ignored.", name, target)
-    return callbacks
-
-def _create_single_logger(cfg: dict):
-    """
-    Helper to instantiate a single logger based on its _target_.
-    """
-    if not cfg:
-        return None
-    
-    # Deepcopy to avoid modifying the original config dict
-    config_copy = copy.deepcopy(cfg)
-    target = config_copy.pop("_target_", None)
-
-    if not target:
-        # If no target, we can't instantiate
-        return None
-
-    if "TensorBoardLogger" in target:
-        logger.info("Instantiating TensorBoardLogger.")
-        return TensorBoardLogger(**config_copy)
-    
-    elif "WandbLogger" in target:
-        logger.info("Instantiating WandbLogger.")
-        # Ensure 'save_dir' exists or let Wandb handle it
-        return WandbLogger(**config_copy)
-    
-    else:
-        logger.warning(f"Logger target '{target}' not supported. Skipping.")
-        return None
-
-def _safe_instantiate_logger(logger_config: dict):
-    """
-    Instantiate logger(s) from config safely.
-    Supports 'choice' logic: 'tensorboard', 'wandb', or 'both'.
-    """
-    if not logger_config:
-        logger.info("No logger configuration provided; proceeding without logger.")
-        return None
-
-    # Check for 'choice' key to determine strategy
-    choice = logger_config.get("choice", None)
-
-    # Strategy 1: 'choice' logic (new structure)
-    if choice:
-        choice = choice.lower()
-        loggers_list = []
-
-        if choice in ["tensorboard", "both"]:
-            tb_conf = logger_config.get("tensorboard")
-            if tb_conf:
-                l = _create_single_logger(tb_conf)
-                if l: loggers_list.append(l)
-        
-        if choice in ["wandb", "both"]:
-            wb_conf = logger_config.get("wandb")
-            if wb_conf:
-                l = _create_single_logger(wb_conf)
-                if l: loggers_list.append(l)
-
-        if not loggers_list:
-            logger.warning(f"Logger choice was '{choice}' but no valid configuration found.")
-            return None
-        
-        # If only one logger, return it directly; otherwise return list
-        return loggers_list[0] if len(loggers_list) == 1 else loggers_list
-
-    # Strategy 2: Direct instantiation (legacy structure with _target_ at root)
-    if "_target_" in logger_config:
-        return _create_single_logger(logger_config)
-
+def _instantiate(cfg: dict, registry: dict, kind: str):
+    """Instantiate a known class from a config dict with a `_target_` key (no dynamic imports)."""
+    cfg = copy.deepcopy(cfg)
+    target = cfg.pop("_target_", "")
+    for name, cls in registry.items():
+        if target.endswith(name):
+            return cls(**cfg)
+    logger.warning("%s target '%s' is not supported and will be ignored.", kind, target)
     return None
 
+
+def build_callbacks(callbacks_config: dict):
+    callbacks = [_instantiate(c, _CALLBACKS, "Callback") for c in (callbacks_config or {}).values()
+                 if isinstance(c, dict)]
+    return [c for c in callbacks if c is not None]
+
+
+def build_logger(logger_config: dict):
+    """Supports `choice: tensorboard | wandb | both | none`."""
+    if not logger_config:
+        return None
+    choice = str(logger_config.get("choice", "tensorboard")).lower()
+    if choice == "none":
+        return False
+    names = ["tensorboard", "wandb"] if choice == "both" else [choice]
+    loggers = [_instantiate(logger_config[n], _LOGGERS, "Logger") for n in names if n in logger_config]
+    loggers = [l for l in loggers if l is not None]
+    if not loggers:
+        return None
+    return loggers[0] if len(loggers) == 1 else loggers
+
+
 def train(config: dict):
-    """
-    Main training function.
+    for section in ("data", "trainer", "model"):
+        if section not in config:
+            raise KeyError(f"Missing '{section}' section in config.")
+    pl.seed_everything(int(config.get("seed", 1234)), workers=True)
 
-    Args:
-        config: configuration dictionary (loaded from YAML).
-    """
-    # Validate minimal config structure
-    if "data" not in config:
-        raise KeyError("Missing 'data' section in config.")
-    if "trainer" not in config:
-        raise KeyError("Missing 'trainer' section in config.")
+    data_module = CleanUNetDataModule(**config["data"])
+    model = CleanUNetLightningModule(config)
 
-    # Merge model+data config into hyperparameters for the LightningModule (non-destructive)
-    model_cfg = config.get("model", {})
-    data_cfg = config.get("data", {})
-    hparams_dict = {**model_cfg, **data_cfg}
-    hparams = Namespace(**hparams_dict)
+    lightning_logger = build_logger(config.get("logger"))
+    callbacks = build_callbacks(config.get("callbacks"))
+    if not lightning_logger:  # LearningRateMonitor needs a logger
+        callbacks = [c for c in callbacks if not isinstance(c, LearningRateMonitor)]
+    trainer_cfg = copy.deepcopy(config["trainer"])
+    if not model.automatic_optimization:
+        # manual optimization (e.g. the metric discriminator): the module clips its own gradients
+        trainer_cfg.pop("gradient_clip_val", None)
+        trainer_cfg.pop("gradient_clip_algorithm", None)
+    trainer = Trainer(logger=lightning_logger, callbacks=callbacks, **trainer_cfg)
 
-    # Instantiate DataModule and LightningModule
-    logger.info("Instantiating data module.")
-    data_module = CleanUNetDataModule(**data_cfg)
-
-    logger.info("Instantiating model (CleanUNetLightningModule).")
-    model = CleanUNetLightningModule(hparams)
-
-    # Instantiate callbacks safely
-    callbacks = _safe_instantiate_callbacks(config.get("callbacks", {}))
-
-    # Instantiate logger safely (supports TB, WandB, or Both)
-    lightning_logger = _safe_instantiate_logger(config.get("logger", {}))
-
-    # Create the Trainer
-    logger.info("Creating PyTorch Lightning Trainer.")
-    trainer_kwargs = copy.deepcopy(config.get("trainer", {}))
-    
-    trainer = Trainer(
-        logger=lightning_logger, 
-        callbacks=callbacks, 
-        **trainer_kwargs
-    )
-
-    # Resume from checkpoint if configured
-    ckpt_path = config.get("resume_from_checkpoint", None)
-    if ckpt_path:
+    ckpt_path = config.get("resume_from_checkpoint")
+    if ckpt_path and not os.path.exists(ckpt_path):
+        logger.info("Checkpoint '%s' not found; starting a new run.", ckpt_path)
+        ckpt_path = None
+    elif ckpt_path:
         logger.info("Resuming training from checkpoint: %s", ckpt_path)
 
-    # Start training
-    logger.info("Starting training run.")
     trainer.fit(model, datamodule=data_module, ckpt_path=ckpt_path)
-    logger.info("Training finished.")
+    logger.info("Training finished. Best checkpoint: %s",
+                getattr(trainer.checkpoint_callback, "best_model_path", None))
+    return trainer
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Train CleanUNet2 using a YAML configuration.")
     parser.add_argument("--config", type=str, required=True, help="Path to YAML config file.")
+    parser.add_argument("overrides", nargs="*", help="Dotted overrides, e.g. trainer.max_steps=1000")
     return parser.parse_args()
+
 
 if __name__ == "__main__":
     args = parse_args()
-
-    # Load config file (YAML)
-    with open(args.config, "r") as fh:
-        config = yaml.safe_load(fh)
-
-    # Set precision hint for tensor cores if available (optional)
-    if hasattr(torch, "set_float32_matmul_precision"):
-        try:
-            torch.set_float32_matmul_precision("medium")
-            logger.info("Set float32 matmul precision to 'medium'.")
-        except Exception as e:
-            logger.warning("Could not set float32 matmul precision: %s", str(e))
-
-    # Run training
-    train(config)
+    cfg = load_config(args.config, args.overrides)
+    torch.set_float32_matmul_precision("high")
+    train(cfg)

@@ -1,251 +1,148 @@
-# 📢 CleanUNet2 — A Hybrid Speech Denoising Model on Waveform and Spectrogram
+# CleanUNet2 (+ Mamba) — Hybrid Speech Denoising on Waveform and Spectrogram
 
-CleanUNet2 is a deep-learning architecture for **speech enhancement**, combining:
+CleanUNet2 combines a **waveform U-Net (CleanUNet)** with a **spectrogram denoiser (CleanSpecNet)**.
+This branch adds **Mamba state-space models** to both branches and brings in the improvements of
+[CleanUMamba](https://github.com/lab-emi/cleanumamba) (ISCAS 2025) and
+[CleanUNet_MambaSSM](https://github.com/Matheuspp/CleanUNet_MambaSSM):
 
-* **CleanUNet (waveform UNet)**
-* **CleanSpecNet (frequency-domain transformer network)**
-* **Multi-resolution STFT losses**
-* **Phase-aware losses**
-* **A hybrid spectrogram-to-waveform conditioning block**
-
-This repository includes full training, validation, inference workflows using **PyTorch Lightning**.
+* **Configurable sequence backbones**: Transformer (original), **Mamba**, Mamba2 or LSTM in the CleanUNet
+  bottleneck; Transformer, Mamba (causal or bidirectional), Mamba2 or LSTM in CleanSpecNet.
+* **CleanUMamba-compatible bottleneck**: the Mamba variant uses the same layout and parameter names as
+  CleanUMamba, so the official DNS-trained checkpoints (`CleanUMamba-3N-E8/E6`) load directly into the
+  waveform branch (verified to be numerically identical to the original implementation).
+* **Two Mamba backends**: `mamba_ssm` CUDA kernels, or a pure-PyTorch implementation with the same
+  parameters (CPU inference, tests).
+* **Constant-memory streaming** for the waveform branch (ported from CleanUMamba; 48 ms lookahead for E8,
+  12 ms for E6), exact w.r.t. offline inference.
+* **Fixed hybrid pipeline**: one STFT inside the model (training = inference = loss), frame-aligned
+  upsampling without time stretching, a single std normalization, zero-initialized conditioning,
+  optional *bottleneck fusion* of CleanSpecNet features into the CleanUNet bottleneck.
+* **Training recipe**: AdamW (no decay on biases/norms/`A_log`/`D`), linear warmup + cosine decay, gradient
+  clipping, bf16 with float32 losses, Demucs-style augmentation (Remix, BandMask, Shift, Gain), staged training.
+* **Proper evaluation**: validation on held-out speakers with whole utterances; full test metrics
+  (PESQ-WB/NB, STOI, SI-SDR, CSIG, CBAK, COVL, SSNR).
 
 ---
 
-## 🚀 Features
-
-* **Hybrid enhancement**: spectrogram refinement + waveform denoising
-* **Multi-Resolution STFT Loss (MR-STFT)**
-* **Anti-Wrapping Phase Loss** for improved phase reconstruction
-* **Fully configurable training (YAML-based)**
-* **Trainer, callbacks, and logging (TensorBoard)**
-* **Modular dataset pipeline (VoiceBank-DEMAND compatible)**
-* **Clean code with English documentation and comments**
-
----
-
-## 📁 Repository Structure
+## Repository structure
 
 ```
-.
-│── lightning_modules/
-│    ├── cleanunet_module.py     # Lightning training module
-│    ├── data_module.py          # DataModule for dataset handling
-│
-│── cleanunet/
-│    ├── cleanunet.py            # CleanUNet (waveform model)
-│    ├── cleanspecnet.py         # CleanSpecNet (spectrogram model)
-│    ├── cleanunet2.py           # Full hybrid CleanUNet2 system
-│
-│── filelists/
-│── configs/
-│    ├── config.yaml             # Training configuration
-│    ├── inference.yaml          # Inference configuration
-│
-│── train.py                     # Training script
-│── inference.py                 # Inference script
-│── metrics.py                   # PESQ/STOI/SI-SDR prediction
-│── losses.py                    # Loss functions (MR-STFT, Phase Loss)
-│── spec_dataset.py              # Dataset loader
-│── README.md
+cleanunet/
+  cleanunet.py        CleanUNet; bottleneck = transformer | mamba | mamba2 | lstm (+ CleanUMamba options)
+  cleanspecnet.py     CleanSpecNet; backbone = transformer | mamba | mamba2 | lstm; causal or not
+  cleanunet2.py       hybrid model: STFT front-end, upsampler, conditioner, bottleneck fusion
+  sequence.py         Mamba blocks/stacks (mamba_ssm layout), BiMamba, LSTM, initialization
+  mamba_torch.py      pure-PyTorch Mamba (same parameter names as mamba_ssm.Mamba)
+  spectral.py         the single STFT used for training, inference and the spectral loss
+  streaming.py        frame-by-frame streaming inference (Mamba bottleneck)
+  checkpoint_io.py    loaders for Lightning / CleanUNet2 / CleanUMamba checkpoints
+lightning_modules/    Lightning module (losses, optimizer, validation metrics) and data module
+configs/
+  base.yaml           shared training settings
+  train*.yaml         experiments / training stages (inherit from base.yaml)
+  model/*.yaml        architecture presets
+  inference.yaml
+evaluation/           metrics (PESQ, STOI, SI-SDR, composite measures)
+scripts/make_filelists.py
+dataset.py  augment.py  losses.py  config_utils.py
+train.py  evaluate.py  inference.py
+tests/                pytest suite
 ```
 
----
-
-## 🔧 Installation
+## Installation
 
 ```bash
-git clone https://github.com/your-repo/CleanUNet2.git
-cd CleanUNet2
 pip install -r requirements.txt
+# Mamba CUDA kernels (optional but recommended): install the prebuilt wheels that match your
+# torch / CUDA / Python versions with --no-deps (otherwise pip may replace torch). See requirements.txt.
 ```
 
----
+The tested environment is the conda env `cleanunet-mamba`: Python 3.12, torch 2.8.0+cu128,
+pytorch-lightning 2.6, mamba-ssm 2.3.2.post1, causal-conv1d 1.6.2.post1, RTX 4090.
 
-## 🎚️ Training
-
-Edit `configs/train.yaml` as needed, then run:
+## Data (VoiceBank-DEMAND 16 kHz)
 
 ```bash
-python train.py --config=configs/train.yaml
+# layout: <data_dir>/{train,test}/{clean,noisy}/<id>.flac
+python scripts/make_filelists.py --data_dir /home/fred/DATASETS/VoiceBank-DEMAND-16k
 ```
 
-TensorBoard logs will appear under:
+This writes `filelists/train.csv` (10,802 pairs), `filelists/val.csv` (770 pairs: held-out speakers p226 and
+p287) and `filelists/test.csv` (824 pairs). The test set is never used for model selection.
 
-```
-logs/cleanunet2/
-```
+## Model presets (`configs/model/`)
 
-To view them:
+| Preset | Description | Params |
+|---|---|---|
+| `cleanunet2_transformer.yaml` | E0: original CleanUNet2 architecture (Transformer + Transformer) with the pipeline fixes | 58.6M |
+| `cleanunet_mamba_e8.yaml` | waveform-only CleanUNet with a 3-layer Mamba bottleneck (= CleanUMamba-3N-E8), 48 ms lookahead | 41.4M |
+| `cleanunet_mamba_e6.yaml` | same with 6 levels (= CleanUMamba-3N-E6), 12 ms lookahead | 27.2M |
+| `cleanunet2_mamba_e8.yaml` | **CleanUNet2-Mamba**: Mamba bottleneck + causal Mamba CleanSpecNet + zero-init FiLM | 52.6M |
+| `cleanunet2_mamba_e8_fusion.yaml` | + bottleneck fusion (STFT hop 256 = U-Net stride 2^8) | 53.1M |
+| `cleanunet2_mamba_e8_bidir.yaml` | offline variant: non-causal, bidirectional Mamba CleanSpecNet | |
+| `cleanunet_mha_e8.yaml`, `cleanunet_lstm_e8.yaml`, `cleanunet_mamba2_e8.yaml` | bottleneck ablations | |
+| `cleanunet_mamba_light.yaml` | CleanUNet_MambaSSM-style small model (H=32, k=5, BatchNorm, 1 Mamba layer) | |
+
+## Training
+
+All configs inherit from `configs/base.yaml`; any key can be overridden on the command line with dotted keys.
 
 ```bash
-tensorboard --logdir logs
+# One-run recipe: hybrid CleanUNet2-Mamba, waveform branch initialized from CleanUMamba-E8 (DNS)
+python train.py --config configs/train.yaml
+
+# Staged recipe
+python train.py --config configs/train_stageA_cleanunet_mamba.yaml      # A: waveform branch (from CleanUMamba)
+python train.py --config configs/train_stageB_cleanspecnet_mamba.yaml   # B: CleanSpecNet alone (spectral L1)
+python train.py --config configs/train_stageC1_glue.yaml                # C1: branches frozen, train the glue
+python train.py --config configs/train_stageC2_joint.yaml               # C2: joint fine-tuning
+
+# Corrected baseline (E0) and overrides
+python train.py --config configs/train_baseline_transformer.yaml
+python train.py --config configs/train_stageA_cleanunet_mamba.yaml model.init={} optim.lr=1e-4   # A1: from scratch
 ```
 
----
+Checkpoints are selected by validation PESQ-WB (`val/pesq`). Logs go to TensorBoard (`logs/`) or W&B
+(`logger.choice`).
 
-## 🎤 Inference (Denoising Audio)
+Loss modes (`loss.mode`): `waveform` (L1 + multi-resolution STFT), `spec` (L1 on the log1p magnitude),
+`hybrid` (both; optional anti-wrapping phase loss with `loss.weight_phase`).
 
-Configure `configs/inference.yaml`, then run:
+## Evaluation and inference
 
 ```bash
-python inference.py --config=configs/inference.yaml
+# Noisy baseline / a trained checkpoint / the official CleanUMamba checkpoint (zero-shot, offline or streaming)
+python evaluate.py --noisy
+python evaluate.py --config configs/train.yaml --checkpoint logs/cleanunet2_mamba/checkpoints/last.ckpt --out_dir results/run
+python evaluate.py --architecture configs/model/cleanunet_mamba_e8.yaml \
+    --cleanumamba ../cleanumamba/checkpoints/models/CleanUMamba-3N-E8-full.pkl [--streaming]
+
+# Denoise a folder
+python inference.py --config configs/inference.yaml
 ```
 
-Denoised WAV files are saved to:
+`evaluate.py` writes per-file metrics (`metrics.csv`) and averages (`summary.json`), plus the real-time factor.
 
-```
-denoised_results/
-```
+Note on composite metrics: CSIG/CBAK/COVL use the Python implementation of CMGAN/CleanUMamba. On the noisy
+VoiceBank-DEMAND test set it gives PESQ-WB 1.97, STOI 0.921 and SSNR 1.68 (matching the literature), but
+CSIG/CBAK/COVL of 3.49/2.55/2.74 instead of the MATLAB values 3.35/2.44/2.63 reported in papers. Compare
+composite metrics only within the same implementation.
 
----
+## Tests
 
-## 📦 Datasets
-
-The default setup assumes the **VoiceBank-DEMAND (16 kHz)** dataset.
-
-Expected filelist format (`train.csv`, `test.csv`):
-
-```
-clean_file.wav|noisy_file.wav
+```bash
+python -m pytest -q tests/
 ```
 
-Example directory:
+The suite covers shapes and alignment, causality, legacy checkpoint compatibility, CUDA vs PyTorch Mamba
+parity, numerical equivalence with the original CleanUMamba code, streaming vs offline equivalence,
+checkpoint round-trips, augmentation, the data pipeline and the Lightning module.
 
-```
-VoiceBank-DEMAND-16k/
-│── clean/
-│── noisy/
-│── filelists/
-│    ├── train.csv
-│    └── test.csv
-```
+## Results
 
----
+See `RESULTS.md`.
 
-## 🧠 Model Overview
+## License and attribution
 
-### CleanUNet (Waveform Domain)
-
-* Multi-scale encoder-decoder UNet
-* Convolutional downsampling & upsampling
-* Transformer bottleneck
-* No skip-connection misalignment thanks to input padding logic
-
-### CleanSpecNet (Spectrogram Domain)
-
-* Convolutional feature extractor
-* Multiple transformer layers
-* GLU gating
-* Causal or non-causal mask support
-
-### Hybrid Combination
-
-The denoising workflow:
-
-1. **CleanSpecNet** refines the noisy spectrogram
-2. **Upsampler** expands spectrogram into a waveform-length feature
-3. **WaveformConditioner** fuses noisy + upsampled features
-4. **CleanUNet** produces the enhanced waveform
-
----
-
-## 🎧 Losses
-
-| Loss Type                          | Purpose                              |
-| ---------------------------------- | ------------------------------------ |
-| **L1/L2 waveform loss**            | Basic reconstruction                 |
-| **MR-STFT Loss**                   | Spectral convergence + log magnitude |
-| **Anti-Wrapping Phase Loss**       | Phase consistency                    |
-| **Spectrogram Log-Magnitude Loss** | Auxiliary stabilization              |
-
----
-
-## 📊 Validation Metrics
-
-During validation:
-
-* **PESQ**
-* **STOI**
-* **SI-SDR**
-
-Metrics are computed per sample and averaged.
-
----
-
-## ⚙️ Configuration (YAML)
-
-Everything is configured through YAML:
-
-### Training Config
-
-`configs/config.yaml` includes:
-
-* Trainer settings
-* Loss weights
-* MR-STFT FFT sizes
-* Batch size
-* Data paths
-
-### Inference Config
-
-`configs/inference.yaml` includes:
-
-* Input directory
-* Output directory
-* Checkpoint path
-* CPU/GPU override
-
----
-
-## 📦 Checkpoints
-
-To resume training:
-
-```yaml
-resume_from_checkpoint: "logs/checkpoints/last.ckpt"
-```
-
-To load pretrained weights in inference mode:
-
-```yaml
-checkpoint_path: "logs_cleanunet/checkpoints/last.ckpt"
-```
-
----
-
-## 🧪 Example Output
-
-```python
-model = CleanUNet2().cuda()
-noisy = torch.randn(1, 1, 64000).cuda()
-noisy_spec = torch.randn(1, 513, 256).cuda()
-
-enhanced, enhanced_spec = model(noisy, noisy_spec)
-print(enhanced.shape)   # (1, 1, 64000)
-```
-
----
-
-## 🤝 Contributing
-
-Pull requests are welcome!
-Please open an issue before major feature changes.
-
----
-
-## 📄 License
-
-This project is licensed under the **MIT License**.
-
----
-
-If you want, I can now generate:
-
-✅ A **PDF version** using reportlab
-✅ A more elaborate README including diagrams
-✅ A minimal version for PyPI
-✅ A citation section (BibTeX)
-
-Would you like any of these?
-
+MIT. Ported code keeps its attribution: CleanUMamba (MIT), CleanUNet (NVIDIA, MIT), CMGAN composite
+metrics (MIT), CleanUNet_MambaSSM (MIT); `mamba_ssm` is Apache-2.0.

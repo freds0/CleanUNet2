@@ -1,0 +1,13 @@
+# CleanUNet2-Mamba with a full-band + sub-band CleanSpecNet (IMPROVEMENT_PLAN.md, N3, FullSubNet style).
+base: cleanunet2_mamba_e8.yaml
+spectrogram: {compression: pow}
+cleanspecnet_params:
+  architecture: subband
+  backbone: null
+  causal: true
+  output_mode: mask
+  neighbors: 15
+  d_model: 32
+  n_layers: 2
+  fullband:
+    backbone: {type: mamba, n_layers: 5, d_state: 64, d_conv: 4, expand: 2}

@@ -1,0 +1,100 @@
+# Shared training settings. Stage/experiment configs inherit from this file with `base: base.yaml`.
+seed: 1234
+
+trainer:
+  accelerator: auto
+  devices: 1
+  max_epochs: 300
+  precision: bf16-mixed          # bf16 autocast; all STFT-based losses are computed in float32
+  gradient_clip_val: 10.0        # as in CleanUMamba
+  accumulate_grad_batches: 1
+  log_every_n_steps: 50
+  check_val_every_n_epoch: 1
+  benchmark: false               # validation uses variable-length utterances
+  deterministic: false
+
+data:
+  data_dir: /home/fred/DATASETS/VoiceBank-DEMAND-16k
+  train_list_path: filelists/train.csv    # 10,802 files (26 speakers)
+  val_list_path: filelists/val.csv        # 770 files (held-out speakers p226, p287)
+  sample_rate: 16000
+  segment_size: 32768            # ~2 s crops -> 127 bottleneck tokens (E8)
+  batch_size: 16
+  num_workers: 8
+  persistent_workers: true
+  val_max_files: null            # e.g. 200 for faster validation
+  ext_noise: null                # noise of another corpus for training crops (dataset.py, noise_bank.py), e.g.
+                                 # {dir: /home/fred/DATASETS/MUSAN/musan, p: 0.5, snr_db: [-5, 20]}
+
+model:
+  architecture: model/cleanunet2_mamba_e8.yaml
+  init: {}
+  train_cleanunet: true
+  train_cleanspecnet: true
+
+loss:
+  mode: hybrid                   # hybrid | waveform | spec
+  ell_p: 1                       # L1 waveform loss
+  ell_p_lambda: 1.0
+  stft_lambda: 1.0
+  sc_lambda: 0.5
+  mag_lambda: 0.5
+  stft_config:
+    fft_sizes: [512, 1024, 2048]
+    hop_sizes: [50, 120, 240]
+    win_lengths: [240, 600, 1200]
+  weight_waveform: 1.0
+  weight_spec: 1.0               # L1 on the compressed (log1p) spectrogram
+  weight_phase: 0.0              # anti-wrapping phase loss (optional)
+
+optim:
+  lr: 1.0e-4
+  betas: [0.9, 0.999]
+  weight_decay: 0.0              # applied only to >=2D weights (never biases, norms, A_log, D)
+  schedule: cosine               # cosine | constant
+  warmup_ratio: 0.05
+  min_lr_ratio: 0.01
+  lr_scale: {}                   # per-submodule LR multipliers, e.g. {clean_unet: 0.3}
+
+augment:                         # Demucs-style, applied on GPU to training batches only
+  remix_p: 0.5
+  bandmask_p: 0.2
+  shift_p: 0.0
+  gain_p: 0.5
+  gain_db: 6.0
+  snr_p: 0.0
+
+validation:
+  metric_workers: 8
+  log_audio_examples: 3
+
+callbacks:
+  best_checkpoint:
+    _target_: pytorch_lightning.callbacks.ModelCheckpoint
+    monitor: val/pesq
+    mode: max
+    save_top_k: 2
+    save_last: true
+    filename: "best-epoch{epoch:03d}-pesq{val/pesq:.3f}"
+    auto_insert_metric_name: false
+    dirpath: logs/cleanunet2_mamba/checkpoints
+  lr_monitor:
+    _target_: pytorch_lightning.callbacks.LearningRateMonitor
+    logging_interval: step
+
+logger:
+  choice: tensorboard            # tensorboard | wandb | both | none
+  tensorboard:
+    _target_: pytorch_lightning.loggers.TensorBoardLogger
+    save_dir: logs
+    name: cleanunet2_mamba
+    default_hp_metric: false
+  wandb:
+    _target_: pytorch_lightning.loggers.WandbLogger
+    project: CleanUNet2_Project
+    name: cleanunet2_mamba
+    save_dir: logs
+    offline: false
+    log_model: false
+
+resume_from_checkpoint: null

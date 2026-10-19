@@ -1,29 +1,39 @@
 # --- Core Deep Learning ---
-torch>=2.1.0
+torch>=2.1.0            # tested with 2.8.0+cu128
 torchaudio>=2.1.0
 pytorch-lightning>=2.2.0
 
+# --- Mamba (optional: CUDA kernels; without them the pure-PyTorch backend is used) ---
+# Install the prebuilt wheels matching your torch/CUDA/Python with --no-deps so pip does not
+# replace torch, e.g. for torch 2.8 + CUDA 12 + Python 3.12:
+#   python -m pip install --no-deps \
+#     https://github.com/Dao-AILab/causal-conv1d/releases/download/v1.6.2.post1/causal_conv1d-1.6.2.post1%2Bcu12torch2.8cxx11abiTRUE-cp312-cp312-linux_x86_64.whl \
+#     https://github.com/state-spaces/mamba/releases/download/v2.3.2.post1/mamba_ssm-2.3.2.post1%2Bcu12torch2.8cxx11abiTRUE-cp312-cp312-linux_x86_64.whl
+# mamba-ssm==2.3.2.post1
+# causal-conv1d==1.6.2.post1
+einops>=0.7.0
+transformers            # imported by mamba_ssm
+
 # --- Audio Processing ---
-librosa>=0.10.1
 soundfile>=0.12.1
+librosa>=0.10.1
 tqdm>=4.65.0
 
-# --- Metrics (PESQ/STOI) ---
+# --- Metrics ---
 pesq>=0.0.4
 pystoi>=0.3.3
+threadpoolctl
 torchmetrics[audio]
 
 # --- Numeric / Utils ---
 numpy>=1.23.0
 scipy>=1.10.0
 PyYAML>=6.0
-json5>=0.9.14
 
 # --- Logging & Experimentation ---
 tensorboard>=2.14.0
 wandb
 
-# --- Optional but Recommended ---
-matplotlib>=3.6.0
-einops>=0.7.0
-
+# --- Tests ---
+pytest
+torchinfo              # only for the CleanUMamba equivalence test

@@ -1,0 +1,13 @@
+# Fusion ablations (IMPROVEMENT_PLAN.md): CleanUNet2-Mamba E8 without the original waveform conditioning
+# (no SpecUpsampler, no waveform FiLM). Each variant only sets `fusion.points` (and other fusion keys).
+# Every fusion path starts as the identity, so a model built from stage A + stage B+ reproduces stage A.
+base: ../cleanunet2_mamba_e8.yaml
+conditioning_type: none
+fusion:
+  signal: spec_hidden            # spec_hidden | spec | mask | noisy_spec | oracle_spec | oracle_mask (or a list)
+  trunk: {channels: 256, kernel: 3, layers: 2}
+  resample: repeat               # repeat | linear | convT
+  shift: 0                       # frames; +1 adds 256 samples (16 ms) of lookahead
+  zero_init: last                # last | small
+  detach: false
+  points: {}

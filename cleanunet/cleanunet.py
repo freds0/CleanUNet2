@@ -1,4 +1,4 @@
-# cleanunet_model.py
+# cleanunet.py
 # Refactored CleanUNet + Transformer utilities with English comments and clearer structure.
 # Original code adapted from NVIDIA/other sources; MIT / original licenses apply where appropriate.
 
@@ -8,8 +8,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from cleanunet.util import weight_scaling_init
-# If weight_scaling_init is not available, provide a simple fallback:
-# def weight_scaling_init(layer): pass
 
 # ---------------------------
 # Attention & Transformer utilities
@@ -244,12 +242,46 @@ def padding(x: torch.Tensor, D: int, K: int, S: int) -> torch.Tensor:
     return x
 
 
-class CleanUNet(nn.Module):
-    """CleanUNet: encoder-decoder convolutional architecture with a Transformer bottleneck.
+class Activation(nn.Module):
+    """Gated activation A * act(B) with optional bypass channels (from CleanUMamba).
 
-    The U-Net progressively downsamples using strided convs and then upsamples with ConvTranspose1d.
-    A Transformer encoder sits at the bottleneck to capture long-range dependencies.
+    With activation="Sigmoid" and bypass_channels=0 this is exactly nn.GLU(dim=1).
     """
+
+    def __init__(self, activation: str = "Sigmoid", bypass_channels: int = 0):
+        super().__init__()
+        acts = {"Sigmoid": nn.Sigmoid, "ReLU": nn.ReLU, "SiLU": nn.SiLU, "GELU": nn.GELU}
+        if activation not in acts:
+            raise ValueError(f"glu_activation={activation} not supported; use one of {list(acts)}")
+        self.activation = acts[activation]()
+        self.bypass_channels = bypass_channels
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        nX = self.bypass_channels
+        if nX == 0:
+            a, b = x.chunk(2, dim=1)
+            return a * self.activation(b)
+        nAB = (x.shape[1] - nX) // 2
+        bypass, a, b = torch.split(x, [nX, nAB, nAB], dim=1)
+        return torch.cat([bypass, a * self.activation(b)], dim=1)
+
+
+def _gate(glu_activation: str, bypass_channels: int) -> nn.Module:
+    if glu_activation == "Sigmoid" and bypass_channels == 0:
+        return nn.GLU(dim=1)
+    return Activation(glu_activation, bypass_channels)
+
+
+class CleanUNet(nn.Module):
+    """CleanUNet: encoder-decoder convolutional architecture with a sequence model at the bottleneck.
+
+    Bottleneck types (``bottleneck["type"]``):
+      - "transformer": original CleanUNet self-attention encoder (``tsfm_encoder``), default.
+      - "mamba" / "mamba2": stack of pre-norm Mamba blocks (``tsfm_Mamba_layers`` + ``norm_f``),
+        laid out exactly like CleanUMamba so its checkpoints load without remapping.
+      - "lstm": unidirectional LSTM (``tsfm_lstm``).
+    """
+
     def __init__(
         self,
         channels_input: int = 1,
@@ -262,9 +294,24 @@ class CleanUNet(nn.Module):
         tsfm_n_layers: int = 5,
         tsfm_n_head: int = 8,
         tsfm_d_model: int = 512,
-        tsfm_d_inner: int = 2048
+        tsfm_d_inner: int = 2048,
+        bottleneck: dict = None,
+        normalize_input: bool = True,
+        encoder_norm: str = None,
+        glu_activation: str = "Sigmoid",
+        bypass_channels=0,
+        encoder_groups=1,
+        residual_projection: bool = False,
     ):
         super().__init__()
+
+        bottleneck = dict(bottleneck or {})
+        self.bottleneck_type = bottleneck.pop("type", "transformer")
+        if self.bottleneck_type not in ("transformer", "mamba", "mamba2", "lstm"):
+            raise ValueError(f"Unknown bottleneck type '{self.bottleneck_type}'")
+        if encoder_norm not in (None, "none", "batch"):
+            raise ValueError(f"encoder_norm must be null/'none'/'batch', got '{encoder_norm}'")
+        use_bn = encoder_norm == "batch"
 
         # save config
         self.channels_input = channels_input
@@ -274,168 +321,212 @@ class CleanUNet(nn.Module):
         self.encoder_n_layers = encoder_n_layers
         self.kernel_size = kernel_size
         self.stride = stride
+        self.normalize_input = normalize_input
+        self.residual_projection = residual_projection
 
-        self.tsfm_n_layers = tsfm_n_layers
-        self.tsfm_n_head = tsfm_n_head
-        self.tsfm_d_model = tsfm_d_model
-        self.tsfm_d_inner = tsfm_d_inner
+        self.tsfm_n_layers = bottleneck.pop("n_layers", tsfm_n_layers)
+        self.tsfm_d_model = bottleneck.pop("d_model", tsfm_d_model)
+        self.tsfm_n_head = bottleneck.pop("n_head", tsfm_n_head)
+        self.tsfm_d_inner = bottleneck.pop("d_inner", tsfm_d_inner)
 
         # Build encoder and decoder as ModuleLists for flexible depth
         self.encoder = nn.ModuleList()
         self.decoder = nn.ModuleList()
+        if residual_projection:
+            self.residual_projection_layers = nn.ModuleList()
         in_ch = channels_input
         out_ch = channels_output
         H = channels_H
+        self.level_channels = []        # encoder output channels per level (= decoder input channels)
 
         for i in range(encoder_n_layers):
-            # Downsampling block: Conv1d -> ReLU -> 1x1 Conv -> GLU
-            down_block = nn.Sequential(
-                nn.Conv1d(in_ch, H, kernel_size, stride),
-                nn.ReLU(inplace=False),
-                nn.Conv1d(H, H * 2, 1),
-                nn.GLU(dim=1)
-            )
-            self.encoder.append(down_block)
+            groups = encoder_groups[i] if isinstance(encoder_groups, (list, tuple)) else encoder_groups
+            bp = bypass_channels[i] if isinstance(bypass_channels, (list, tuple)) else bypass_channels
+            gate_channels = bp + (H - bp) * 2
 
-            # Build corresponding upsampling block (Conv1d 1x1 -> GLU -> ConvTranspose1d -> maybe ReLU)
-            if i == 0:
-                up_block = nn.Sequential(
-                    nn.Conv1d(H, H * 2, 1),
-                    nn.GLU(dim=1),
-                    nn.ConvTranspose1d(H, out_ch, kernel_size, stride)
-                )
-            else:
-                up_block = nn.Sequential(
-                    nn.Conv1d(H, H * 2, 1),
-                    nn.GLU(dim=1),
-                    nn.ConvTranspose1d(H, out_ch, kernel_size, stride),
-                    nn.ReLU(inplace=False)
-                )
+            # Downsampling block: Conv1d -> [BN] -> ReLU -> 1x1 Conv -> GLU
+            down = [nn.Conv1d(in_ch, H, kernel_size, stride, groups=groups if i > 0 else 1)]
+            if use_bn:
+                down.append(nn.BatchNorm1d(H))
+            down += [nn.ReLU(inplace=False), nn.Conv1d(H, gate_channels, 1), _gate(glu_activation, bp)]
+            self.encoder.append(nn.Sequential(*down))
+
+            if residual_projection:
+                self.residual_projection_layers.append(nn.Conv1d(H, H, 1))
+
+            # Upsampling block: 1x1 Conv -> GLU -> ConvTranspose1d -> [BN -> ReLU] (no ReLU on the output layer)
+            up = [nn.Conv1d(H, gate_channels, 1), _gate(glu_activation, bp),
+                  nn.ConvTranspose1d(H, out_ch, kernel_size, stride)]
+            if i > 0:
+                if use_bn:
+                    up.append(nn.BatchNorm1d(out_ch))
+                up.append(nn.ReLU(inplace=False))
             # Prepend so decoder has reverse order
-            self.decoder.insert(0, up_block)
+            self.decoder.insert(0, nn.Sequential(*up))
 
-            # update channel variables for next layer
+            self.level_channels.append(H)
             in_ch = H
             out_ch = H
             H = min(H * 2, max_H)
 
-        # Transformer bottleneck projection: conv -> transformer encoder -> conv
-        self.tsfm_conv1 = nn.Conv1d(out_ch, tsfm_d_model, kernel_size=1)
-        self.tsfm_encoder = TransformerEncoder(
-            d_word_vec=tsfm_d_model,
-            n_layers=tsfm_n_layers,
-            n_head=tsfm_n_head,
-            d_k=tsfm_d_model // tsfm_n_head,
-            d_v=tsfm_d_model // tsfm_n_head,
-            d_model=tsfm_d_model,
-            d_inner=tsfm_d_inner,
-            dropout=0.0,
-            n_position=0,
-            scale_emb=False
-        )
-        self.tsfm_conv2 = nn.Conv1d(tsfm_d_model, out_ch, kernel_size=1)
+        # Bottleneck: 1x1 conv -> sequence model -> 1x1 conv
+        d_model = self.tsfm_d_model
+        self.tsfm_conv1 = nn.Conv1d(out_ch, d_model, kernel_size=1)
+        if self.bottleneck_type == "transformer":
+            self.tsfm_causal = bottleneck.pop("causal", True)
+            self.tsfm_encoder = TransformerEncoder(
+                d_word_vec=d_model,
+                n_layers=self.tsfm_n_layers,
+                n_head=self.tsfm_n_head,
+                d_k=d_model // self.tsfm_n_head,
+                d_v=d_model // self.tsfm_n_head,
+                d_model=d_model,
+                d_inner=self.tsfm_d_inner,
+                dropout=0.0,
+                n_position=0,
+                scale_emb=False
+            )
+        elif self.bottleneck_type in ("mamba", "mamba2"):
+            from cleanunet.sequence import build_mamba_layers, resolve_backend
+            self.mamba_backend = resolve_backend(bottleneck.pop("backend", "auto"))
+            self.tsfm_Mamba_layers, self.norm_f = build_mamba_layers(
+                d_model, self.tsfm_n_layers, seq_type=self.bottleneck_type, backend=self.mamba_backend,
+                d_state=bottleneck.pop("d_state", d_model // self.tsfm_n_head),
+                expand=bottleneck.pop("expand", self.tsfm_d_inner / d_model),
+                **bottleneck)
+            bottleneck = {}
+        else:  # lstm
+            self.tsfm_lstm = nn.LSTM(d_model, d_model, num_layers=self.tsfm_n_layers, batch_first=True)
+        if bottleneck:
+            unknown = set(bottleneck) - {"causal", "backend", "d_state", "d_conv", "expand", "headdim",
+                                         "use_fast_path", "residual_in_fp32", "norm_epsilon"}
+            if unknown:
+                raise ValueError(f"Unknown bottleneck options: {sorted(unknown)}")
+        self.tsfm_conv2 = nn.Conv1d(d_model, out_ch, kernel_size=1)
 
-        # Apply weight scaling initialization for conv layers if provided
+        # Weight scaling initialization for all conv layers (as in CleanUNet / CleanUMamba)
         for layer in self.modules():
-            if isinstance(layer, (nn.Conv1d, nn.ConvTranspose1d)):
-                try:
-                    weight_scaling_init(layer)
-                except Exception:
-                    # If user doesn't have weight_scaling_init or it fails, skip gracefully
-                    pass
+            if isinstance(layer, (nn.Conv1d, nn.ConvTranspose1d)) and layer.bias is not None:
+                weight_scaling_init(layer)
 
+    # ------------------------------------------------------------------
+    @property
+    def total_stride(self) -> int:
+        return self.stride ** self.encoder_n_layers
 
-    def forward(self, noisy_audio: torch.Tensor) -> torch.Tensor:
+    def fusion_points(self) -> dict:
+        """Named feature points that accept conditioning hooks: {name: (channels, stride in samples)}."""
+        points = {}
+        for level, ch in enumerate(self.level_channels, start=1):
+            s = self.stride ** level
+            points[f"enc_s{s}"] = (ch, s)
+            points[f"skip_s{s}"] = (ch, s)
+            points[f"dec_s{s}"] = (ch, s)
+        points["bott_pre"] = (self.tsfm_d_model, self.total_stride)
+        points["bott_post"] = (self.tsfm_d_model, self.total_stride)
+        return points
+
+    def valid_length(self, length: int) -> int:
+        """Smallest length >= `length` that the encoder/decoder maps back without remainder."""
+        D, K, S = self.encoder_n_layers, self.kernel_size, self.stride
+        for _ in range(D):
+            length = 1 if length < K else 1 + np.ceil((length - K) / S)
+        for _ in range(D):
+            length = (length - 1) * S + K
+        return int(length)
+
+    def run_bottleneck(self, x: torch.Tensor, inference_params=None) -> torch.Tensor:
+        """Sequence model on (B, T, d_model)."""
+        if self.bottleneck_type == "transformer":
+            mask = None
+            if self.tsfm_causal:
+                len_s = x.shape[1]
+                mask = (1 - torch.triu(torch.ones((1, len_s, len_s), device=x.device), diagonal=1)).bool()
+            return self.tsfm_encoder(x, src_mask=mask)
+        if self.bottleneck_type in ("mamba", "mamba2"):
+            from cleanunet.sequence import run_mamba_layers
+            return run_mamba_layers(self.tsfm_Mamba_layers, self.norm_f, x, inference_params)
+        return self.tsfm_lstm(x)[0]
+
+    def forward(self, noisy_audio: torch.Tensor, bottleneck_hook=None, return_skip_connections: bool = False,
+                hooks: dict = None, bottleneck_runner=None):
         """Forward pass.
+
         Args:
-            noisy_audio: Tensor shape (B, L) or (B, 1, L)
+            noisy_audio: (B, L) or (B, 1, L).
+            bottleneck_hook: optional callable applied to the bottleneck features (B, d_model, T)
+                after ``tsfm_conv1`` (used for spectrogram fusion in CleanUNet2). Same as hooks["bott_pre"].
+            hooks: optional {point_name: callable(features) -> features} for the points listed by
+                ``fusion_points()``; features are (B, C, T).
+            bottleneck_runner: optional callable replacing the sequence model, (B, T, d) -> (B, T, d).
         Returns:
-            denoised audio tensor with same length as input: (B, 1, L)
+            denoised audio (B, 1, L)
         """
-        # ensure shape (B, C, L)
         if noisy_audio.dim() == 2:
             noisy_audio = noisy_audio.unsqueeze(1)
         B, C, L = noisy_audio.shape
-        assert C == 1, "Expected mono input (1 channel)."
+        assert C == self.channels_input, f"Expected {self.channels_input} input channel(s), got {C}."
 
-        # normalize by standard deviation per example and pad to suitable length
-        std = noisy_audio.std(dim=2, keepdim=True) + 1e-3
-        noisy_audio = noisy_audio / std
+        # normalize by standard deviation per example (not in-place) and pad to a valid length
+        if self.normalize_input:
+            std = noisy_audio.std(dim=2, keepdim=True) + 1e-3
+            noisy_audio = noisy_audio / std
         x = padding(noisy_audio, self.encoder_n_layers, self.kernel_size, self.stride)
 
         # encoder: collect skip connections
+        hooks = dict(hooks or {})
+        if bottleneck_hook is not None:
+            if "bott_pre" in hooks:
+                raise ValueError("Use either bottleneck_hook or hooks['bott_pre'], not both")
+            hooks["bott_pre"] = bottleneck_hook
+
+        def hook(name, h):
+            fn = hooks.get(name)
+            return h if fn is None else fn(h)
+
         skip_connections = []
-        for downsampling_block in self.encoder:
+        for level, downsampling_block in enumerate(self.encoder, start=1):
             x = downsampling_block(x)
+            x = hook(f"enc_s{self.stride ** level}", x)
             skip_connections.append(x)
-        # reverse skip connections so they correspond to decoder order
+        if self.residual_projection:
+            skip_connections = [proj(s) for proj, s in zip(self.residual_projection_layers, skip_connections)]
+        skip_connections = [hook(f"skip_s{self.stride ** level}", s)
+                            for level, s in enumerate(skip_connections, start=1)]
         skip_connections = skip_connections[::-1]
 
-        # prepare attention mask - causal mask that prevents attending to future positions
-        len_s = x.shape[-1]  # time length at bottleneck
-        attn_mask = (1 - torch.triu(torch.ones((1, len_s, len_s), device=x.device), diagonal=1)).bool()
-
-        # Transformer bottleneck
-        x = self.tsfm_conv1(x)           # (B, channels, T) -> (B, tsfm_d_model, T)
-        x = x.permute(0, 2, 1)           # -> (B, T, d_model) for transformer
-        x = self.tsfm_encoder(x, src_mask=attn_mask)
-        x = x.permute(0, 2, 1)           # -> (B, d_model, T)
-        x = self.tsfm_conv2(x)           # -> (B, channels, T)
+        # bottleneck
+        x = self.tsfm_conv1(x)                      # (B, d_model, T)
+        x = hook("bott_pre", x)
+        runner = bottleneck_runner or self.run_bottleneck
+        tsfm_out = runner(x.permute(0, 2, 1)).permute(0, 2, 1)
+        tsfm_out = hook("bott_post", tsfm_out)
+        x = self.tsfm_conv2(tsfm_out)
 
         # decoder with skip connections
+        D = self.encoder_n_layers
         for i, upsampling_block in enumerate(self.decoder):
-            skip_i = skip_connections[i]
-            # crop skip to match current length if necessary
-            skip_x = skip_i[:, :, :x.shape[-1]].clone()
-            x = x + skip_x
+            x = x + skip_connections[i][:, :, :x.shape[-1]]
+            x = hook(f"dec_s{self.stride ** (D - i)}", x)
             x = upsampling_block(x)
 
-        # crop to original length and denormalize
-        x = x[:, :, :L] * std
+        x = x[:, :, :L]
+        if self.normalize_input:
+            x = x * std
+        if return_skip_connections:
+            return x, skip_connections + [tsfm_out]
         return x
 
-    # Optional feature-conditional forward (kept as comment for reference)
-    # def forward(self, noisy_audio, feature):
-    #     feature = feature.unsqueeze(2) # (B, C) -> (B, C, 1)
-    #     ... (omitted) ...
 
 # ---------------------------
 # Quick self-test / example usage when running as script
 # ---------------------------
 if __name__ == '__main__':
-    import json
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Sanity check for CleanUNet model")
-    parser.add_argument('-c', '--config', type=str, default='configs/DNS-large-full.json', help='JSON config file (network_config key expected)')
-    args = parser.parse_args()
-
-    with open(args.config) as f:
-        data = f.read()
-    config = json.loads(data)
-    network_config = config.get("network_config", {})
-
-    # Build model and run forward/backward pass to validate shapes
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = CleanUNet(**network_config).to(device)
-
-    # Helper: print model size (optional); implement your own print_size if needed
-    try:
-        from util import print_size
-        print_size(model, keyword="tsfm")
-    except Exception:
-        pass
-
-    # Example input: 4 examples, 1 channel, 4.5s at 16kHz
-    input_data = torch.ones([4, 1, int(4.5 * 16000)], device=device)
-    # If an optional speaker-vector forward was used, xvector_data would be provided
-    # xvector_data = torch.ones([4, 512], device=device)
-
-    output = model(input_data)
-    print(f"Output shape: {output.shape}")
-
-    # quick backward pass sanity check
-    y = torch.rand_like(output)
-    loss = torch.nn.MSELoss()(y, output)
-    loss.backward()
-    print("Loss (scalar):", loss.item())
+    for cfg in ({}, {"type": "mamba", "n_layers": 3}):
+        model = CleanUNet(bottleneck=cfg).to(device)
+        n_params = sum(p.numel() for p in model.parameters()) / 1e6
+        x = torch.randn(2, 1, 32768, device=device) * 0.1
+        y = model(x)
+        y.pow(2).mean().backward()
+        print(f"bottleneck={cfg.get('type', 'transformer')}: {n_params:.2f}M params, output {tuple(y.shape)}")
