@@ -8,8 +8,9 @@ study on VoiceBank-DEMAND (16 kHz). The study is logged in `IMPROVEMENT_PLAN.md`
 
 The best system is a **training-free blend** of two separately trained networks. A waveform CleanUNet with a Mamba
 bottleneck (**S30**) is trained with a metric discriminator and external noise. A bidirectional Mamba CleanSpecNet
-(**W5**) estimates a magnitude, and its magnitude is mixed with the waveform estimate. On the VoiceBank-DEMAND test
-set the blend reaches **PESQ-WB 3.375**; the waveform model alone (streaming-capable) reaches **3.335**.
+(**W5**) estimates a magnitude, and its magnitude is mixed with the waveform estimate. With a bidirectional bottleneck
+trained for 60 epochs, the blend reaches **PESQ-WB 3.446** on the VoiceBank-DEMAND test set (offline). The
+streaming-capable S30 alone reaches **3.335**.
 
 ---
 
@@ -74,20 +75,30 @@ DEMAND noise.
 | System | Params | Streaming | Test PESQ-WB | PESQ-NB | STOI | SI-SDR (dB) | vctk_unseen PESQ-WB |
 |---|---|---|---|---|---|---|---|
 | Control: K0ext30p soup (no metric loss) | 41.4M | yes | 3.165 | 3.758 | 0.954 | 18.74 | 3.153 |
-| **S30 soup** (simplest strong model) | 41.4M | yes | **3.335** | 3.825 | 0.954 | 18.47 | 3.325 |
+| **S30 soup** (simplest strong model) | 41.4M | yes | 3.335 | 3.825 | 0.954 | 18.47 | 3.325 |
 | S30hp soup (metric loss only above 100 Hz) | 41.4M | yes | 3.280 | 3.825 | 0.954 | 18.68 | 3.256 |
-| **S30 soup + W5 blend, w = 0.25** (best) | 60.9M | no | **3.375** | **3.862** | **0.956** | 18.85 | **3.365** |
-| S30hp soup + W5 blend, w = 0.25 | 60.9M | no | 3.326 | 3.861 | 0.956 | **19.00** | 3.300 |
+| S30hp soup, metric weight 1.0 | 41.4M | yes | 3.316 | 3.848 | 0.954 | 18.70 | 3.294 |
+| Bidirectional S30 soup, 60 epochs (one network) | 52.4M | no | 3.428 | 3.885 | 0.957 | 19.14 | 3.397 |
+| Bidirectional S30hp soup, metric weight 1.0 | 52.4M | no | 3.378 | 3.897 | 0.957 | 19.21 | 3.333 |
+| S30 soup + W5 blend, w = 0.25 | 60.9M | no | 3.375 | 3.862 | 0.956 | 18.85 | 3.365 |
+| S30hp soup + W5 blend, w = 0.25 | 60.9M | no | 3.326 | 3.861 | 0.956 | 19.00 | 3.300 |
+| **Bidirectional S30 soup, 60 epochs + W5, w = 0.15** (best PESQ-WB) | 71.9M | no | **3.446** | 3.902 | **0.958** | 19.24 | **3.414** |
+| **Bidirectional S30hp soup, weight 1.0 + W5, w = 0.25** (for use) | 71.9M | no | 3.388 | **3.913** | **0.958** | **19.32** | 3.352 |
 
 Notes:
 - **Streaming.** Streaming S30 with the scale prior (`--stream_prior_std 0.0604 --stream_prior_frames 62`) gives
-  3.323 on the test set, against 3.335 offline.
+  3.323 on the test set, against 3.335 offline. The S30hp soup with metric weight 1.0 has not been evaluated in
+  streaming yet.
+- **Bidirectional bottleneck and longer training.** The bidirectional bottleneck gains PESQ-WB +0.064 and SI-SDR
+  +0.63 dB over S30 on the test set (30 epochs each). Training it for 60 epochs adds PESQ-WB +0.029, partly below
+  100 Hz. With 30 epochs, the bidirectional S30 soup scores 3.399 alone and 3.421 with W5.
 - **Where the metric loss gains.** Part of the PESQ-WB gain of the metric discriminator sits in the 50-100 Hz band,
   which PESQ-WB still weighs. That part costs SI-SDR, and DNSMOS reads it as background noise. In the speech band,
   the gain is PESQ-NB +0.055 over the control, positive for all 80 speakers of `vctk_unseen`. S30hp keeps that gain
   without the 50-100 Hz effect.
-- **Which variant.** Use S30 / S30 + W5 for the PESQ-WB benchmark number, and the S30hp variants when SI-SDR and
-  the low band matter (`IMPROVEMENT_PLAN.md`, sections 14.8 and 14.9).
+- **Which variant.** Use the 60-epoch bidirectional S30 + W5 for the PESQ-WB benchmark number, and the bidirectional
+  S30hp with metric weight 1.0 + W5 when the speech band (PESQ-NB), SI-SDR and the low band matter. For streaming,
+  use S30, or the S30hp with metric weight 1.0 for PESQ-NB (`IMPROVEMENT_PLAN.md`, sections 14.8, 14.9 and 14.11).
 
 ## Architecture of the recommended system
 
@@ -109,6 +120,9 @@ Notes:
   - Encoder: 8 blocks of Conv1d(k=4, stride 2) -> ReLU -> 1x1 Conv -> GLU, with channels 64 to 768. The bottleneck
     runs one token every 256 samples (16 ms).
   - Bottleneck: 1x1 Conv -> 3 unidirectional Mamba layers (d_model 512, d_state 64, expand 4) -> 1x1 Conv.
+  - Bidirectional variant (offline; the best system, trained for 60 epochs): each Mamba layer also runs on the
+    time-reversed sequence, and the two outputs are summed (`BiMambaMixer` in `cleanunet/sequence.py`). This adds
+    11.0M parameters (52.4M in total).
   - Decoder: the mirror image, with transposed convolutions and additive skip connections.
   - Training: from the DNS-pretrained CleanUMamba-3N-E8 checkpoint, a VoiceBank-DEMAND fine-tune (stage A), then
     30 epochs with L1 + multi-resolution STFT, a metric discriminator (weight 0.3), MUSAN noise (p 0.5,
@@ -133,13 +147,13 @@ cleanunet/
   cleanunet2.py       hybrid model: STFT front end, upsampler, conditioner, bottleneck fusion, fusion hub
   fusion.py           fusion hub: frame-rate condition -> heads at named CleanUNet injection points
   postfilter.py       learned spectral post-filter on the CleanUNet output
-  blend.py            training-free magnitude blend with a CleanSpecNet
+  blend.py            magnitude blend with a CleanSpecNet (training-free, or differentiable for loss.mode blend)
   metric_disc.py      metric discriminator (PESQ predictor) and its losses
   sequence.py         Mamba blocks and stacks (mamba_ssm layout), BiMamba, LSTM
   mamba_torch.py      pure-PyTorch Mamba (same parameter names as mamba_ssm.Mamba)
   spectral.py         the single STFT used for inputs, losses and resynthesis
   streaming.py        frame-by-frame streaming inference (Mamba bottleneck)
-  checkpoint_io.py    loaders for Lightning / CleanUNet2 / CleanUMamba checkpoints
+  checkpoint_io.py    loaders for Lightning / CleanUNet2 / CleanUMamba checkpoints; uni- to bidirectional Mamba
   util.py, logger.py  utilities kept from the original CleanUNet code
 lightning_modules/    Lightning module (losses, metric GAN, distillation, optimizer, validation) and data module
 configs/
@@ -225,6 +239,10 @@ python train.py --config configs/ablation/k0.yaml seed=1 trainer.max_epochs=30 \
     augment_polarity=0.5 'loss.metric_gan={weight: 0.3}' \
     model.init.cleanunet_checkpoint=<stage A checkpoint> callbacks.best_checkpoint.dirpath=logs/S30_s1
 #    S30hp: 'loss.metric_gan={weight: 0.3, highpass_hz: 100}'
+#    S30hp with metric weight 1.0: 'loss.metric_gan={weight: 1.0, highpass_hz: 100}'
+#    Bidirectional bottleneck (offline): model.architecture.cleanunet_params.bottleneck.bidirectional=true
+#    (the stage A weights load into both directions, with the backward output projections zeroed); the best
+#    system trains it with trainer.max_epochs=60
 
 # 3. Weight soup of the seeds
 python scripts/make_soup.py --ckpts logs/S30_s{1,2,3}/last.ckpt --out logs/S30_soup/last.ckpt
@@ -236,7 +254,7 @@ python train.py --config configs/ablation/stageB_plus.yaml trainer.max_epochs=10
     'data.ext_noise={dir: /path/to/musan, p: 0.5, snr_db: [-5, 20]}' data.num_workers=16 \
     callbacks.best_checkpoint.dirpath=logs/W5
 
-# 5. Blend (no training): pick w on val_unseen, then evaluate
+# 5. Blend (no training): pick w on val_unseen, then evaluate (w = 0.15 for the bidirectional S30 soups)
 python evaluate.py --checkpoint logs/S30_soup/last.ckpt --blend_spec logs/W5/last.ckpt --blend_w 0.25 \
     --filelist filelists/val_unseen.csv --out_dir results/S30_W5/val_unseen
 ```
@@ -273,7 +291,10 @@ On the unseen-noise sets the learned fusions of the hybrid did not beat the trai
 - `loss.mode`:
   - `waveform`: L1 + multi-resolution STFT;
   - `spec`: L1 on the log1p magnitude;
-  - `hybrid`: both, with an optional anti-wrapping phase loss (`loss.weight_phase`).
+  - `hybrid`: both, with an optional anti-wrapping phase loss (`loss.weight_phase`);
+  - `blend`: the output is the blend of a frozen waveform branch with the spectral branch (`loss.blend_w`), so the
+    waveform losses train the spectral branch for its role in the blend (`configs/ablation/z5_blend.yaml`). It did
+    not beat the separately trained W5 (`IMPROVEMENT_PLAN.md`, section 14.11).
 - `loss.metric_gan`:
   - `{weight, d_lr, warmup_steps, pesq_workers, highpass_hz}`: the metric discriminator;
   - training then uses manual optimization, and PESQ targets are computed in a process pool.
@@ -351,8 +372,9 @@ The suite covers:
   Mamba parity;
 - streaming vs offline equivalence and checkpoint round-trips;
 - augmentation, external noise, the data pipeline and the Lightning module;
-- fusion variants, the metric discriminator, distillation, the blend, soups, the scale prior and the band-limited
-  metrics.
+- fusion variants, the metric discriminator, distillation, the blend and its training mode, soups, the scale prior
+  and the band-limited metrics;
+- unidirectional checkpoints loaded into a bidirectional bottleneck.
 
 Tests that need the CleanUMamba checkpoint, the dataset or CUDA are skipped when those are missing. With the GPU
 hidden (`CUDA_VISIBLE_DEVICES=`), `test_no_missing_or_unexpected_keys_for_e8` fails: the official CleanUMamba

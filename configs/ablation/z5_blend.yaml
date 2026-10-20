@@ -1,0 +1,22 @@
+# Z5 (IMPROVEMENT_PLAN.md, 14.11): fine-tune the W5 spectral branch for its role in the blend with a frozen waveform
+# branch. The training output is the blend of cleanunet/blend.py (|Y|^(1-w) |S|^w with the phase of Y), so the
+# waveform losses (and the metric discriminator, when set) act on the final output; the spectral loss (weight_spec)
+# keeps the branch an estimate of the clean magnitude. At the start, the output equals the training-free blend.
+# Override model.init.cleanunet_checkpoint for another waveform model (e.g. the S30hp soup).
+base: ../base.yaml
+trainer:
+  max_epochs: 20
+  limit_val_batches: 0
+  num_sanity_val_steps: 0
+model:
+  architecture: ../model/cleanunet2_mamba_e8_w5blend.yaml
+  init:
+    cleanunet_checkpoint: logs/abl/S30_soup/last.ckpt
+    cleanspecnet_checkpoint: logs/abl/N_W5_bidir_final/last.ckpt
+  train_cleanunet: false
+loss: {mode: blend, blend_w: 0.25, weight_spec: 1.0}
+optim: {lr: 1.0e-4}
+callbacks:
+  best_checkpoint: {monitor: null, save_top_k: 1, filename: "epoch{epoch}", dirpath: logs/abl/Z5/checkpoints}
+logger:
+  tensorboard: {name: abl/Z5}

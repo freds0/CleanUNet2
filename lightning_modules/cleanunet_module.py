@@ -14,7 +14,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from augment import Augmenter
-from cleanunet.blend import blend
+from cleanunet.blend import blend, blend_with_spec
 from cleanunet.cleanspecnet import safe_atan2
 from cleanunet.cleanunet2 import CleanUNet2
 from cleanunet.metric_disc import MetricDiscriminator, batch_pesq, discriminator_loss, generator_loss
@@ -31,8 +31,9 @@ class CleanUNetLightningModule(pl.LightningModule):
     Config sections (see configs/*.yaml):
       model:              architecture (CleanUNet2 kwargs), init (pretrained weights),
                           train_cleanunet / train_cleanspecnet (freezing)
-      loss:               mode = hybrid | waveform | spec; waveform, spectral and phase weights; MR-STFT settings;
-                          cmag (compressed-magnitude loss); metric_gan (metric discriminator, optional highpass_hz)
+      loss:               mode = hybrid | waveform | spec | blend; waveform, spectral and phase weights; MR-STFT
+                          settings; cmag (compressed-magnitude loss); metric_gan (metric discriminator, optional
+                          highpass_hz); blend_w (weight of the spectral magnitude in mode blend)
       optim:              AdamW + linear warm-up + cosine decay, per-submodule LR scales
       augment:            Remix / BandMask / Shift / Gain / SNR probabilities (applied on GPU)
       augment_polarity:   probability of multiplying a training pair by -1
@@ -68,10 +69,17 @@ class CleanUNetLightningModule(pl.LightningModule):
         # 3. Losses
         loss_cfg = cfg.get("loss", {})
         self.loss_mode = loss_cfg.get("mode", "hybrid")
-        if self.loss_mode not in ("hybrid", "waveform", "spec"):
-            raise ValueError(f"loss.mode must be hybrid | waveform | spec, got '{self.loss_mode}'")
-        if self.loss_mode in ("hybrid", "spec") and not self.model.use_spec_branch:
+        if self.loss_mode not in ("hybrid", "waveform", "spec", "blend"):
+            raise ValueError(f"loss.mode must be hybrid | waveform | spec | blend, got '{self.loss_mode}'")
+        if self.loss_mode in ("hybrid", "spec", "blend") and not self.model.use_spec_branch:
             raise ValueError(f"loss.mode='{self.loss_mode}' needs a model with use_spec_branch=True")
+        # Blend training (IMPROVEMENT_PLAN.md, 14.11, Z5): the output is the blend of cleanunet/blend.py of the frozen
+        # waveform branch with the spectral branch, |Y|^(1-w) |S|^w with the phase of Y, so the waveform losses (and
+        # the metric discriminator) train the spectral branch for its role as the post-filter of that waveform model;
+        # weight_spec x the spectral loss keeps S an estimate of the clean magnitude.
+        self.blend_w = float(loss_cfg.get("blend_w", 0.25))
+        if self.loss_mode == "blend" and self.train_cleanunet:
+            raise ValueError("loss.mode=blend needs a frozen waveform branch (model.train_cleanunet: false)")
         stft_cfg = loss_cfg.get("stft_config", {})
         self.mrstft = MultiResolutionSTFTLoss(
             fft_sizes=stft_cfg.get("fft_sizes", [512, 1024, 2048]),
@@ -336,11 +344,14 @@ class CleanUNetLightningModule(pl.LightningModule):
             logs["spec_loss"] = loss_spec.detach()
             return loss_spec, out, logs
 
-        fusion_enabled = True
-        if self.training and self.fusion_dropout > 0:
-            fusion_enabled = bool(torch.rand(()) >= self.fusion_dropout)
-            logs["fusion_dropped"] = torch.tensor(float(not fusion_enabled))
-        out = self.model(noisy, clean=clean, fusion_enabled=fusion_enabled)
+        if self.loss_mode == "blend":
+            out = self._blend_forward(noisy)
+        else:
+            fusion_enabled = True
+            if self.training and self.fusion_dropout > 0:
+                fusion_enabled = bool(torch.rand(()) >= self.fusion_dropout)
+                logs["fusion_dropped"] = torch.tensor(float(not fusion_enabled))
+            out = self.model(noisy, clean=clean, fusion_enabled=fusion_enabled)
         enhanced = out["wav"]
         loss_wave, comps = self.criterion(clean, enhanced, return_components=True)
         total = self.weight_waveform * loss_wave
@@ -365,11 +376,23 @@ class CleanUNetLightningModule(pl.LightningModule):
             loss_phase = self.phase_loss(enhanced, clean)
             total = total + self.weight_phase * loss_phase
             logs["phase_loss"] = loss_phase.detach()
-        if self.loss_mode == "hybrid" and self.weight_spec > 0 and out["spec"] is not None:
+        if self.loss_mode in ("hybrid", "blend") and self.weight_spec > 0 and out["spec"] is not None:
             loss_spec = self._spectral_loss(out, noisy, clean, logs)
             total = total + self.weight_spec * loss_spec
             logs["spec_loss"] = loss_spec.detach()
         return total, out, logs
+
+    def _blend_forward(self, noisy):
+        """Output dict of loss.mode blend: the frozen waveform branch (no gradient) blended with the spectral branch
+        (cleanunet.blend.blend_with_spec, with gradients into the spectral branch)."""
+        m = self.model
+        x = noisy.view(noisy.shape[0], 1, -1)
+        scale = m.input_scale(x)
+        with torch.no_grad():
+            y = m.clean_unet(x / scale) * scale
+        spec = m.spec_branch(x / scale)["spec"]
+        wav = blend_with_spec(y, x, m, self.blend_w, spec=spec)
+        return {"wav": wav, "spec": spec, "phase": None, "scale": scale}
 
     # -------------------------
     # Training

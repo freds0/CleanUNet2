@@ -33,7 +33,7 @@ model:
   train_cleanspecnet: true
 
 loss:
-  mode: hybrid                   # hybrid | waveform | spec
+  mode: hybrid                   # hybrid | waveform | spec | blend
   ell_p: 1                       # L1 waveform loss
   ell_p_lambda: 1.0
   stft_lambda: 1.0

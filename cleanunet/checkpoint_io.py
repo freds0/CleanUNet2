@@ -41,11 +41,31 @@ def extract_state_dict(path: str, strip_prefixes: Iterable[str] = ()) -> dict:
     return out
 
 
+def expand_to_bidirectional(sub: dict, own_keys: set) -> dict:
+    """Unidirectional Mamba weights for a module whose Mamba layers are bidirectional (cleanunet.sequence.BiMambaMixer,
+    keys `...mixer.fwd.*` / `...mixer.bwd.*`): every mixer goes to both copies and the output projection of the
+    backward copy is zeroed, so the module starts exactly as the unidirectional one (IMPROVEMENT_PLAN.md, 14.11, Z6).
+    Other state dicts are returned unchanged."""
+    if not any(".mixer.fwd." in k for k in own_keys) or any(".mixer.fwd." in k for k in sub):
+        return sub
+    out = {}
+    for k, v in sub.items():
+        head, sep, rest = k.partition(".mixer.")
+        if sep and f"{head}.mixer.fwd.{rest}" in own_keys:
+            out[f"{head}.mixer.fwd.{rest}"] = v
+            out[f"{head}.mixer.bwd.{rest}"] = torch.zeros_like(v) if rest.startswith("out_proj.") else v.clone()
+        else:
+            out[k] = v
+    print("[INFO] Unidirectional Mamba weights loaded into both directions (backward output projections zeroed).")
+    return out
+
+
 def load_submodule_weights(module: nn.Module, path: str, submodule_name: str, prefix: Optional[str] = None,
                            strict: bool = True):
     """Load weights of `module` from a checkpoint that may hold it under several prefixes.
 
-    Tried in order: an explicit `prefix`, "model.<submodule_name>.", "<submodule_name>.", "model.".
+    Tried in order: an explicit `prefix`, "model.<submodule_name>.", "<submodule_name>.", "model.". Unidirectional
+    Mamba weights load into a bidirectional module (`expand_to_bidirectional`).
     """
     state_dict = extract_state_dict(path)
     candidates = [prefix] if prefix else [f"model.{submodule_name}.", f"{submodule_name}.", "model."]
@@ -54,6 +74,7 @@ def load_submodule_weights(module: nn.Module, path: str, submodule_name: str, pr
         sub = {k[len(p):]: v for k, v in state_dict.items() if k.startswith(p)}
         if sub and len(own_keys & set(sub)) > 0:
             sub = {k: v.float() if torch.is_floating_point(v) else v for k, v in sub.items()}
+            sub = expand_to_bidirectional(sub, own_keys)
             missing, unexpected = module.load_state_dict(sub, strict=strict)
             print(f"[INFO] Loaded {submodule_name} weights from '{path}' (prefix '{p}').")
             return missing, unexpected

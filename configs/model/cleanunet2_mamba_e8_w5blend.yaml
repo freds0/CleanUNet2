@@ -1,0 +1,8 @@
+# W5 spectral branch (linear front end, mask output, non-causal bidirectional Mamba) next to the E8 waveform branch,
+# with no conditioning path: the two branches meet only in the blend of cleanunet/blend.py (IMPROVEMENT_PLAN.md,
+# 14.11, Z5). Both branches have the parameter layout of their checkpoints (S30 / S30hp and W5).
+base: cleanunet2_mamba_e8_bidir.yaml
+conditioning_type: none
+cleanspecnet_params:
+  output_mode: mask
+  frontend: linear

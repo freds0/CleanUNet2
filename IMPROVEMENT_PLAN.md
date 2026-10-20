@@ -1,6 +1,6 @@
 # Ablation plan: CleanSpecNet → CleanUNet conditioning and fusion
 
-*Author: Claude (Opus 5.5) · 2026-10-13, updated 2026-10-19 · branch `feature/mamba` · details Groups A (fusion) and B (CleanSpecNet) of `IMPROVEMENTS_CLAUDE.md`*
+*Author: Claude (Opus 5.5) · 2026-10-13, updated 2026-10-20 · branch `feature/mamba` · details Groups A (fusion) and B (CleanSpecNet) of `IMPROVEMENTS_CLAUDE.md`*
 
 | Marker | Meaning |
 |---|---|
@@ -12,8 +12,12 @@
 
 ## 0. Summary
 
+**Status on 2026-10-20, 19:35.** Queue Z (14.11) finished; conclusions at the end of 14.11. With a bidirectional Mamba bottleneck in the waveform branch (Z6), the S30 soup + W5 (w 0.15) scores 3.421 on the test set (+0.046 over 3.375). Trained for 60 epochs instead of 30 (Z4), the bidirectional soup gains PESQ-WB +0.029 more on the test set: alone it scores 3.428 (one 52.4M network, offline, above every earlier blend), and with W5 (w 0.15) **3.446**, the best so far. The S30hp final with metric weight 1.0 (Z3) gains PESQ-NB +0.023 and PESQ-WB +0.036 over S30hp on the test set, with SI-SDR and STOI unchanged. The two together (Z7: bidirectional bottleneck, weight 1.0 above 100 Hz) gain PESQ-NB +0.049 over Z3 on the test set; with W5 (w 0.25) they give the highest PESQ-NB (3.913), PESQ-WB above 100 Hz (3.531) and SI-SDR (19.32 dB) measured so far, with a full-band PESQ-WB of 3.388. Rejected: output ensembles (Z1), the compressed-magnitude loss and metric weight 0.5 (Z2), W5 fine-tuned through the blend (Z5), and 60 epochs on the bidirectional weight-1.0 recipe (Z4, PESQ-NB +0.013 against the +0.015 of the rule).
+
 **Status on 2026-10-19, 19:00.** Queue BB (14.10) finished: the S30 + W5 system retrained with the largest batch that fits the GPU scores 3.312 on the test set, against 3.375 with batch 16, so the batch-16 recipe stays. Queue Y (14.9) finished earlier the same day: training-free checks and a new set with 80 unseen speakers (vctk_unseen), which confirms the test results. Queue X (14.8) finished on 2026-10-16 at 10:53 with no failures, and the complementary analysis (14.8.2) revised the case for S30hp. Queue X covered streaming with a scale prior, DNSMOS, a listening page and the metric discriminator restricted to the band above 100 Hz (S30hp). Queue W (section 14: best system and simplest robust model) finished at 04:43: results in 14.4–14.6 and analysis in 14.7.
 
+- **New best system (queue Z, 14.11):** the same blend with the soup of the **bidirectional S30 trained for 60 epochs** (Z4, w = 0.15) gives **PESQ 3.446** on the test set, 3.419 on val_unseen and 3.414 on vctk_unseen. It has 71.9M parameters and is offline. The soup alone gives 3.428 (52.4M); with 30 epochs (Z6), the blend gives 3.421.
+- **New system for use (queue Z, 14.11):** the **bidirectional S30hp with metric weight 1.0** soup (Z7) + W5 (w = 0.25): PESQ-NB 3.913, PESQ-WB above 100 Hz 3.531 and SI-SDR 19.32 dB on the test set, the highest so far, with a full-band PESQ-WB of 3.388. It replaces S30hp + W5 (3.861 / 3.469 / 19.00 dB) and has the same size as the best system (71.9M, offline). The text below describes the systems before queue Z.
 - **Best system (A):** the training-free blend of the **S30** soup with the bidirectional spectral branch **W5** (w = 0.25, chosen on val_unseen) gives **PESQ 3.375** on the test set. With the 3 S30 seeds separately, it gives **3.372 ± 0.009**.
   - That is +0.164 over RX_C3 (3.212) and +0.212 over K0extfull (3.164).
   - STOI 0.956, SI-SDR 18.85 dB, COVL 4.15. It has 60.9M parameters and runs offline only.
@@ -2024,3 +2028,270 @@ bootstrap over speakers and the share of the 80 speakers that improve.
      precompute the STFTs or add workers.
    - S30 needs about the same number of generator and discriminator updates. For example, batch 32–64 with more
      epochs, checking that the PESQ of the training outputs reaches ~2.91 by the end.
+
+### 14.11 Queue Z: experiments for a better final system (2026-10-19)
+
+User request: "run the planned experiments", after the proposals that followed 14.10. Item 7 of the proposals (a
+spectral branch with a phase decoder, MP-SENet / SEMamba style) was left out: it needs new code and 4–8 h of GPU per
+run, and our earlier attempt (N4, with the anti-wrapping losses) stayed below the magnitude-only branch. The listening
+test still needs listeners.
+
+- **Launchers:** `logs/abl/run_Z.sh` (part 1: Z1 and Z2) and the parts that follow, all logging to
+  `logs/abl/queue_Z.log`. The queue runs in the tmux session `queueZ`.
+- **Code:**
+  - `loss.mode: blend` (`lightning_modules/cleanunet_module.py`): the output is the blend of `cleanunet/blend.py`
+    (`blend_with_spec`, now differentiable) of a frozen waveform branch with the spectral branch. The waveform
+    losses and the metric discriminator act on the blend, and the spectral loss keeps S an estimate of the clean
+    magnitude. Config `configs/ablation/z5_blend.yaml`, architecture `configs/model/cleanunet2_mamba_e8_w5blend.yaml`.
+  - Unidirectional Mamba weights now load into a bidirectional stack (`cleanunet/checkpoint_io.py`,
+    `expand_to_bidirectional`): both copies get the weights and the backward output projection starts at zero, so
+    the model starts as the causal one.
+  - `scripts/ensemble_outputs.py --band_limited`.
+  - Tests in `tests/test_z_experiments.py` (6 new); the suite has 141 passing tests on CPU (plus the CUDA-only
+    checkpoint test).
+
+**Experiments and decision rules** (fixed before the results; selection on val_unseen, the test set and vctk_unseen
+only for the systems that pass):
+
+| Id | Experiment | Compared with | Passes if |
+|---|---|---|---|
+| Z1 | Mean of the outputs of the 3 seeds (S30, S30hp, with and without W5) | The weight soups | PESQ-WB +0.010 (it triples the cost, as the TTA rule of W1) |
+| Z2 | Short protocol (5 epochs, seeds 1 and 2): S30 + compressed magnitude (weight 10); S30hp with metric weights 0.5 and 1.0, and S30hp + compressed magnitude | The short S30 (weight 0.3) and S30hp (0.3) with the same seeds | Mean Δ ≥ +0.010 in PESQ-WB (S30 track) or PESQ-NB (S30hp track), with STOI ≥ control − 0.003 and SI-SDR ≥ control − 0.5 dB (control: the short K0ext with polarity, WP_flip) |
+| Z3 | Finals of the Z2 winners: 3 seeds, 30 epochs, soup, blend with W5 (w on val_unseen) | S30 / S30hp | Paired CI of the soups above 0 in the track metric |
+| Z5 | W5 fine-tuned for the blend (20 epochs, lr 1e-4, discriminator 0.3; with highpass 100 Hz for S30hp) on the frozen S30 / S30hp soup | The training-free blend with the original W5 | Δ ≥ +0.010 in the track metric, STOI ≥ −0.003, SI-SDR ≥ −0.5 dB |
+| Z6 | S30 with a bidirectional Mamba bottleneck (52.4M parameters), seed 1, then seeds 2–3 if it passes | The 3 S30 seeds (3.344 ± 0.012 on val_unseen) | PESQ-WB +0.015 over the seed mean, same guards |
+| Z7 | Bidirectional bottleneck + S30hp with weight 1.0, 3 seeds, only if the Z6 and Z3 finals pass (added 10-20, before its results) | The Z3 soup | Paired CI of the soups above 0 in PESQ-NB, same guards |
+| Z4 | 60 epochs instead of 30, on the best waveform recipe, seed 1 first | Its 30-epoch seeds | +0.015 in the track metric |
+
+**Z1 result (val_unseen):** the mean of the outputs gains only +0.004 to +0.005 over the soups, and STOI drops by
+0.0003 to 0.0006. Rejected.
+
+| System | Soup | Mean of the 3 outputs |
+|---|---|---|
+| S30 | 3.348 | 3.354 |
+| S30 + W5 | 3.373 | 3.378 |
+| S30hp | 3.295 | 3.299 |
+| S30hp + W5 | 3.320 | 3.324 |
+
+**Z2 result (val_unseen, mean of seeds 1 and 2; Δ paired against the reference with the same seeds):**
+
+| Recipe (5 epochs) | PESQ-WB | PESQ-WB > 100 Hz | PESQ-NB | SI-SDR | STOI | Δ track metric [95% CI] | Decision |
+|---|---|---|---|---|---|---|---|
+| S30, metric weight 0.3 (reference) | 3.236 | 3.405 | 3.774 | 18.22 | 0.9226 | | |
+| S30 + compressed magnitude (weight 10) | 3.234 | 3.412 | 3.780 | 18.36 | 0.9232 | PESQ-WB −0.002 [−0.005, +0.001] | rejected |
+| S30hp, weight 0.3 (reference) | 3.205 | 3.403 | 3.771 | 18.41 | 0.9228 | | |
+| S30hp, weight 0.5 | 3.216 | 3.415 | 3.773 | 18.46 | 0.9229 | PESQ-NB +0.002 [+0.000, +0.005] | rejected |
+| S30hp, weight 1.0 | 3.225 | 3.423 | 3.782 | 18.37 | 0.9229 | PESQ-NB +0.011 [+0.009, +0.014] | **passes** |
+| S30hp + compressed magnitude | 3.211 | 3.406 | 3.780 | 18.42 | 0.9233 | PESQ-NB +0.009 [+0.007, +0.011] | rejected (just below) |
+
+All six recipes pass the guards (STOI ≥ 0.9197, SI-SDR ≥ 18.05 dB).
+
+- The compressed-magnitude loss raises SI-SDR (+0.14 dB with S30), PESQ-NB and PESQ-WB above 100 Hz (+0.006 and
+  +0.007), but not the full-band PESQ-WB of the benchmark.
+- With the discriminator above 100 Hz, a larger weight helps, and the trend is monotonic over 0.3, 0.5 and 1.0, so
+  1.0 is at the edge of the tested range. At weight 1.0 the S30hp recipe gets back part of the full-band PESQ-WB that
+  the high-pass costs (3.225 against 3.236 for S30, instead of 3.205), for −0.04 dB of SI-SDR.
+
+**Part 3** (`logs/abl/run_Z_p3.sh`, after part 2). The branches are decided by `results/abl/Z_analysis/z_decide.py`
+with the rules above; the guards of Z3–Z6 are relative to the compared system.
+
+- Z3: final of S30hp with weight 1.0 (`Z3_hp1.0`: 3 seeds, 30 epochs, soup, blend with W5, w picked on val_unseen).
+- Z6: seeds 2–3, soup and blend if seed 1 passes.
+- Z5: for each waveform soup where seed 1 passes, seeds 2–3 of the fine-tuning, a soup of the three fine-tuned
+  spectral branches (they share the W5 start) and its blend, w picked on val_unseen.
+- Z4, one run per track (the plan said "the best waveform recipe"; the two tracks have different metrics): for the
+  S30 track, the bidirectional bottleneck if its 3-seed soup beats the S30 soup (paired CI above 0), else S30; for
+  the S30hp track, weight 1.0 if Z3 passes, else S30hp. Seed 1 first against the mean of that recipe's 30-epoch
+  seeds; seeds 2–3, soup and blend if it passes. The cosine schedule spans the 60 epochs.
+
+**Part 2** ran on 2026-10-19 22:14 → 10-20 00:25 with no failures (Z6 seed 1: 62 min; each Z5 run: 33 min).
+
+**Z5 result** (val_unseen, seed 1; fine-tuned W5 against the original, both blended with the frozen soup): rejected
+on both soups.
+
+| Waveform soup (track metric) | Original W5, w 0.25 | Fine-tuned W5, w 0.15 / 0.25 / 0.35 | Δ at w 0.25 [95% CI] | Δ SI-SDR |
+|---|---|---|---|---|
+| S30 (PESQ-WB) | 3.373 | 3.369 / 3.356 / 3.331 | −0.016 [−0.021, −0.012] | +0.21 dB |
+| S30hp (PESQ-NB) | 3.847 | 3.843 / 3.850 / 3.847 | +0.003 [−0.000, +0.006] | +0.22 dB |
+
+- Training through the blend trades PESQ for SI-SDR: PESQ-WB above 100 Hz falls by 0.013 on both soups. The
+  waveform losses on the blended output outweigh the discriminator at 0.3. As with the learned post-filter RX_P8 (V1),
+  a learned stage does not beat the fixed blend of a branch trained only for its magnitude.
+
+**Z6 result** (val_unseen): the bidirectional bottleneck passes by a wide margin.
+
+| System | PESQ-WB | PESQ-WB > 100 Hz | PESQ-NB | SI-SDR | STOI |
+|---|---|---|---|---|---|
+| S30, mean of the 3 seeds | 3.344 | 3.443 | 3.810 | 18.34 | 0.9236 |
+| S30 bidirectional, seed 1 | 3.373 | 3.472 | 3.846 | 18.82 | 0.9285 |
+| Δ [95% CI] | +0.029 [+0.021, +0.037] | +0.029 | +0.036 | +0.47 dB | +0.005 |
+| S30 + W5 (w 0.25), mean of the 3 seeds | 3.370 | 3.472 | 3.846 | 18.72 | 0.9266 |
+| S30 bidirectional, seed 1, + W5 (w 0.25) | 3.387 | 3.488 | 3.871 | 18.99 | 0.9299 |
+
+- The gain shows on every metric, so it does not come from the discriminator alone.
+- On its own, one bidirectional seed equals the S30 soup + W5 system (3.373): one model of 52.4M parameters instead
+  of two (60.9M).
+- The W5 blend adds less to it (+0.014 against +0.026 for the S30 seeds): part of what W5 contributes is future
+  context.
+- The bottleneck sees the whole utterance, so the model is offline, like every system with W5.
+
+**Order and Z7.** Part 3 was restarted on 10-20 at 00:30 to run the Z6 final first and to add **Z7**. The first start
+had run 1 epoch of Z3_hp1.0_s1, which was moved to `logs/abl/_aborted/`.
+
+- Z7 trains the two winners together: the bidirectional bottleneck plus weight 1.0 with the high-pass.
+- Its rule was fixed before any of its results. It runs only if both the Z6 and the Z3 finals pass. It passes if its
+  soup beats the Z3 soup in PESQ-NB (paired CI above 0, same guards). If it passes, it becomes the S30hp-track recipe
+  for Z4.
+
+**Z6 final** (10-20 00:29 → 02:46): the bidirectional S30 passes. Seeds 3.373 / 3.376 / 3.379 on val_unseen (S30:
+3.349 / 3.330 / 3.353), so the seed spread is also a quarter of S30's. The blend weight picked on val_unseen is
+w 0.15 (summed PESQ-WB of the 3 seeds). **New best system: bidirectional S30 soup + W5 (w 0.15), test 3.421**
+(previous 3.375). The bidirectional soup alone, one 52.4M model, scores 3.399 on the test set.
+
+| System | val_unseen | test | vctk_unseen | Params |
+|---|---|---|---|---|
+| S30 soup | 3.348 | 3.335 | 3.325 | 41.4M |
+| Bidirectional S30 soup | 3.383 | 3.399 | 3.375 | 52.4M |
+| Δ, PESQ-WB [95% CI] | +0.035 [+0.026, +0.042] | +0.064 [+0.054, +0.074] | +0.050 [+0.038, +0.062] | |
+| S30 soup + W5 (w 0.25) | 3.373 | 3.375 | 3.365 | 60.9M |
+| Bidirectional S30 soup + W5 (w 0.15) | **3.398** | **3.421** | **3.395** | 71.9M |
+| Δ, PESQ-WB [95% CI] | +0.025 [+0.018, +0.032] | +0.046 [+0.038, +0.054] | +0.030 [+0.020, +0.040] | |
+
+- The gain is not confined to PESQ. Without the blend, on the test set: PESQ-NB +0.053, SI-SDR +0.63 dB, STOI
+  +0.003. On vctk_unseen: STOI +0.013 (76 of 80 speakers), SI-SDR +0.44 dB.
+- **By speaker.** All 4 speakers of val_unseen and test improve, alone and with W5. On vctk_unseen, 64 of 80
+  speakers improve in PESQ-WB alone (speaker-level CI [+0.037, +0.063]) and 65 of 80 with W5 ([+0.018, +0.042]).
+  The worst speaker is −0.075 alone and −0.24 with W5.
+- **By file.** Files more than 0.1 below the reference: 6.8% on test alone, 6.3% with W5. Files more than 0.1
+  above: 33% and 25%.
+- **Causality.** It is an offline model. The causal S30 soup (3.335, 3.323 when streaming with the scale prior,
+  14.8) stays the streaming option.
+
+**Z3 final** (10-20 02:46 → 05:50): S30hp with metric weight 1.0 passes. The blend weight picked on val_unseen is
+w 0.35, by summed PESQ-NB; S30hp kept 0.25, picked by PESQ-WB in 14.9. Cells give PESQ-NB / PESQ-WB.
+
+| System | val_unseen | test | vctk_unseen |
+|---|---|---|---|
+| S30hp soup | 3.812 / 3.295 | 3.825 / 3.280 | 3.827 / 3.256 |
+| S30hp weight 1.0 soup | 3.831 / 3.330 | 3.848 / 3.316 | 3.848 / 3.294 |
+| Δ PESQ-NB [95% CI] | +0.019 [+0.017, +0.021] | +0.023 [+0.021, +0.025] | +0.021 [+0.018, +0.025] |
+| S30hp soup + W5 (w 0.25) | 3.847 / 3.320 | 3.861 / 3.326 | 3.861 / 3.300 |
+| S30hp weight 1.0 soup + W5 (w 0.35) | 3.864 / 3.340 | 3.880 / 3.351 | 3.878 / 3.327 |
+
+- **Other metrics.** PESQ-WB above 100 Hz gains +0.020 / +0.027 / +0.028. SI-SDR and STOI do not change (SI-SDR
+  +0.01 to +0.05 dB). With the high-pass, a larger discriminator weight therefore improves the speech band without
+  the SI-SDR cost that weight 1.0 had on the full band (−1.07 dB in W2).
+- **By speaker.** All 4 speakers of val_unseen and test improve. On vctk_unseen, 77 of 80 speakers improve in
+  PESQ-NB (speaker-level CI [+0.017, +0.027]).
+- **Against the S30 track (test, PESQ-NB).** This system + W5 scores 3.880. The bidirectional S30 + W5 scores
+  3.894 and S30 + W5 scores 3.862.
+- Z7 (bidirectional + weight 1.0) started at 05:51.
+
+**Z7 final** (10-20 05:51 → 09:15): the bidirectional bottleneck with metric weight 1.0 above 100 Hz passes. Seeds
+3.862 / 3.858 / 3.866 in PESQ-NB on val_unseen (Z3: 3.826 / 3.822 / 3.834). The blend weight picked on val_unseen is
+w 0.25 (summed PESQ-NB of the 3 seeds: 11.633 / 11.646 / 11.642 for w 0.15 / 0.25 / 0.35). Cells give PESQ-NB /
+PESQ-WB.
+
+| System | val_unseen | test | vctk_unseen |
+|---|---|---|---|
+| S30hp weight 1.0 soup (Z3) | 3.831 / 3.330 | 3.848 / 3.316 | 3.848 / 3.294 |
+| Bidirectional S30hp weight 1.0 soup (Z7) | 3.868 / 3.346 | 3.897 / 3.378 | 3.881 / 3.333 |
+| Δ PESQ-NB [95% CI] | +0.037 [+0.031, +0.043] | +0.049 [+0.042, +0.056] | +0.033 [+0.026, +0.040] |
+| Z3 soup + W5 (w 0.35) | 3.864 / 3.340 | 3.880 / 3.351 | 3.878 / 3.327 |
+| Z7 soup + W5 (w 0.25) | **3.886** / 3.354 | **3.913** / 3.388 | **3.900** / 3.352 |
+| Bidirectional S30 soup + W5 (Z6, w 0.15) | 3.869 / **3.398** | 3.894 / **3.421** | 3.884 / **3.395** |
+
+- **Against Z3.** As with Z6 over S30, the gain shows on every metric: SI-SDR +0.45 / +0.51 / +0.33 dB and STOI
+  +0.006 / +0.003 / +0.013. All 4 speakers of val_unseen and test improve in PESQ-NB. On vctk_unseen, 69 of 80 do
+  (speaker-level CI [+0.027, +0.039], worst −0.034), and STOI improves for 76 of 80.
+- **Against Z6.** Z7 gains in the speech band and loses full-band PESQ-WB, the same split as S30hp against S30.
+  - Soups: PESQ-NB +0.016 / +0.019 / +0.016 (72 of 80 speakers), PESQ-WB above 100 Hz +0.039 / +0.049 / +0.030,
+    SI-SDR +0.14 / +0.11 / +0.10 dB (75 of 80), STOI unchanged; PESQ-WB −0.037 / −0.021 / −0.042 (21 of 80 speakers
+    improve).
+  - With W5: PESQ-NB +0.017 / +0.019 / +0.017 (74 of 80), SI-SDR +0.15 / +0.12 / +0.10 dB; PESQ-WB −0.044 / −0.033 /
+    −0.043.
+- **Systems after the finals** (both 71.9M and offline): the bidirectional S30 soup + W5 for the PESQ-WB benchmark
+  (3.421), and the bidirectional S30hp weight-1.0 soup + W5 for use. On the test set the latter has the highest
+  PESQ-NB (3.913), PESQ-WB above 100 Hz (3.531) and SI-SDR (19.32 dB) measured so far, and STOI 0.958 like Z6 + W5.
+- **Z4** therefore runs on the two bidirectional recipes: `Z4_bi_e60` (against the Z6 seeds, PESQ-WB) from 09:15,
+  then `Z4_bihp1.0_e60` (against the Z7 seeds, PESQ-NB).
+
+**Z4 screens** (10-20 09:15 → 13:22): 60 epochs instead of 30 (the cosine schedule spans the 60 epochs), seed 1, on
+both bidirectional recipes. val_unseen; the Δ are paired per file, with 95% CIs.
+
+| Run | PESQ-WB | PESQ-NB | PESQ-WB > 100 Hz | SI-SDR (dB) | STOI |
+|---|---|---|---|---|---|
+| Bidirectional S30, mean of the 3 seeds at 30 epochs (Z6) | 3.376 | 3.846 | 3.473 | 18.86 | 0.9286 |
+| Bidirectional S30 soup (Z6) | 3.383 | 3.852 | 3.480 | 18.90 | 0.9291 |
+| Bidirectional S30, 60 epochs, seed 1 (`Z4_bi_e60_s1`) | **3.397** | 3.851 | 3.484 | 18.91 | 0.9282 |
+| Bidirectional S30hp weight 1.0, mean of the 3 seeds at 30 epochs (Z7) | 3.329 | 3.862 | 3.509 | 18.97 | 0.9286 |
+| Bidirectional S30hp weight 1.0 soup (Z7) | 3.346 | 3.868 | 3.519 | 19.04 | 0.9293 |
+| Bidirectional S30hp weight 1.0, 60 epochs, seed 1 (`Z4_bihp1.0_e60_s1`) | 3.385 | **3.875** | **3.528** | 18.98 | 0.9284 |
+
+- **Track A passes.** PESQ-WB +0.021 [+0.016, +0.026] over the mean of the Z6 seeds (rule: +0.015), +0.024 over the
+  same seed at 30 epochs; PESQ-NB +0.005, above 100 Hz +0.011, SI-SDR +0.05 dB, STOI −0.0004 (guards ok). The single
+  60-epoch model is above the 3-seed Z6 soup in PESQ-WB (+0.014 [+0.009, +0.020]) and level with it in PESQ-NB and
+  SI-SDR, with STOI −0.0009. With W5 (w 0.25) it scores PESQ-WB 3.409 on val_unseen, against 3.398 for the
+  benchmark system (Z6 soup + W5, w 0.15).
+- **Track B does not pass.** PESQ-NB +0.013 [+0.010, +0.017] over the mean of the Z7 seeds, below the +0.015 of the
+  rule (guards ok). It gains more in PESQ-WB (+0.056; the Z7 seeds spread over 3.299–3.355) and above 100 Hz
+  (+0.020), with SI-SDR +0.01 dB. Against the Z7 soup: PESQ-NB +0.007 [+0.003, +0.011], PESQ-WB +0.038, SI-SDR
+  −0.06 dB, STOI −0.0009. With W5 (w 0.25): PESQ-NB 3.894 against 3.886 for the Z7 soup + W5.
+- **Training curves.** The PESQ that the metric discriminator measures on training batches still rises at the end
+  (5-epoch means over epochs 46–60: 3.070 / 3.075 / 3.082 for track A, 3.174 / 3.178 / 3.184 for track B), by less
+  than 0.01 per 5 epochs as the learning rate reaches its floor. The waveform loss falls the same way.
+- The final of track A (`Z4_bi_e60`, seeds 2–3 at 60 epochs, soup, blend with w picked on val_unseen) started at
+  13:22. Track B gets no final.
+
+**Z4 final** (10-20 13:22 → 19:31): seeds 2–3 of the bidirectional S30 recipe at 60 epochs (seed 1 from the
+screen), soup and blend. The trainings ended at 17:23. Part 3 then waited for GPU memory held by another user's
+process (8.4 GB, GPU idle), so it was stopped at 19:18. Part 4 (`logs/abl/run_Z_p4.sh`: the same functions, with a
+GPU check on free memory) ran the evaluations and the rule of track B. The soup passes the soup rule against the
+30-epoch soup: PESQ-WB +0.023 [+0.018, +0.027] on val_unseen. The blend weight picked on val_unseen is w 0.15
+(summed PESQ-WB of the 3 seeds: 10.243 / 10.238 / 10.210 for w 0.15 / 0.25 / 0.35). Cells give PESQ-WB / PESQ-NB.
+
+| System | val_unseen | test | vctk_unseen | Params |
+|---|---|---|---|---|
+| Bidirectional S30 soup, 30 epochs (Z6) | 3.383 / 3.852 | 3.399 / 3.878 | 3.375 / 3.866 | 52.4M |
+| Bidirectional S30 seeds, 60 epochs | 3.397–3.402 / 3.848–3.854 | 3.413–3.427 / 3.876–3.884 | 3.387–3.389 / 3.863–3.865 | 52.4M |
+| Bidirectional S30 soup, 60 epochs (Z4) | 3.406 / 3.855 | 3.428 / 3.885 | 3.397 / 3.868 | 52.4M |
+| Z6 soup + W5 (w 0.15) | 3.398 / 3.869 | 3.421 / 3.894 | 3.395 / 3.884 | 71.9M |
+| **Z4 soup + W5 (w 0.15)** | **3.419** / 3.873 | **3.446** / 3.902 | **3.414** / 3.888 | 71.9M |
+| Z7 soup + W5 (w 0.25) | 3.354 / **3.886** | 3.388 / **3.913** | 3.352 / **3.900** | 71.9M |
+
+- **Against the 30-epoch soup (Z6).** PESQ-WB +0.023 / +0.029 / +0.022 (val_unseen / test / vctk_unseen; 65 of
+  80 speakers improve). Above 100 Hz the gain is +0.011 / +0.018 / +0.008 and in PESQ-NB +0.004 / +0.008 / +0.002
+  (the last not significant), so a third to two thirds of it lies below 100 Hz. SI-SDR +0.13 / +0.05 / −0.01 dB,
+  STOI unchanged.
+- **With W5.** Against Z6 + W5: PESQ-WB +0.021 / +0.025 / +0.019 (65 of 80 speakers), PESQ-NB +0.004 / +0.008 /
+  +0.004, SI-SDR +0.11 / +0.04 / +0.00 dB. On the test set, CSIG 4.754, CBAK 3.878 and COVL 4.208 are the highest
+  so far, and STOI is 0.958 as for Z6 + W5 and Z7 + W5.
+- **One network above every earlier blend.** The 60-epoch soup alone (52.4M) scores 3.428 on the test set, against
+  3.421 for Z6 + W5 (71.9M) and 3.375 for S30 + W5 (60.9M).
+- **Soup over seeds.** On all three sets the soup gains PESQ-WB +0.008 and SI-SDR +0.11 dB over seed 1; the seeds
+  spread over 0.002–0.014 in PESQ-WB.
+- **Against Z7 + W5 (the system for use).** PESQ-WB +0.058 on the test set, but PESQ-NB −0.012, above 100 Hz
+  −0.021 and SI-SDR −0.08 dB; on vctk_unseen, 18 of 80 speakers improve in PESQ-NB. The split between a benchmark
+  system and a system for use stays.
+
+**Conclusions of queue Z.**
+
+1. **The bidirectional bottleneck is the largest gain of the queue** (Z6): on the test set, PESQ-WB +0.064 and
+   SI-SDR +0.63 dB over S30, for 11.0M more parameters and no streaming. Unidirectional stage A weights load into
+   both directions with the backward output projections zeroed, so no new pretraining is needed.
+2. **60 epochs help the bidirectional recipe** (Z4): PESQ-WB +0.029 on the test set over 30 epochs, partly below
+   100 Hz. On the weight-1.0 recipe the PESQ-NB gain (+0.013 for seed 1) stayed just below the rule.
+3. **Metric weight 1.0 above 100 Hz improves the speech band** (Z3): PESQ-NB +0.023 over S30hp on the test set;
+   with the bidirectional bottleneck (Z7), +0.049 more.
+4. **Rejected:** output ensembles (Z1, +0.005 over the soups), the compressed-magnitude loss and metric weight 0.5
+   (Z2), W5 fine-tuned through the blend (Z5), and the Z4 final of the weight-1.0 recipe.
+5. **Systems:**
+   - PESQ-WB benchmark: the 60-epoch bidirectional S30 soup + W5 (w 0.15), test 3.446, vctk_unseen 3.414 (71.9M,
+     offline); as one network, the 60-epoch bidirectional S30 soup, 3.428 (52.4M, offline).
+   - Use: the bidirectional S30hp weight-1.0 soup + W5 (w 0.25), test PESQ-NB 3.913, PESQ-WB above 100 Hz 3.531,
+     SI-SDR 19.32 dB (71.9M, offline).
+   - Streaming (41.4M): the S30 soup for PESQ-WB (3.335) and the S30hp weight-1.0 soup (Z3) for PESQ-NB (3.848).
+     Z3 has not been evaluated in streaming yet.
+6. **Not run:** item 7 (phase decoder) and the listening test (the page still has no answers). Candidates for a
+   next queue: the final of 60 epochs on the weight-1.0 recipe (just below the rule), a streaming check of Z3, and
+   longer training of the bidirectional recipe (the training PESQ still rose at epoch 60).

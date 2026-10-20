@@ -40,6 +40,8 @@ def main():
     ap.add_argument("--out_dir", required=True)
     ap.add_argument("--fast", action="store_true", help="only PESQ-WB, STOI and SI-SDR")
     ap.add_argument("--robust_pesq", action="store_true")
+    ap.add_argument("--band_limited", action="store_true",
+                    help="also PESQ-WB without the band below 100 Hz (pesq_wb_hp), as evaluate.py --band_limited")
     ap.add_argument("--save_audio", action="store_true")
     ap.add_argument("--workers", type=int, default=16)
     ap.add_argument("--sample_rate", type=int, default=16000)
@@ -70,7 +72,7 @@ def main():
             sf.write(os.path.join(args.out_dir, f"{name}.flac"), est, args.sample_rate)
 
     results = evaluate_many(jobs, sample_rate=args.sample_rate, full=not args.fast, num_workers=args.workers,
-                            robust=args.robust_pesq)
+                            robust=args.robust_pesq, band_limited=args.band_limited)
     summary = summarize(results)
     summary["by_snr"] = snr_summary(results, snrs, [float(e) for e in default_snr_edges(args.filelist).split(",")])
     print_summary(summary)
