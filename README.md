@@ -79,26 +79,29 @@ DEMAND noise.
 | S30hp soup (metric loss only above 100 Hz) | 41.4M | yes | 3.280 | 3.825 | 0.954 | 18.68 | 3.256 |
 | S30hp soup, metric weight 1.0 | 41.4M | yes | 3.316 | 3.848 | 0.954 | 18.70 | 3.294 |
 | Bidirectional S30 soup, 60 epochs (one network) | 52.4M | no | 3.428 | 3.885 | 0.957 | 19.14 | 3.397 |
-| Bidirectional S30hp soup, metric weight 1.0 | 52.4M | no | 3.378 | 3.897 | 0.957 | 19.21 | 3.333 |
+| Bidirectional S30hp soup, metric weight 1.0, 60 epochs (one network) | 52.4M | no | 3.393 | 3.913 | 0.957 | 19.18 | 3.329 |
 | S30 soup + W5 blend, w = 0.25 | 60.9M | no | 3.375 | 3.862 | 0.956 | 18.85 | 3.365 |
 | S30hp soup + W5 blend, w = 0.25 | 60.9M | no | 3.326 | 3.861 | 0.956 | 19.00 | 3.300 |
 | **Bidirectional S30 soup, 60 epochs + W5, w = 0.15** (best PESQ-WB) | 71.9M | no | **3.446** | 3.902 | **0.958** | 19.24 | **3.414** |
-| **Bidirectional S30hp soup, weight 1.0 + W5, w = 0.25** (for use) | 71.9M | no | 3.388 | **3.913** | **0.958** | **19.32** | 3.352 |
+| **Bidirectional S30hp soup, weight 1.0, 60 epochs + W5, w = 0.25** (for use) | 71.9M | no | 3.403 | **3.926** | **0.958** | **19.31** | 3.356 |
 
 Notes:
 - **Streaming.** Streaming S30 with the scale prior (`--stream_prior_std 0.0604 --stream_prior_frames 62`) gives
   3.323 on the test set, against 3.335 offline. The S30hp soup with metric weight 1.0 has not been evaluated in
   streaming yet.
 - **Bidirectional bottleneck and longer training.** The bidirectional bottleneck gains PESQ-WB +0.064 and SI-SDR
-  +0.63 dB over S30 on the test set (30 epochs each). Training it for 60 epochs adds PESQ-WB +0.029, partly below
-  100 Hz. With 30 epochs, the bidirectional S30 soup scores 3.399 alone and 3.421 with W5.
+  +0.63 dB over S30 on the test set (30 epochs each). Training it for 60 epochs adds PESQ-WB +0.029 on the S30
+  recipe (partly below 100 Hz) and PESQ-NB +0.016 on the S30hp recipe with metric weight 1.0. With 30 epochs, the
+  bidirectional S30 soup scores 3.399 alone and 3.421 with W5, and the bidirectional S30hp weight-1.0 soup + W5
+  scores PESQ-NB 3.913 and SI-SDR 19.32 dB.
 - **Where the metric loss gains.** Part of the PESQ-WB gain of the metric discriminator sits in the 50-100 Hz band,
   which PESQ-WB still weighs. That part costs SI-SDR, and DNSMOS reads it as background noise. In the speech band,
   the gain is PESQ-NB +0.055 over the control, positive for all 80 speakers of `vctk_unseen`. S30hp keeps that gain
   without the 50-100 Hz effect.
-- **Which variant.** Use the 60-epoch bidirectional S30 + W5 for the PESQ-WB benchmark number, and the bidirectional
-  S30hp with metric weight 1.0 + W5 when the speech band (PESQ-NB), SI-SDR and the low band matter. For streaming,
-  use S30, or the S30hp with metric weight 1.0 for PESQ-NB (`IMPROVEMENT_PLAN.md`, sections 14.8, 14.9 and 14.11).
+- **Which variant.** Use the 60-epoch bidirectional S30 + W5 for the PESQ-WB benchmark number, and the 60-epoch
+  bidirectional S30hp with metric weight 1.0 + W5 when the speech band (PESQ-NB), SI-SDR and the low band matter.
+  For streaming, use S30, or the S30hp with metric weight 1.0 for PESQ-NB (`IMPROVEMENT_PLAN.md`, sections 14.8, 14.9
+  and 14.11).
 
 ## Architecture of the recommended system
 
@@ -241,8 +244,8 @@ python train.py --config configs/ablation/k0.yaml seed=1 trainer.max_epochs=30 \
 #    S30hp: 'loss.metric_gan={weight: 0.3, highpass_hz: 100}'
 #    S30hp with metric weight 1.0: 'loss.metric_gan={weight: 1.0, highpass_hz: 100}'
 #    Bidirectional bottleneck (offline): model.architecture.cleanunet_params.bottleneck.bidirectional=true
-#    (the stage A weights load into both directions, with the backward output projections zeroed); the best
-#    system trains it with trainer.max_epochs=60
+#    (the stage A weights load into both directions, with the backward output projections zeroed); both best
+#    systems train it with trainer.max_epochs=60
 
 # 3. Weight soup of the seeds
 python scripts/make_soup.py --ckpts logs/S30_s{1,2,3}/last.ckpt --out logs/S30_soup/last.ckpt
@@ -254,7 +257,8 @@ python train.py --config configs/ablation/stageB_plus.yaml trainer.max_epochs=10
     'data.ext_noise={dir: /path/to/musan, p: 0.5, snr_db: [-5, 20]}' data.num_workers=16 \
     callbacks.best_checkpoint.dirpath=logs/W5
 
-# 5. Blend (no training): pick w on val_unseen, then evaluate (w = 0.15 for the bidirectional S30 soups)
+# 5. Blend (no training): pick w on val_unseen, then evaluate (w = 0.15 for the bidirectional S30 soups, 0.25 for
+#    the bidirectional S30hp weight-1.0 soups)
 python evaluate.py --checkpoint logs/S30_soup/last.ckpt --blend_spec logs/W5/last.ckpt --blend_w 0.25 \
     --filelist filelists/val_unseen.csv --out_dir results/S30_W5/val_unseen
 ```
