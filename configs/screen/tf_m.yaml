@@ -1,0 +1,18 @@
+# Screening of the time-frequency branch v2 (IMPROVEMENT_PLAN.md, 16.4, item 1.2), size m: the branch alone
+# (loss.mode spec, waveform branch frozen and unused) with MP-SENet-style losses on the compressed spectrum:
+# magnitude MSE, anti-wrapping phase, complex MSE, STFT consistency and the waveform loss of the resynthesis.
+# Validation resynthesizes with the predicted phase, so val/pesq is comparable with the waveform screens.
+# Batches of 8 x 2.048 s: with 16 x 4.096 s the small size ran at 1 step/s in 22 GB and the others did not fit.
+base: base.yaml
+model:
+  architecture: ../model/tfmamba_v2_spec.yaml
+  train_cleanunet: false
+data: {batch_size: 8, segment_size: 32768}
+loss:
+  mode: spec
+  spec_terms: {mse: 0.9, phase: 0.3, complex: 0.1, consistency: 0.1, wave: 0.2}
+optim: {lr: 3.0e-4}
+callbacks:
+  best_checkpoint: {dirpath: logs/screen/tf_m}
+logger:
+  tensorboard: {name: screen/tf_m}

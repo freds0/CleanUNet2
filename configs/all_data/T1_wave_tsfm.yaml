@@ -1,0 +1,15 @@
+# T1: waveform CleanUNet with the non-causal 5-layer Transformer bottleneck (46.3M), from scratch on all the data,
+# 133,300 steps of 16 x 15.36 s (100 epochs of 1,333; the audio of 1M steps of 2 s crops; ~14.5 h at ~2.6 steps/s).
+# Recipe of the best VoiceBank model (Z4) without the metric GAN, which is added by the T2 fine-tuning: L1 +
+# multi-resolution STFT loss, polarity augmentation.
+base: data.yaml
+trainer: {max_epochs: 100}
+model:
+  architecture: ../model/cleanunet_tsfm_e8.yaml
+loss: {mode: waveform}
+optim: {lr: 2.0e-4}
+augment_polarity: 0.5
+callbacks:
+  best_checkpoint: {dirpath: logs/all/T1_wave_tsfm}
+logger:
+  tensorboard: {name: all/T1_wave_tsfm}

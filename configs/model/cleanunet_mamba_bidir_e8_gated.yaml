@@ -1,0 +1,3 @@
+# M1's waveform architecture with item 2.4, gated skip connections (IMPROVEMENT_PLAN.md, 16.4, phase 2).
+base: cleanunet_mamba_bidir_e8.yaml
+cleanunet_params: {gated_skips: true}

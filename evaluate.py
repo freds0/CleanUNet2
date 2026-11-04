@@ -95,6 +95,14 @@ def enhance(model, noisy: torch.Tensor, args, clean: torch.Tensor = None, cond=N
                            prior_std=getattr(args, "stream_prior_std", None),
                            prior_frames=getattr(args, "stream_prior_frames", 0.0))
         return (polarity * y).view(-1).float().cpu()
+    if getattr(args, "spec_only", False):
+        # the spectral branch alone, resynthesized with its own phase (or the noisy phase without a phase head)
+        if tta != "none":
+            raise ValueError("--tta is not supported with --spec_only")
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=args.bf16 and x.is_cuda):
+            out = model(x, spec_only=True)
+        y = model.spec_to_wave(out["spec"], x / out["scale"], x.shape[-1], phase=out["phase"]) * out["scale"]
+        return (polarity * y).view(-1).float().cpu()
     kw = {}
     if getattr(model, "needs_clean", False) and clean is not None:
         kw["clean"] = polarity * clean.to(args.device).view(1, 1, -1)
@@ -117,7 +125,7 @@ def enhance(model, noisy: torch.Tensor, args, clean: torch.Tensor = None, cond=N
         y = y + sign * out.float()[..., shift:]
     y = y / len(plan)
     if getattr(args, "blend_model", None) is not None:
-        y = blend(y, x, args.blend_model, args.blend_w)
+        y = blend(y, x, args.blend_model, args.blend_w, phase_source=getattr(args, "blend_phase", "wave"))
     return (polarity * y).view(-1).float().cpu()
 
 
@@ -188,6 +196,10 @@ def main():
     p.add_argument("--blend_spec", help="Lightning checkpoint of a CleanSpecNet: blend its magnitude with the "
                                         "model output, without training (--blend_w)")
     p.add_argument("--blend_w", type=float, default=0.5, help="weight of the CleanSpecNet magnitude (log domain)")
+    p.add_argument("--blend_phase", choices=["wave", "spec"], default="wave",
+                   help="phase of the blend: the model output (wave) or the phase head of --blend_spec (spec)")
+    p.add_argument("--spec_only", action="store_true",
+                   help="evaluate the spectral branch alone (its phase head, else the noisy phase)")
     p.add_argument("--tta", choices=["none", "flip", "shift", "flipshift"], default="none",
                    help="test-time augmentation: sign flip and / or input shifts (TTA_SHIFTS), outputs averaged")
     p.add_argument("--invert", action="store_true",

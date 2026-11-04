@@ -1,0 +1,3 @@
+# Time-frequency branch v2, large size for the screening (IMPROVEMENT_PLAN.md, 16.4, item 1.2).
+base: tfmamba_v2_spec.yaml
+cleanspecnet_params: {channels: 96, full_res_channels: 32, n_blocks: 6}

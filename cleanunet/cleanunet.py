@@ -286,6 +286,75 @@ def _gate(glu_activation: str, bypass_channels: int) -> nn.Module:
     return Activation(glu_activation, bypass_channels)
 
 
+class LayerScale(nn.Module):
+    """Per-channel residual scale, initialized small so that a new branch starts close to the identity."""
+
+    def __init__(self, channels: int, init: float = 1e-4):
+        super().__init__()
+        self.scale = nn.Parameter(torch.full((1, channels, 1), float(init)))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """x * scale (per channel)."""
+        return x * self.scale
+
+
+class DConv(nn.Module):
+    """Residual dilated-convolution branch of a U-Net level (as in Hybrid Demucs): `depth` blocks of dilated
+    Conv1d (kernel 3, dilation 2^d) -> GroupNorm -> GELU -> 1x1 Conv -> GroupNorm -> GLU -> LayerScale, each added
+    to its input. Adds temporal context and non-linearity at a level's time resolution (IMPROVEMENT_PLAN.md, 16.4,
+    item 2.1); the length is unchanged."""
+
+    def __init__(self, channels: int, depth: int = 2, compress: int = 4, init: float = 1e-4):
+        super().__init__()
+        hidden = max(8, channels // compress)
+        self.layers = nn.ModuleList()
+        for d in range(depth):
+            dil = 2 ** d
+            self.layers.append(nn.Sequential(
+                nn.Conv1d(channels, hidden, 3, dilation=dil, padding=dil), nn.GroupNorm(1, hidden), nn.GELU(),
+                nn.Conv1d(hidden, 2 * channels, 1), nn.GroupNorm(1, 2 * channels), nn.GLU(dim=1),
+                LayerScale(channels, init)))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """x (B, C, T) -> (B, C, T)."""
+        for layer in self.layers:
+            x = x + layer(x)
+        return x
+
+
+class LevelMamba(nn.Module):
+    """Bidirectional Mamba over the frames of one U-Net level (item 2.2): 1x1 projection to d_model, a Mamba stack,
+    projection back, LayerScale residual. Offline only."""
+
+    def __init__(self, channels: int, d_model: int = 256, n_layers: int = 1, init: float = 1e-4, **mamba):
+        super().__init__()
+        from cleanunet.sequence import MambaStack
+        self.inp = nn.Conv1d(channels, d_model, 1)
+        self.stack = MambaStack(d_model, n_layers, bidirectional=True, **mamba)
+        self.out = nn.Conv1d(d_model, channels, 1)
+        self.scale = LayerScale(channels, init)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """x (B, C, T) -> (B, C, T)."""
+        h = self.stack(self.inp(x).transpose(1, 2)).transpose(1, 2)
+        return x + self.scale(self.out(h))
+
+
+class SkipGate(nn.Module):
+    """Gated skip connection (item 2.4): skip * 2 sigmoid(1x1 conv([decoder state, skip])). Zero-initialized, so
+    the gate starts at exactly 1 (the plain additive skip)."""
+
+    def __init__(self, channels: int):
+        super().__init__()
+        self.conv = nn.Conv1d(2 * channels, channels, 1)
+        nn.init.zeros_(self.conv.weight)
+        nn.init.zeros_(self.conv.bias)
+
+    def forward(self, x: torch.Tensor, skip: torch.Tensor) -> torch.Tensor:
+        """Gated skip (B, C, T) for the decoder state x (B, C, T)."""
+        return skip * 2 * torch.sigmoid(self.conv(torch.cat([x, skip], dim=1)))
+
+
 class CleanUNet(nn.Module):
     """CleanUNet: encoder-decoder convolutional architecture with a sequence model at the bottleneck.
 
@@ -316,6 +385,9 @@ class CleanUNet(nn.Module):
         bypass_channels=0,
         encoder_groups=1,
         residual_projection: bool = False,
+        level_dconv: dict = None,
+        level_mamba: dict = None,
+        gated_skips: bool = False,
     ):
         super().__init__()
 
@@ -423,6 +495,25 @@ class CleanUNet(nn.Module):
             if isinstance(layer, (nn.Conv1d, nn.ConvTranspose1d)) and layer.bias is not None:
                 weight_scaling_init(layer)
 
+        # Capacity at the high-resolution levels (IMPROVEMENT_PLAN.md, 16.4, phase 2), built after the scaling init
+        # so it keeps its own initialization. Levels are numbered 1..encoder_n_layers from the waveform (level l
+        # runs at sample_rate / stride**l frames/s); keys are strings so the state dict names stay readable.
+        #   level_dconv: {levels: [1, ...], depth, compress}  DConv after the encoder block and before the decoder
+        #                                                      block of each listed level
+        #   level_mamba: {levels: [...], d_model, n_layers, d_state, expand, ...}  bidirectional Mamba before the
+        #                                                      decoder block of each listed level
+        #   gated_skips: gate every skip connection
+        dc = dict(level_dconv or {})
+        self.dconv_levels = [int(l) for l in dc.pop("levels", [])]
+        self.enc_dconv = nn.ModuleDict({str(l): DConv(self.level_channels[l - 1], **dc) for l in self.dconv_levels})
+        self.dec_dconv = nn.ModuleDict({str(l): DConv(self.level_channels[l - 1], **dc) for l in self.dconv_levels})
+        lm = dict(level_mamba or {})
+        self.mamba_levels = [int(l) for l in lm.pop("levels", [])]
+        self.level_mamba = nn.ModuleDict({str(l): LevelMamba(self.level_channels[l - 1], **lm)
+                                          for l in self.mamba_levels})
+        self.skip_gates = nn.ModuleDict({str(l): SkipGate(self.level_channels[l - 1])
+                                         for l in range(1, encoder_n_layers + 1)}) if gated_skips else None
+
     # ------------------------------------------------------------------
     @property
     def total_stride(self) -> int:
@@ -502,6 +593,8 @@ class CleanUNet(nn.Module):
         skip_connections = []
         for level, downsampling_block in enumerate(self.encoder, start=1):
             x = downsampling_block(x)
+            if str(level) in self.enc_dconv:
+                x = self.enc_dconv[str(level)](x)
             x = hook(f"enc_s{self.stride ** level}", x)
             skip_connections.append(x)
         if self.residual_projection:
@@ -521,7 +614,13 @@ class CleanUNet(nn.Module):
         # decoder with skip connections
         D = self.encoder_n_layers
         for i, upsampling_block in enumerate(self.decoder):
-            x = x + skip_connections[i][:, :, :x.shape[-1]]
+            level = str(D - i)
+            skip = skip_connections[i][:, :, :x.shape[-1]]
+            x = x + (self.skip_gates[level](x, skip) if self.skip_gates is not None else skip)
+            if level in self.level_mamba:
+                x = self.level_mamba[level](x)
+            if level in self.dec_dconv:
+                x = self.dec_dconv[level](x)
             x = hook(f"dec_s{self.stride ** (D - i)}", x)
             x = upsampling_block(x)
 

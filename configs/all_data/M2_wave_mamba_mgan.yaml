@@ -1,0 +1,9 @@
+# M2: M1 fine-tuned with the metric discriminator, T2's recipe (weight 0.3, LR 2e-5, 5,332 steps of 15.36 s).
+base: T2_wave_tsfm_mgan.yaml
+model:
+  architecture: ../model/cleanunet_mamba_bidir_e8.yaml
+  init: {cleanunet_checkpoint: logs/all/M1_wave_mamba/last.ckpt}
+callbacks:
+  best_checkpoint: {dirpath: logs/all/M2_wave_mamba_mgan}
+logger:
+  tensorboard: {name: all/M2_wave_mamba_mgan}

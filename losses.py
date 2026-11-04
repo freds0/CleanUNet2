@@ -183,6 +183,32 @@ class CompressedMagnitudeLoss(nn.Module):
             return F.mse_loss(self.magnitude(est), self.magnitude(ref))
 
 
+class CompressedComplexLoss(nn.Module):
+    """MSE between power-law compressed complex STFTs |X|^power e^{j angle X} of an estimate and its target (the
+    complex loss of MP-SENet / CMGAN; IMPROVEMENT_PLAN.md, 16.4, item 0.3). Unlike the MR-STFT loss it sees the
+    phase, and the compression gives the weak 5-8 kHz band enough weight: the waveform L1 alone left a fixed phase
+    rotation there in every model trained from scratch (16.2). Inputs (B, L) / (B, 1, L) normalized by the input
+    level; computed in float32."""
+
+    def __init__(self, n_fft: int = 400, hop_length: int = 100, power: float = 0.3, eps: float = 1e-9):
+        super().__init__()
+        self.n_fft, self.hop_length, self.power, self.eps = n_fft, hop_length, power, eps
+        self.register_buffer("window", torch.hann_window(n_fft), persistent=False)
+
+    def compressed(self, x):
+        """Compressed complex STFT as a real tensor (B, F, T, 2): X * |X|^(power - 1)."""
+        x = x.float().reshape(x.shape[0], -1)
+        X = torch.view_as_real(torch.stft(x, self.n_fft, self.hop_length, self.n_fft, self.window.to(x.device),
+                                          return_complex=True))
+        mag2 = X.pow(2).sum(-1, keepdim=True) + self.eps
+        return X * mag2.pow((self.power - 1) / 2)
+
+    def forward(self, est, ref):
+        """MSE between the compressed complex spectra of estimate and reference."""
+        with torch.autocast(device_type=est.device.type, enabled=False):
+            return F.mse_loss(self.compressed(est), self.compressed(ref))
+
+
 class AntiWrappingPhaseLoss(nn.Module):
     """Instantaneous phase, group delay and instantaneous frequency losses with anti-wrapping."""
     def __init__(self, n_fft=1024, hop_length=256, win_length=1024, window="hann_window", eps=1e-8):

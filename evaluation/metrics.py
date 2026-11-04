@@ -118,10 +118,38 @@ def evaluate_many(pairs, sample_rate: int = 16000, full: bool = True, num_worker
     jobs = [(c, e, sample_rate, full, robust, band_limited) for c, e in pairs]
     if num_workers <= 1:
         return [_evaluate_pair_star(j) for j in jobs]
-    # "fork" works for interactive/stdin callers too; workers never touch CUDA.
+    return map_surviving_crashes(_evaluate_pair_star, jobs, num_workers)
+
+
+def map_surviving_crashes(fn, jobs, num_workers: int):
+    """[fn(j) for j in jobs] in `num_workers` forked processes that survives a worker killed inside a C extension.
+
+    PESQ segfaults on rare inputs (once in the metric-discriminator run of IMPROVEMENT_PLAN.md, 15), and
+    multiprocessing.Pool.map then waits forever. Here the jobs left unfinished by a crash run again in halves until
+    the job that crashes runs alone; that job gets {"error": ...}. "fork" works for interactive/stdin callers too;
+    workers never touch CUDA."""
+    from concurrent.futures import ProcessPoolExecutor
+    from concurrent.futures.process import BrokenProcessPool
     from multiprocessing import get_context
-    with get_context("fork").Pool(num_workers, initializer=_limit_threads) as pool:
-        return pool.map(_evaluate_pair_star, jobs, chunksize=4)
+    results = [None] * len(jobs)
+    groups = [list(range(len(jobs)))] if jobs else []
+    while groups:
+        idx = groups.pop()
+        failed = []
+        with ProcessPoolExecutor(min(num_workers, len(idx)), mp_context=get_context("fork"),
+                                 initializer=_limit_threads) as ex:
+            futures = [(i, ex.submit(fn, jobs[i])) for i in idx]
+            for i, f in futures:
+                try:
+                    results[i] = f.result()
+                except BrokenProcessPool:
+                    failed.append(i)
+        if len(idx) == 1 and failed:
+            results[idx[0]] = {"error": "worker process crashed"}
+        elif failed:
+            half = (len(failed) + 1) // 2
+            groups += [g for g in (failed[:half], failed[half:]) if g]
+    return results
 
 
 def _limit_threads():

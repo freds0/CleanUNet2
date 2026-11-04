@@ -1,0 +1,9 @@
+# MS: S with the bidirectional Mamba backbone of W5 instead of the Transformer. The rest is S's recipe: the spectral
+# branch alone, from scratch on all the data, 39,990 steps of 15.36 s, LR 3e-4. Blended with M2 at inference.
+base: S_spec_tsfm.yaml
+model:
+  architecture: ../model/cleanunet2_mamba_spec.yaml
+callbacks:
+  best_checkpoint: {dirpath: logs/all/MS_spec_mamba}
+logger:
+  tensorboard: {name: all/MS_spec_mamba}

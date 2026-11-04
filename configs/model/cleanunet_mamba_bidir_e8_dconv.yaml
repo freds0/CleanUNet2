@@ -1,0 +1,4 @@
+# M1's waveform architecture with item 2.1 of IMPROVEMENT_PLAN.md, 16.4: residual dilated convolutions (DConv) in
+# encoder and decoder levels 3-6 (2,000 to 250 frames/s). Levels 1-2 as well cost 3x the step time and 24 GB.
+base: cleanunet_mamba_bidir_e8.yaml
+cleanunet_params: {level_dconv: {levels: [3, 4, 5, 6], depth: 2, compress: 4}}

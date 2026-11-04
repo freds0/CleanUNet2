@@ -1,0 +1,9 @@
+# M1: T1 with the bidirectional Mamba bottleneck of Z4 instead of the Transformer (52.4M). The rest is T1's recipe:
+# from scratch on all the data, 133,300 steps of 16 x 15.36 s, L1 + multi-resolution STFT, polarity augmentation.
+base: T1_wave_tsfm.yaml
+model:
+  architecture: ../model/cleanunet_mamba_bidir_e8.yaml
+callbacks:
+  best_checkpoint: {dirpath: logs/all/M1_wave_mamba}
+logger:
+  tensorboard: {name: all/M1_wave_mamba}

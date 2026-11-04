@@ -1,0 +1,14 @@
+# All-data spectral branch (IMPROVEMENT_PLAN.md, 15): the W5 CleanSpecNet (linear front-end, mask output, non-causal)
+# with a 5-layer self-attention backbone instead of the bidirectional Mamba. Trained alone (loss.mode spec) and used
+# through the training-free magnitude blend (evaluate.py --blend_spec).
+base: cleanunet_tsfm_e8.yaml
+use_spec_branch: true
+conditioning_type: film
+conditioning_zero_init: true
+bottleneck_fusion: false
+spectrogram: {n_fft: 1024, hop_length: 256, win_length: 1024, alignment: center, compression: log1p}
+cleanspecnet_params:
+  causal: false
+  output_mode: mask
+  frontend: linear
+  backbone: {type: transformer, n_layers: 5, n_head: 8}

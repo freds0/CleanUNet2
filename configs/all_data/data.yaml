@@ -1,0 +1,27 @@
+# Multi-corpus training data of the all-data model (IMPROVEMENT_PLAN.md, 15; mixture_dataset.py). The lists come from
+# scripts/datasets/make_training_lists.py. Validation stays on filelists/val_unseen.csv (unseen DEMAND noises).
+# Crops of 15.36 s (batch 16, ~22.7 GB of VRAM for the waveform model, at the user's request): short files are
+# followed by others with a 10 ms crossfade (`fill`). An epoch of 21,328 examples (1,333 steps) holds as much audio as
+# 160,000 crops of 2.048 s, so the epoch counts of T1/T2/S keep the audio budget planned with 2 s crops.
+base: ../base.yaml
+data:
+  data_dir: /home/fred/DATASETS/VoiceBank-DEMAND-16k        # validation files
+  train_list_path: null
+  val_list_path: filelists/val_unseen.csv
+  num_workers: 20
+  segment_size: 245760                                       # 15.36 s
+  mixture:
+    lists_dir: /home/fred/DATASETS_CleanUNet/_lists
+    epoch_size: 21328                                        # 1,333 steps of 16 examples
+    fill: true
+    crossfade: 160
+    pairs: {dns2020_synth: 0.20, vb28: 0.05, ears_wham: 0.10, libri2mix: 0.05, urgent26: 0.10}
+    mix:
+      weight: 0.50
+      speech: {dns5_read: 0.45, librispeech: 0.35, ears: 0.20}
+      noise: {dns5: 0.30, fsd50k: 0.15, wham: 0.10, demand: 0.05, musan: 0.05, fma: 0.10, slr28: 0.05, babble: 0.20}
+      babble_speech: librispeech
+      babble_talkers: [3, 7]
+      snr_db: [-5, 20]
+      rir_p: 0.2
+      rir: {slr28: 0.5, dns5: 0.5}

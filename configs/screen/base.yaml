@@ -1,0 +1,19 @@
+# Screening protocol of the architecture plan (IMPROVEMENT_PLAN.md, 16.4, item 0.4): the all-data recipe of T1 / M1
+# on a smaller budget, so variants can be compared in about 2 h each. 10 epochs of 5,000 steps of 16 x 4.096 s
+# (~910 h of audio, ~10% of M1), LR 2e-4 with warm-up and cosine decay, the compressed complex loss of item 0.3,
+# validation on the multi-domain dev set (filelists/dev_multi.csv) after every epoch. The baseline is M1's
+# architecture; every variant changes only its model section (configs/screen/*.yaml).
+base: ../all_data/T1_wave_tsfm.yaml
+trainer: {max_epochs: 10}
+model:
+  architecture: ../model/cleanunet_mamba_bidir_e8.yaml
+data:
+  segment_size: 65536
+  val_list_path: filelists/dev_multi.csv
+  mixture: {epoch_size: 80000, worker_stderr: logs/screen/worker_stderr.log}
+loss:
+  ccomplex: {weight: 1.0, n_fft: 400, hop_length: 100, power: 0.3}
+callbacks:
+  best_checkpoint: {dirpath: logs/screen/base}
+logger:
+  tensorboard: {name: screen/base}

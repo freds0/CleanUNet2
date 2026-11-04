@@ -1,0 +1,10 @@
+# All-data model (IMPROVEMENT_PLAN.md, 15): waveform-only CleanUNet with the original non-causal self-attention
+# bottleneck (5 layers, as in CleanUNet DNS-large; 46.1M). Offline: attention sees the whole utterance.
+use_spec_branch: false
+cleanunet_params:
+  channels_H: 64
+  max_H: 768
+  encoder_n_layers: 8
+  kernel_size: 4
+  stride: 2
+  bottleneck: {type: transformer, n_layers: 5, n_head: 8, d_model: 512, d_inner: 2048, causal: false}

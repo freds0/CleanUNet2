@@ -1,0 +1,21 @@
+# Control of IMPROVEMENT_PLAN.md, 16.4, item 0.5(a): M2c fine-tuned on VoiceBank-DEMAND alone with the recipe of the
+# VoiceBank-only reference Z4 (2.048 s crops, MUSAN noise with p 0.5, metric discriminator 0.3, polarity 0.5, LR
+# 2e-5), for 15 epochs. It measures how much of the 0.39 PESQ-WB gap of M2 + MS to Z4 + W5 on the VoiceBank test set
+# is specialization rather than architecture; the non-VoiceBank sets show what the specialization costs.
+base: M2c_phase.yaml
+model:
+  init: {cleanunet_checkpoint: logs/all/M2c_phase/last.ckpt}
+trainer: {max_epochs: 15}
+data:
+  mixture: null
+  data_dir: /home/fred/DATASETS/VoiceBank-DEMAND-16k
+  train_list_path: filelists/train.csv
+  val_list_path: filelists/val_unseen.csv
+  segment_size: 32768
+  num_workers: 16
+  ext_noise: {dir: /home/fred/DATASETS/MUSAN/musan, p: 0.5, snr_db: [-5, 20]}
+optim: {lr: 2.0e-5}
+callbacks:
+  best_checkpoint: {dirpath: logs/all/M2c_vbft}
+logger:
+  tensorboard: {name: all/M2c_vbft}

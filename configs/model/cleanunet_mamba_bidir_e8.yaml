@@ -1,0 +1,5 @@
+# All-data model, Mamba version (IMPROVEMENT_PLAN.md, 15.2): the waveform branch of Z4, CleanUNet E8 with a 3-layer
+# bidirectional Mamba bottleneck (52.4M). Offline: the backward scan sees the whole utterance.
+base: cleanunet_mamba_e8.yaml
+cleanunet_params:
+  bottleneck: {bidirectional: true}

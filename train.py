@@ -25,7 +25,20 @@ from lightning_modules.data_module import CleanUNetDataModule
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 logger = logging.getLogger("train")
 
-_CALLBACKS = {"ModelCheckpoint": ModelCheckpoint, "EarlyStopping": EarlyStopping,
+class LastEveryEpochCheckpoint(ModelCheckpoint):
+    """ModelCheckpoint whose `last.ckpt` follows every validation. In Lightning 2.6 `on_validation_end` only writes
+    it when a top-k checkpoint was saved at that step, so with a monitored metric `last.ckpt` was the latest of the
+    best checkpoints, not the end of training (IMPROVEMENT_PLAN.md, 15.2.1)."""
+
+    def on_validation_end(self, trainer, pl_module):
+        """Save top-k as usual, then `last.ckpt` if that step did not already write it."""
+        super().on_validation_end(trainer, pl_module)
+        if (self.save_last and not self._should_skip_saving_checkpoint(trainer)
+                and not self._should_save_on_train_epoch_end(trainer)):
+            self._save_last_checkpoint(trainer, self._monitor_candidates(trainer))
+
+
+_CALLBACKS = {"ModelCheckpoint": LastEveryEpochCheckpoint, "EarlyStopping": EarlyStopping,
               "LearningRateMonitor": LearningRateMonitor}
 _LOGGERS = {"TensorBoardLogger": TensorBoardLogger, "WandbLogger": WandbLogger}
 

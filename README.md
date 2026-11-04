@@ -12,12 +12,18 @@ bottleneck (**S30**) is trained with a metric discriminator and external noise. 
 trained for 60 epochs, the blend reaches **PESQ-WB 3.446** on the VoiceBank-DEMAND test set (offline). The
 streaming-capable S30 alone reaches **3.335**.
 
+Those systems are trained on VoiceBank-DEMAND and fail on other data. For general use, see
+[All-data systems](#all-data-systems): trained on all the downloaded corpora, the blend of the waveform branch M2c with
+a 2.48M dual-path time-frequency branch scores **3.216** on the same test set and leads on every non-VoiceBank set
+evaluated. Architectures and results are detailed in `ARCHITECTURES_AND_RESULTS.md`.
+
 ---
 
 ## Contents
 
 - [Features](#features)
 - [Recommended systems](#recommended-systems)
+- [All-data systems](#all-data-systems)
 - [Architecture of the recommended system](#architecture-of-the-recommended-system)
 - [Repository structure](#repository-structure)
 - [Installation](#installation)
@@ -103,6 +109,19 @@ Notes:
   For streaming, use S30, or the S30hp with metric weight 1.0 for PESQ-NB (`IMPROVEMENT_PLAN.md`, sections 14.8, 14.9
   and 14.11).
 
+## All-data systems
+
+Trained on DNS 2020, VoiceBank-DEMAND, EARS-WHAM, Libri2Mix, URGENT 2026 and on-the-fly mixtures. All are offline. PESQ-WB:
+
+| System | Params | VB test | vctk_unseen | DNS no_reverb | DNS with_reverb | EARS-WHAM | Libri2Mix |
+|---|---|---|---|---|---|---|---|
+| M2 + MS, w = 0.65 | 71.9M | 3.060 | 3.017 | 3.062 | 2.903 | 2.418 | 2.335 |
+| **M2c + `tf_l`, w = 0.65, phase of `tf_l`** | 54.9M | 3.216 | 3.180 | **3.325** | **3.002** | **2.507** | **2.490** |
+| Bidirectional S30 soup + W5, w = 0.15 (VoiceBank only) | 71.9M | **3.446** | **3.414** | 2.777 | 1.189 | 2.178 | 1.902 |
+
+`tf_l` is still a screening run. Its full runs are in progress (`IMPROVEMENT_PLAN.md`, 16.7). The blend uses
+`evaluate.py --blend_spec <checkpoint> --blend_w 0.65 --blend_phase spec`.
+
 ## Architecture of the recommended system
 
 ```
@@ -145,7 +164,7 @@ Notes:
 cleanunet/
   cleanunet.py        CleanUNet; bottleneck = transformer | mamba | mamba2 | lstm (+ CleanUMamba options)
   cleanspecnet.py     CleanSpecNet; backbone = transformer | mamba | mamba2 | lstm; causal or bidirectional
-  tf_mamba.py         dual-path time-frequency Mamba spectral branch
+  tf_mamba.py         dual-path time-frequency Mamba spectral branch (`tf_l`, TF1, TF2)
   subband.py          full-band + sub-band spectral branch
   cleanunet2.py       hybrid model: STFT front end, upsampler, conditioner, bottleneck fusion, fusion hub
   fusion.py           fusion hub: frame-rate condition -> heads at named CleanUNet injection points

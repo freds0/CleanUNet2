@@ -1,0 +1,18 @@
+# S: the W5-style spectral branch with a non-causal Transformer backbone, alone (L1 on the log1p magnitude), from
+# scratch on all the data, 40,000 steps of 15.36 s (30 epochs; the audio of 300,000 steps of 2 s). Blended with T2 at inference (evaluate.py --blend_spec, w picked on
+# val_unseen).
+base: data.yaml
+trainer: {max_epochs: 30}
+model:
+  architecture: ../model/cleanunet2_tsfm_spec.yaml
+  train_cleanunet: false
+loss: {mode: spec}
+optim: {lr: 3.0e-4}
+callbacks:
+  best_checkpoint:
+    monitor: val_loss
+    mode: min
+    filename: "best-epoch{epoch:03d}-loss{val_loss:.4f}"
+    dirpath: logs/all/S_spec_tsfm
+logger:
+  tensorboard: {name: all/S_spec_tsfm}

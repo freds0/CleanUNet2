@@ -1,0 +1,14 @@
+# T2: T1 fine-tuned with the metric discriminator (weight 0.3) at LR 2e-5 for 5,332 steps of 15.36 s (4 epochs), the
+# audio of the 40,000 steps of 2 s of the Z4 benchmark recipe; the discriminator-only warm-up is scaled the same way
+# (300 -> 40 steps).
+base: T1_wave_tsfm.yaml
+trainer: {max_epochs: 4}
+model:
+  init: {cleanunet_checkpoint: logs/all/T1_wave_tsfm/last.ckpt}
+loss:
+  metric_gan: {weight: 0.3, pesq_workers: 16, warmup_steps: 40}
+optim: {lr: 2.0e-5}
+callbacks:
+  best_checkpoint: {dirpath: logs/all/T2_wave_tsfm_mgan}
+logger:
+  tensorboard: {name: all/T2_wave_tsfm_mgan}

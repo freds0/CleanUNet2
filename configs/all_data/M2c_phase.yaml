@@ -1,0 +1,16 @@
+# M2c: M2 fine-tuned with the compressed complex loss (IMPROVEMENT_PLAN.md, 16.4, item 0.3). Every model trained
+# from scratch on all the data applies a fixed phase rotation above 5 kHz (up to -139 deg near 8 kHz, 16.2), which
+# the waveform L1 + MR-STFT losses barely see; the complex loss on |X|^0.3 e^{j phase} supervises it. Same recipe as
+# M2 (metric discriminator 0.3, 4 epochs of 1,333 steps), LR 5e-5, selection on the multi-domain dev set.
+base: M2_wave_mamba_mgan.yaml
+model:
+  init: {cleanunet_checkpoint: logs/all/M2_wave_mamba_mgan/last.ckpt}
+data:
+  val_list_path: filelists/dev_multi.csv
+loss:
+  ccomplex: {weight: 1.0, n_fft: 400, hop_length: 100, power: 0.3}
+optim: {lr: 5.0e-5}
+callbacks:
+  best_checkpoint: {dirpath: logs/all/M2c_phase}
+logger:
+  tensorboard: {name: all/M2c_phase}

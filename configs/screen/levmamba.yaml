@@ -1,0 +1,8 @@
+# Screening variant: M1's architecture with item 2.2, bidirectional Mamba at the decoder levels of 250 and 125 frames/s (IMPROVEMENT_PLAN.md, 16.4).
+base: base.yaml
+model:
+  architecture: ../model/cleanunet_mamba_bidir_e8_levmamba.yaml
+callbacks:
+  best_checkpoint: {dirpath: logs/screen/levmamba}
+logger:
+  tensorboard: {name: screen/levmamba}

@@ -1,0 +1,8 @@
+# Screening variant: M1's architecture with item 2.1 (DConv in levels 3-6) of IMPROVEMENT_PLAN.md, 16.4.
+base: base.yaml
+model:
+  architecture: ../model/cleanunet_mamba_bidir_e8_dconv.yaml
+callbacks:
+  best_checkpoint: {dirpath: logs/screen/dconv}
+logger:
+  tensorboard: {name: screen/dconv}

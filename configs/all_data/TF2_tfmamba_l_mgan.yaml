@@ -1,0 +1,16 @@
+# TF2: TF1 fine-tuned with the metric discriminator on its resynthesis (IMPROVEMENT_PLAN.md, 16.4, phase 1): weight 0.3,
+# LR 2e-5, 4 epochs of 10,000 steps of 8 x 2.048 s (~182 h of audio). The discriminator-only warm-up keeps the examples
+# of the Z4 recipe (300 steps of 16 -> 600 steps of 8).
+base: TF1_tfmamba_l.yaml
+trainer: {max_epochs: 4}
+model:
+  init: {cleanspecnet_checkpoint: logs/all/TF1_tfmamba_l/last.ckpt}
+data:
+  mixture: {worker_stderr: logs/all/TF2_tfmamba_l_mgan/worker_stderr.log}
+loss:
+  metric_gan: {weight: 0.3, pesq_workers: 16, warmup_steps: 600}
+optim: {lr: 2.0e-5}
+callbacks:
+  best_checkpoint: {dirpath: logs/all/TF2_tfmamba_l_mgan}
+logger:
+  tensorboard: {name: all/TF2_tfmamba_l_mgan}

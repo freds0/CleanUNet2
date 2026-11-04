@@ -1,0 +1,14 @@
+# TF1: full run of the time-frequency branch v2 (IMPROVEMENT_PLAN.md, 16.4, item 1.3), size l (2.48M). The branch alone,
+# warm-started from the screening run tf_l, for 30 more epochs of 10,000 steps of 8 x 2.048 s (~1,365 h of audio, three
+# times the screen). LR 2e-4 with warm-up and cosine decay, losses of the screen, selection on the multi-domain dev set.
+base: ../screen/tf_l.yaml
+trainer: {max_epochs: 30}
+model:
+  init: {cleanspecnet_checkpoint: logs/screen/tf_l/last.ckpt}
+data:
+  mixture: {worker_stderr: logs/all/TF1_tfmamba_l/worker_stderr.log}
+optim: {lr: 2.0e-4}
+callbacks:
+  best_checkpoint: {dirpath: logs/all/TF1_tfmamba_l}
+logger:
+  tensorboard: {name: all/TF1_tfmamba_l}

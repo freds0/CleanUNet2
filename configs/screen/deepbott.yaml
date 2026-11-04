@@ -1,0 +1,8 @@
+# Screening variant: M1's architecture with item 2.3, six bidirectional Mamba layers in the bottleneck instead of three (IMPROVEMENT_PLAN.md, 16.4).
+base: base.yaml
+model:
+  architecture: ../model/cleanunet_mamba_bidir_e8_deepbott.yaml
+callbacks:
+  best_checkpoint: {dirpath: logs/screen/deepbott}
+logger:
+  tensorboard: {name: screen/deepbott}

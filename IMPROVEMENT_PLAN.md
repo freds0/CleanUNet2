@@ -12,6 +12,35 @@
 
 ## 0. Summary
 
+**Status on 2026-11-03.** The queue of 16.5 finished, with results in 16.6 and in `ARCHITECTURES_AND_RESULTS.md`. The
+time-frequency branch `tf_l` (2.48M, screening budget) passes the phase 1 criterion. No waveform-capacity variant
+passes the phase 2 criterion. M2c removes the high-band phase rotation. M2c + `tf_l` (test 3.216) beats M2 + MS on all
+seven sets. The full runs of the branch started at 12:04 (16.7).
+
+**Status on 2026-11-01.** Section 16 analyzes what limits the all-data system and proposes an architecture plan
+(nothing implemented yet).
+- **Magnitude errors** cost about three times as much PESQ as phase errors. The VB gap is a uniform magnitude
+  (specialization) gap.
+- **The spectral branch** is the better magnitude estimator, and the blend is near its ceiling (a per-set weight adds
+  at most +0.045).
+- **Every all-data model has a high-band phase defect.** It applies a fixed rotation above 5 kHz (up to −139°)
+  because it was trained from scratch with magnitude-oriented losses. This costs 0.5 dB of SI-SDR on VB and 1.5 dB
+  on EARS-WHAM.
+- **The plan:**
+  - Phase 0: multi-domain dev set, phase-sensitive loss, screening protocol, VB-gap controls.
+  - Phase 1: dual-path, phase-aware time-frequency branch.
+  - Phase 2: waveform-branch capacity at high time resolution.
+  - Phase 3: blend gate and target-style conditioning.
+  - Phase 4: final model.
+
+**Status on 2026-10-30, 17:40.** Section 15 finished: a Transformer version of the best system (non-causal self-attention bottleneck, 46.3M, plus a Transformer spectral branch blended with w 0.5) trained from scratch on all the downloaded corpora (about 3,200 h of speech, noise and pairs). It generalizes better than the VoiceBank-only systems away from VoiceBank: DNS with_reverb PESQ-WB 2.739 against 1.23, Libri2Mix 2.064 against 1.958, and the highest STOI and SI-SDR on every non-VoiceBank set. It ties them on DNS no_reverb (2.931) and EARS-WHAM (2.138 against 2.200). On the VoiceBank test set it is 0.47 behind (2.976 against 3.446). Results in 15.1.
+
+**Status on 2026-10-31, 11:30.** Section 15.2 finished: the Mamba version of the all-data model (M2 + MS, blend
+w 0.65, 71.9M, the Z4 + W5 architecture) beats the Transformer version on every set and metric (+0.08 to +0.28
+PESQ-WB). It also beats the VoiceBank-only systems on all four non-VoiceBank sets: DNS no_reverb 3.062 against
+2.921, with_reverb 2.903 against 1.23, EARS-WHAM 2.418 against 2.200, Libri2Mix 2.335 against 1.958. On the
+VoiceBank test set it is 0.39 behind (3.060 against 3.446). Results in 15.2.1.
+
 **Status on 2026-10-21, 03:40.** Queue Z (14.11) finished; conclusions at the end of 14.11. With a bidirectional Mamba bottleneck in the waveform branch (Z6), the S30 soup + W5 (w 0.15) scores 3.421 on the test set (+0.046 over 3.375). Trained for 60 epochs instead of 30 (Z4), the bidirectional soup gains PESQ-WB +0.029 more on the test set: alone it scores 3.428 (one 52.4M network, offline, above every earlier blend), and with W5 (w 0.15) **3.446**, the best so far. The S30hp final with metric weight 1.0 (Z3) gains PESQ-NB +0.023 and PESQ-WB +0.036 over S30hp on the test set, with SI-SDR and STOI unchanged. The two together (Z7: bidirectional bottleneck, weight 1.0 above 100 Hz) gain PESQ-NB +0.049 over Z3 on the test set. Trained for 60 epochs (the Z4 final of this recipe, run at the user's request after its screen missed the rule by 0.002), they gain PESQ-NB +0.016 more; with W5 (w 0.25) they give the highest PESQ-NB (3.926) and PESQ-WB above 100 Hz (3.554) measured so far, SI-SDR 19.31 dB (19.32 with 30 epochs) and a full-band PESQ-WB of 3.403. Rejected: output ensembles (Z1), the compressed-magnitude loss and metric weight 0.5 (Z2) and W5 fine-tuned through the blend (Z5).
 
 **Status on 2026-10-19, 19:00.** Queue BB (14.10) finished: the S30 + W5 system retrained with the largest batch that fits the GPU scores 3.312 on the test set, against 3.375 with batch 16, so the batch-16 recipe stays. Queue Y (14.9) finished earlier the same day: training-free checks and a new set with 80 unseen speakers (vctk_unseen), which confirms the test results. Queue X (14.8) finished on 2026-10-16 at 10:53 with no failures, and the complementary analysis (14.8.2) revised the case for S30hp. Queue X covered streaming with a scale prior, DNSMOS, a listening page and the metric discriminator restricted to the band above 100 Hz (S30hp). Queue W (section 14: best system and simplest robust model) finished at 04:43: results in 14.4–14.6 and analysis in 14.7.
@@ -2329,3 +2358,610 @@ val_unseen. The blend weight picked on val_unseen with PESQ-NB is w 0.25 (summed
 6. **Not run:** item 7 (phase decoder) and the listening test (the page still has no answers). Candidates for a
    next queue: a streaming check of Z3 and longer training of the bidirectional recipes (the training PESQ still
    rose at epoch 60).
+
+## 15. All-data Transformer model (2026-10-29)
+
+**Request.** Train the model with a Transformer architecture, following the best architecture found so far, on all
+the downloaded datasets (`scripts/datasets/`, `/home/fred/DATASETS_CleanUNet`). Queue `logs/all/run_all.sh`
+(tmux session `alldata`, log `logs/all/queue.log`, results in `results/all/`), started 2026-10-29 00:08 with 2 s
+crops and restarted at 00:37 with 15.36 s crops (see Recipe).
+
+**Architecture.** The best system is a waveform CleanUNet with a non-causal bottleneck (Z4: bidirectional Mamba,
+60 epochs, metric discriminator 0.3, polarity inversion), blended without training with a non-causal spectral
+branch (W5). The Transformer version keeps that layout:
+
+- **Waveform branch** (`configs/model/cleanunet_tsfm_e8.yaml`, 46.3M): CleanUNet E8 (64–768 channels, kernel 4,
+  stride 2) with the original self-attention bottleneck, 5 layers, 8 heads, d_model 512, d_inner 2048, **without
+  the causal mask** (the CleanUNet DNS-large layout, so its published DNS results compare directly).
+- **Spectral branch** (`configs/model/cleanunet2_tsfm_spec.yaml`): the W5 CleanSpecNet (linear front-end, mask
+  on the log1p magnitude, non-causal) with a 5-layer self-attention backbone instead of the bidirectional Mamba.
+- **Blend**: `evaluate.py --blend_spec`, weight picked on val_unseen PESQ-WB among 0.15 / 0.25 / 0.35 / 0.5.
+
+**Data** (`mixture_dataset.py`, lists from `scripts/datasets/make_training_lists.py` in
+`/home/fred/DATASETS_CleanUNet/_lists`; `configs/all_data/data.yaml`). The task stays denoising: every target is
+the clean, possibly reverberant, speech of its input. Each training example comes from one component:
+
+| Component | Content | Hours | Weight |
+|---|---|---|---|
+| DNS 2020 synthetic pairs | 500 h recipe of CleanUNet, SNR −5..25 dB | 495.9 | 0.20 |
+| VoiceBank-DEMAND 28 spk | `filelists/train.csv` (p226/p287 held out) | 8.8 | 0.05 |
+| EARS-WHAM v2 16 kHz train | speakers p001–p099 | 86.7 | 0.10 |
+| Libri2Mix mix_single train-100/360 | target s1 | 199.7 | 0.05 |
+| URGENT 2026 pre-simulated | only additive (and wind) noise, ≥ 16 kHz, no reverberation | 83.5 | 0.10 |
+| On-the-fly mixtures | speech × noise, SNR −5..20 dB (P.56), RIR p 0.2 | — | 0.50 |
+
+Mixtures draw speech from DNS5 read speech (399.6 h, weight 0.45), LibriSpeech train-clean (464.2 h, 0.35) and
+EARS p001–p099 (92.4 h, 0.20). They draw noise from DNS5 (177.1 h, 0.30), FSD50K without Human_voice/Singing
+(96.7 h, 0.15), WHAM! tr (178.9 h, 0.10), DEMAND in the 8 VoiceBank training environments (10.7 h, 0.05), MUSAN
+noise + music (48.8 h, 0.05), FMA large (881.7 h, 0.10), OpenSLR 28 point-source and isotropic noise (6.7 h, 0.05)
+and babble of 3–7 LibriSpeech talkers with random signs (0.20). The room impulse responses are OpenSLR 28 and the
+DNS5 48 kHz simulated set (60k each), aligned on the direct path. Pairs are cropped at the same position. Files at
+other rates are read at their own rate and resampled. Every example is scaled so that the noisy crop peaks at 1.
+With 20 workers the loader gives about 3,600 examples/s of 2 s, against the ~350/s that T1 needed. With long
+crops (`fill: true`), a file shorter than the crop is followed by others from the same list, joined with a 10 ms
+crossfade applied identically to clean and noisy. Pairs are each scaled by their noisy peak, and speech is scaled to
+the RMS of the first piece.
+
+**Left out to keep the evaluation sets clean.** Evaluation speakers: VoiceBank val/test and the 80 vctk_unseen
+speakers. All 56 speakers of the VoiceBank 56-speaker set are among them, so that set is left out, and so are the
+VCTK speakers in the URGENT pairs. Also left out:
+
+- EARS speakers p100–p107 and the EARS blind test set;
+- LibriSpeech dev/test-clean readers (also matched by LibriVox reader id in the DNS read speech and the URGENT
+  pairs);
+- WHAM! cv/tt recordings (EARS-WHAM valid/test, Libri2Mix test);
+- the 5 test and 5 val_unseen DEMAND environments;
+- every DNS 2020 / URGENT evaluation set.
+
+**Recipe.** Batch 16 of **15.36 s crops**, bf16. The waveform model uses about 22.7 GB of the 24.5 GB of VRAM
+(user's request). The GPU was already ~97% busy with 2 s crops: memory grows by ~1.5 GB per second of crop and the
+time per step in proportion, so the audio processed per hour is the same. The step counts keep the audio budget
+planned with 2 s crops (1M / 40k / 300k steps). Validation is on val_unseen (770 files) after every epoch of 1,333
+steps.
+
+| Stage | Config | Steps | Notes |
+|---|---|---|---|
+| T1 | `configs/all_data/T1_wave_tsfm.yaml` | 133,300 | from scratch, L1 + MR-STFT, LR 2e-4 cosine, polarity 0.5; ~9,100 h of audio, ~14.5 h |
+| T2 | `configs/all_data/T2_wave_tsfm_mgan.yaml` | 5,332 | T1 + metric discriminator 0.3 (warm-up 40 steps), LR 2e-5 (the audio of Z4's 40k steps) |
+| S | `configs/all_data/S_spec_tsfm.yaml` | 39,990 | spectral branch alone, LR 3e-4; ~7.6 GB |
+
+The first T1 with 2 s crops (stopped after 24k steps, val_unseen PESQ 1.945 → 2.152 after 10k / 20k steps) is in
+`logs/all/_aborted/T1_wave_tsfm_2s`.
+
+**Evaluation sets** (`evaluate.py --band_limited`):
+
+- VoiceBank-DEMAND test, val_unseen and vctk_unseen;
+- DNS 2020 synthetic no_reverb and with_reverb (150 each; the with_reverb reference is reverberant);
+- EARS-WHAM v2 16 kHz test (886);
+- Libri2Mix mix_single test (3,000).
+
+Every set is scored for T1, T2, T2 + S, the noisy input and the two Z4 + W5 systems (Mamba, VoiceBank only) as
+references.
+
+**Status.** Queue finished on 2026-10-29 at 23:01 (T1 19:22, T2 21:12, S 22:14). Three incidents:
+
+- At 01:48 a kernel oops (kernel tainted `D`) killed one DataLoader worker of T1 with SIGKILL. The trainer then
+  waited for it for 4.8 h with the GPU memory held. T1 was resumed from `last.ckpt` at 06:36. Since then
+  `run_all.sh` kills a training run whose TensorBoard events stop changing for 20 min (SIGABRT for a stack dump,
+  then SIGKILL) and resumes it, with up to 5 attempts.
+- PESQ segfaulted in a worker of the metric-discriminator pool (T2, 19:36), and `multiprocessing.Pool.map` waited
+  forever. The watchdog restarted T2 from scratch, since it had no checkpoint yet. `evaluation.metrics.evaluate_many`
+  now runs on `map_surviving_crashes`: it reruns the jobs a crash left unfinished, and the crashing job gets an error
+  entry (`tests/test_metrics_crash.py`). The metric-discriminator pool still relies on the watchdog.
+- One evaluation (Z4 hp1.0 + W5 on EARS-WHAM) segfaulted in a convolution of the main process. It was rerun on
+  2026-10-30 without error.
+
+### 15.1 Results
+
+The blend weight picked on val_unseen is **w 0.5**, the edge of the grid. val_unseen PESQ-WB by weight: 2.893
+(0.15), 2.915 (0.25), 2.930 (0.35) and 2.942 (0.5). T2 + S has 57.6M parameters and an RTF of 0.005. No file
+failed in any set. The VoiceBank-only references are Z4 + W5 w 0.15 (the benchmark system) and Z4 hp1.0 + W5
+w 0.25 (the system for use).
+
+PESQ-WB:
+
+| System | val_unseen | test | vctk_unseen | DNS no_reverb | DNS with_reverb | EARS-WHAM | Libri2Mix |
+|---|---|---|---|---|---|---|---|
+| noisy | 2.166 | 1.971 | 1.971 | 1.582 | 1.822 | 1.235 | 1.159 |
+| T1 | 2.837 | 2.792 | 2.669 | 2.634 | 2.313 | 1.871 | 1.796 |
+| T2 | 2.846 | 2.865 | 2.666 | 2.691 | 2.366 | 1.913 | 1.834 |
+| **T2 + S (w 0.5)** | 2.942 | 2.976 | 2.839 | **2.931** | **2.739** | 2.138 | **2.064** |
+| Z4 + W5 w 0.15 (VB only) | **3.419** | **3.446** | **3.414** | 2.777 | 1.189 | 2.178 | 1.902 |
+| Z4 hp1.0 + W5 w 0.25 (VB only) | 3.376 | 3.403 | 3.356 | 2.921 | 1.225 | **2.200** | 1.958 |
+
+SI-SDR (dB) / STOI:
+
+| System | test | vctk_unseen | DNS no_reverb | DNS with_reverb | EARS-WHAM | Libri2Mix |
+|---|---|---|---|---|---|---|
+| noisy | 8.45 / 0.921 | 7.91 / 0.799 | 9.23 / 0.915 | 9.19 / 0.866 | 5.36 / 0.818 | 3.45 / 0.796 |
+| T1 | 17.05 / 0.942 | 15.00 / 0.820 | 14.60 / 0.958 | 12.81 / 0.892 | 12.00 / 0.875 | 10.26 / 0.887 |
+| T2 | 16.84 / 0.942 | 14.59 / 0.820 | 14.54 / 0.959 | 13.03 / 0.895 | 11.97 / 0.877 | 10.27 / 0.888 |
+| T2 + S (w 0.5) | 17.35 / 0.944 | 15.28 / 0.824 | 15.39 / 0.966 | 14.36 / 0.916 | 12.73 / 0.893 | 10.92 / 0.901 |
+| Z4 + W5 w 0.15 | 19.24 / 0.958 | 17.84 / 0.850 | 14.55 / 0.927 | −3.31 / 0.518 | 11.30 / 0.878 | 9.31 / 0.870 |
+| Z4 hp1.0 + W5 w 0.25 | 19.31 / 0.958 | 17.89 / 0.851 | 15.57 / 0.949 | −2.54 / 0.568 | 10.94 / 0.879 | 9.41 / 0.884 |
+
+Findings:
+
+- **On VoiceBank-DEMAND the all-data model is far behind the VoiceBank-only systems**: test PESQ-WB 2.976 against
+  3.446 (−0.47), SI-SDR 17.35 against 19.24 dB. The same holds on val_unseen and vctk_unseen.
+- **Away from VoiceBank it generalizes better.** DNS with_reverb gives 2.739 against 1.19–1.23 PESQ-WB, and the
+  VoiceBank systems drop below the noisy input there (SI-SDR −3 dB): they were never trained to keep
+  reverberation. Libri2Mix gives 2.064 against 1.90–1.96 PESQ-WB and +1.5 dB SI-SDR. It also has the highest STOI
+  and SI-SDR on every non-VoiceBank set.
+- On PESQ it only matches the VoiceBank systems where its training data are in domain. DNS no_reverb gives 2.931
+  against 2.921 (Z4 hp1.0). EARS-WHAM gives 2.138 against 2.178–2.200 PESQ-WB, though with SI-SDR +1.4 dB. The
+  published CleanUNet, trained on DNS alone, scores PESQ-WB 3.146 / NB 3.551 / STOI 0.977 on DNS no_reverb. T2 + S
+  gives 2.931 / 3.386 / 0.966.
+- **The spectral branch gives most of the gain off VoiceBank**: T2 → T2 + S gives +0.24 (DNS no_reverb), +0.37
+  (with_reverb), +0.23 (EARS-WHAM), +0.23 (Libri2Mix) and +0.11 (test). The picked weight is the largest tried, so
+  larger weights (and S alone) are still to be checked on val_unseen.
+- The metric discriminator (T1 → T2) gives +0.07 PESQ-WB on test and +0.06 on DNS no_reverb, and costs 0.2–0.4 dB
+  SI-SDR on the VoiceBank sets, as in the VoiceBank runs.
+- T1's val_unseen PESQ-WB stayed at 2.79–2.81 over its last 8 epochs (best 2.828 at epoch 73), so more steps of
+  the same recipe would add little.
+
+### 15.2 Mamba version (2026-10-30)
+
+**Request.** Train the Mamba version of the all-data model. It keeps the recipe of 15 and changes only the sequence
+models, so that the comparison with T1/T2/S isolates the architecture. The comparison with the VoiceBank-only Z4 +
+W5 then isolates the data.
+
+| Stage | Config | Architecture | Recipe |
+|---|---|---|---|
+| M1 | `configs/all_data/M1_wave_mamba.yaml` | `cleanunet_mamba_bidir_e8.yaml`: the waveform branch of Z4, CleanUNet E8 with a 3-layer bidirectional Mamba bottleneck (d_state 64, expand 4), 52.4M | T1's: from scratch, 133,300 steps of 16 × 15.36 s |
+| M2 | `configs/all_data/M2_wave_mamba_mgan.yaml` | as M1 | T2's: metric discriminator 0.3, LR 2e-5, 5,332 steps |
+| MS | `configs/all_data/MS_spec_mamba.yaml` | `cleanunet2_mamba_spec.yaml`: the W5 spectral branch (linear front-end, mask, 5-layer bidirectional Mamba, expand 2), 19.5M | S's: alone, 39,990 steps, LR 3e-4 |
+
+Measured over 200 steps: M1 uses 19.1 GB and runs at 2.5 steps/s (T1: 22.7 GB, 2.7 steps/s); MS uses 3.0 GB at
+11 steps/s. The queue `logs/all/run_mamba.sh` (tmux session `mamba`, log `logs/all/queue.log`) has the same
+watchdog and resume logic as `run_all.sh`. After training, it picks the blend weight of M2 + MS on val_unseen
+among 0.15–1.0. Section 15 stopped at 0.5, the edge of its grid, so it also extends T2 + S to the same grid.
+Then it evaluates M1, M2 and both picked blends on every set of 15.
+
+**Status.** Done. Started 2026-10-30 17:55; M1 ended 10-31 09:01, M2 10:08, MS 11:12, the evaluations 11:30. No
+attempt was restarted and no evaluation file failed.
+
+#### 15.2.1 Results
+
+The blend weight picked on val_unseen is **w 0.65** for M2 + MS (flat between 0.5 and 0.65). The extended grid
+confirms **w 0.5** for T2 + S, so its rows in 15.1 stand. M2 + MS has 71.9M parameters, the same architecture as
+Z4 + W5.
+
+val_unseen PESQ-WB by blend weight:
+
+| w | 0.15 | 0.25 | 0.35 | 0.5 | 0.65 | 0.8 | 1.0 |
+|---|---|---|---|---|---|---|---|
+| M2 + MS | 2.987 | 3.010 | 3.027 | 3.040 | **3.041** | 3.031 | 3.001 |
+| T2 + S | 2.893 | 2.915 | 2.930 | **2.942** | 2.938 | 2.920 | 2.874 |
+
+PESQ-WB:
+
+| System | val_unseen | test | vctk_unseen | DNS no_reverb | DNS with_reverb | EARS-WHAM | Libri2Mix |
+|---|---|---|---|---|---|---|---|
+| noisy | 2.166 | 1.971 | 1.971 | 1.582 | 1.822 | 1.235 | 1.159 |
+| T1 | 2.837 | 2.792 | 2.669 | 2.634 | 2.313 | 1.871 | 1.796 |
+| M1 | 2.901 | 2.872 | 2.945 | 2.710 | 2.415 | 2.083 | 1.959 |
+| T2 | 2.846 | 2.865 | 2.666 | 2.691 | 2.366 | 1.913 | 1.834 |
+| M2 | 2.936 | 2.944 | 3.014 | 2.775 | 2.453 | 2.120 | 1.998 |
+| T2 + S (w 0.5) | 2.942 | 2.976 | 2.839 | 2.931 | 2.739 | 2.138 | 2.064 |
+| **M2 + MS (w 0.65)** | 3.041 | 3.060 | 3.017 | **3.062** | **2.903** | **2.418** | **2.335** |
+| Z4 + W5 w 0.15 (VB only) | **3.419** | **3.446** | **3.414** | 2.777 | 1.189 | 2.178 | 1.902 |
+| Z4 hp1.0 + W5 w 0.25 (VB only) | 3.376 | 3.403 | 3.356 | 2.921 | 1.225 | 2.200 | 1.958 |
+
+SI-SDR (dB) / STOI:
+
+| System | test | vctk_unseen | DNS no_reverb | DNS with_reverb | EARS-WHAM | Libri2Mix |
+|---|---|---|---|---|---|---|
+| M1 | 16.94 / 0.949 | 15.17 / 0.839 | 14.83 / 0.962 | 13.29 / 0.902 | 12.43 / 0.891 | 10.60 / 0.899 |
+| M2 | 17.13 / 0.948 | 15.46 / 0.839 | 14.85 / 0.962 | 13.31 / 0.903 | 12.37 / 0.891 | 10.59 / 0.899 |
+| M2 + MS (w 0.65) | 18.00 / 0.952 | 15.75 / 0.843 | 15.65 / 0.970 | 14.80 / 0.927 | 13.20 / 0.913 | 11.31 / 0.918 |
+| T2 + S (w 0.5) | 17.35 / 0.944 | 15.28 / 0.824 | 15.39 / 0.966 | 14.36 / 0.916 | 12.73 / 0.893 | 10.92 / 0.901 |
+| Z4 hp1.0 + W5 w 0.25 | 19.31 / 0.958 | 17.89 / 0.851 | 15.57 / 0.949 | −2.54 / 0.568 | 10.94 / 0.879 | 9.41 / 0.884 |
+
+Findings:
+
+- **Architecture: Mamba beats the Transformer at every stage, on every set and every metric.** M1 − T1 is +0.06
+  to +0.28 PESQ-WB. M2 + MS − T2 + S is +0.08 (test), +0.10 (val_unseen), +0.13 (DNS no_reverb), +0.16
+  (with_reverb), +0.18 (vctk_unseen), +0.27 (Libri2Mix) and +0.28 (EARS-WHAM), with higher STOI and SI-SDR
+  everywhere. It costs 71.9M parameters against 57.6M, and M1 trains at 2.5 steps/s against 2.7 (19.1 GB against
+  22.7 GB).
+- **Data: away from VoiceBank, M2 + MS beats both VoiceBank-only systems on all four sets**, EARS-WHAM included,
+  which T2 + S lost: DNS no_reverb 3.062 against 2.921, with_reverb 2.903 against 1.23, EARS-WHAM 2.418 against
+  2.200, Libri2Mix 2.335 against 1.958 PESQ-WB, with the highest STOI and SI-SDR. On VoiceBank it is still 0.39
+  behind on test (3.060 against 3.446), 0.40 on vctk_unseen, and 1.2–1.3 dB SI-SDR.
+- The architecture gap is largest on vctk_unseen (M2 − T2 +0.35), where MS adds nothing (+0.003). Away from
+  VoiceBank, MS adds +0.29 (DNS no_reverb), +0.45 (with_reverb), +0.30 (EARS-WHAM) and +0.34 (Libri2Mix), and
+  +0.12 on test.
+- The metric discriminator (M1 → M2) gives +0.07 PESQ-WB on test and +0.07 on DNS no_reverb. Unlike T1 → T2, it
+  does not cost SI-SDR on the VoiceBank sets (+0.19 dB on test, +0.29 on vctk_unseen).
+- At w 1.0 (all the magnitude from the spectral branch, the phase from the waveform branch) both blends still beat
+  their waveform model alone on val_unseen: 3.001 against 2.936, 2.874 against 2.846.
+- The published CleanUNet, trained on DNS alone, scores PESQ-WB 3.146 / NB 3.551 / STOI 0.977 on DNS no_reverb;
+  M2 + MS gives 3.062 / 3.486 / 0.970.
+
+**Checkpoints.** In Lightning 2.6.0, `ModelCheckpoint.on_validation_end` writes `last.ckpt` only when a top-k
+checkpoint was saved at that step. With `save_top_k: 2` on a monitored metric, `last.ckpt` is therefore the
+latest of the two best checkpoints, not the final epoch: T1 epoch 80 and M1 epoch 79 of 0–99, S epoch 20 and MS
+epoch 27 of 0–29 (T2 and M2: their last epoch). All the evaluations of 15 and the T2/M2 initializations used these
+files, so val_unseen chose the checkpoints (PESQ for the waveform branch, L1 loss for the spectral branch) as well
+as the blend weight. The val_unseen columns are slightly optimistic; the other sets are not affected. T1 and M1
+had plateaued (M1's val PESQ 2.86–2.88 over its last 8 epochs). The VoiceBank ablations set `monitor: null`, so
+their `last.ckpt` is the final epoch.
+
+## 16. Quality analysis and architecture plan (2026-11-01)
+
+**Request.** Analyze the code and the results, find what can raise the quality, and propose a development plan for
+architecture improvements. Nothing was implemented. The diagnostics below ran on the existing checkpoints. The
+blend-weight sweep is in `results/all/M2MS_w*/<set>`. The other analyses were throwaway scripts outside the
+repository: enhanced audio, per-band errors, oracle phase and magnitude, and phase coherence.
+
+### 16.1 The current system, as coded
+
+- **Waveform branch** (`cleanunet/cleanunet.py`, 52.4M).
+  - Eight levels, each a single Conv1d (kernel 4, stride 2) → ReLU → 1×1 conv → GLU. The decoder mirrors them with
+    ConvTranspose1d, and the skips are additive.
+  - The only sequence model is the bottleneck: 3 bidirectional Mamba layers, d_model 512, at 62.5 frames/s.
+  - Most parameters sit in the 768-channel deep levels. The levels that form the 2–8 kHz content have 64–256
+    channels, one convolution each and no temporal context beyond their kernels.
+- **Spectral branch** (`cleanunet/cleanspecnet.py`, linear front-end, 19.5M).
+  - Each STFT frame (1024 / 256: 64 ms window, 16 ms hop) is projected by one dense layer from 513 to 512.
+  - Then come a depthwise temporal convolution and 5 bidirectional Mamba layers over time. A dense output layer
+    gives a sigmoid mask on the log1p magnitude.
+  - Nothing models the frequency axis except the two dense projections, and there is no phase.
+- **Blend** (`cleanunet/blend.py`): geometric mean of the two magnitudes in the 1024 / 256 STFT, with the phase of
+  the waveform branch.
+- **Losses** (`losses.py`).
+  - The waveform branch learns from L1 on the waveform plus the multi-resolution STFT loss (spectral convergence and
+    log magnitude). Only the L1 term sees the phase.
+  - The metric discriminator sees magnitudes.
+  - The spectral branch learns from L1 on the log1p magnitude.
+- **Initialization.**
+  - The all-data models start from scratch.
+  - The VoiceBank-only references (Z4) descend from stage A, i.e. from the DNS-trained CleanUMamba checkpoint. The
+    "data" comparison of 15.2 therefore also includes that pretraining.
+
+### 16.2 Diagnostics
+
+**Error budget.** The STFT is 512 / 128. Each system is scored three more ways:
+- **Perfect phase:** its own magnitude with the clean phase.
+- **Perfect magnitude:** the clean magnitude with its own phase.
+- **Noisy phase:** its own magnitude with the phase of the noisy input.
+
+PESQ-WB / SI-SDR (dB):
+
+| System, set | As is | Perfect phase | Perfect magnitude | Noisy phase |
+|---|---|---|---|---|
+| M2 + MS, VB test | 3.060 / 18.00 | 3.442 / 23.59 | 4.154 / 19.72 | 3.011 / 18.28 |
+| M2 + MS, DNS no_reverb | 3.062 / 15.65 | 3.506 / 22.27 | 4.202 / 17.67 | 2.981 / 17.54 |
+| M2 + MS, EARS-WHAM | 2.411 / 13.20 | 2.809 / 19.08 | 3.933 / 15.30 | 2.316 / 14.14 |
+| Z4 + W5, VB test | 3.447 / 19.24 | 3.787 / 24.71 | 4.230 / 20.81 | 3.317 / 18.84 |
+
+- Magnitude errors cost about three times as much PESQ as phase errors (+1.1 to +1.5 against +0.4).
+- With a perfect phase, M2 + MS is still 0.345 behind Z4 + W5 on the VB test (3.442 against 3.787). The VB gap of
+  0.387 is therefore mostly a magnitude gap.
+- On DNS no_reverb and EARS-WHAM the noisy phase gives a higher SI-SDR than the system's own phase. The next item
+  explains why.
+
+**High-band phase defect.** The table gives the mean phase difference between output and clean reference per band,
+over the speech-active bins of all files, and its coherence (1 means a deterministic relation):
+
+| Model | 2–3.4 kHz | 3.4–5 kHz | 5–6.5 kHz | 6.5–7 kHz | 7–7.5 kHz | 7.5–8 kHz | Coherence 5–8 kHz |
+|---|---|---|---|---|---|---|---|
+| T1, M1, T2, M2 (all data, final) | 0° | −1° | −12° | −74° | −108° | −139° | 0.96–0.98 |
+| T1 after 24k steps (2 s crops, aborted run) | −9° | −52° | −91° | −126° | −141° | −157° | 0.94–0.98 |
+| VoiceBank only, from scratch, 30 epochs (Mamba, MHA) | 0° | +10 to +16° | random | random | random | random | 0.36–0.39 at 5–6.5 kHz, ≤ 0.03 above |
+| Stage A and Z4 (DNS-pretrained lineage) | 0° | 0° | 0° | 0° | 0° | 0° | ≥ 0.98 |
+
+- **What happens.** Every all-data model applies the same fixed phase rotation above 5 kHz to every input. On DNS
+  no_reverb and EARS-WHAM it reaches −156° at 7.5–8 kHz.
+  - The magnitudes in those bands are right: the level bias is within ±0.1 dB.
+  - The complex signal-to-error ratio of M2 + MS on the VB test is 8.6 dB at 5–6.5 kHz and −3.1 dB at 6.5–8 kHz.
+    Z4 + W5 has 16.0 and 14.6 dB.
+- **Not the data.** In every training component, as the loader draws it, clean and noisy have no phase difference at
+  any band (within 0.4°).
+- **The cause is training dynamics.** The models train from scratch with losses whose only phase-sensitive term is
+  the waveform L1, and the 5–8 kHz band carries about 1% of the energy.
+  - The rotated band shrinks during training: from 2 kHz up at 24k steps to 5 kHz up at 133k steps.
+  - The VoiceBank-only runs trained from scratch never learned this band.
+  - The DNS-pretrained lineage has it right.
+  - T and M probably land on the same rotation (within 1°) because they share the encoder and decoder
+    initialization (same seed).
+- **Cost.**
+  - Removing the mean rotation measured on the DNS no_reverb outputs (a fixed all-pass correction) raises the SI-SDR
+    of M2 + MS from 18.00 to 18.49 dB on the VB test and from 13.20 to 14.68 dB on EARS-WHAM. The clean phase above
+    5 kHz gives the same.
+  - PESQ and STOI do not move.
+
+**Blend weight per set** (M2 + MS, PESQ-WB). w 0 is M2 alone; w 1 is the MS magnitude with the M2 phase.
+
+| Set | w 0 | w 0.35 | w 0.65 (picked) | w 1 | Best w | Gain of the best w |
+|---|---|---|---|---|---|---|
+| val_unseen | 2.936 | 3.027 | 3.041 | 3.001 | 0.65 | — |
+| test | 2.944 | 3.050 | 3.060 | 2.992 | 0.5 | +0.001 |
+| vctk_unseen | 3.014 | 3.062 | 3.017 | 2.904 | 0.35 | +0.045 |
+| DNS no_reverb | 2.775 | 3.002 | 3.062 | 3.015 | 0.65 | — |
+| DNS with_reverb | 2.453 | 2.771 | 2.903 | 2.910 | 0.8 | +0.020 |
+| EARS-WHAM | 2.120 | 2.338 | 2.418 | 2.393 | 0.8 | +0.003 |
+| Libri2Mix | 1.998 | 2.234 | 2.335 | 2.319 | 0.8 | +0.010 |
+
+- The MS magnitude with the M2 phase (w 1) beats the 52M waveform branch on 6 of 7 sets, by +0.06 to +0.46. MS is a
+  19.5M frame-vector model with a coarse STFT.
+- Picking the weight per set would add at most +0.045 (on vctk_unseen), +0.011 on average. The blend is near its
+  ceiling, so more quality has to come from the branches, not from the mixing.
+
+**Other facts.**
+
+- **The VB gap is uniform.** The gap of M2 + MS to Z4 + W5 is the same in every input-SNR bin of the test set: −0.38,
+  −0.41, −0.39 and −0.35 PESQ-WB from < 5 dB to ≥ 15 dB. It also shows in PESQ-NB (3.672 against 3.902) and in the
+  band-limited PESQ (3.206 against 3.554 for Z4 hp1.0 + W5).
+- **Off VB, the error is low-mid frequency noise.** On EARS-WHAM, 67% of the error energy is at 100–1000 Hz. There,
+  in speech pauses, the output is 14–16 dB above the reference: residual non-stationary noise.
+- **Low SNR dominates the non-VB sets.** 1,972 of the 3,000 Libri2Mix files are below 5 dB, where M2 + MS scores
+  2.17 (EARS-WHAM: 1.96).
+- **No overfitting.** M1's training loss still fell in the second half of the run (0.531 at epoch 50, 0.498 at epoch
+  99), and the validation loss never rose. The all-data model is limited by capacity and compute. Mamba reached a
+  lower training loss than the Transformer (0.498 against 0.516).
+- **Target conventions differ across corpora.**
+  - Noise floor (quietest 10% of frames relative to the loudest): VB −38 to −40 dB, Libri2Mix −46 to −48, DNS 2020
+    and EARS-WHAM −54 to −56, URGENT −60. The DNS test references are digitally silent.
+  - Content below 100 Hz relative to 1–2 kHz varies from −9 to +9 dB (VB test +7.7 dB).
+  - Bandwidth is not an issue: at least 90% of the files of each corpus reach 7 kHz within 50 dB of the spectral
+    peak.
+  - A model trained on all of them reproduces an average convention. That costs on VB, whose references have the
+    highest noise floor.
+
+### 16.3 What limits the quality
+
+1. **Magnitude estimation is the main limit everywhere** (error budget).
+   - On VB it is the specialization gap. It is uniform over SNR, the VB references have their own noise floor and
+     low band, and Z4 had DNS pretraining plus VB fine-tuning.
+   - Off VB it is residual noise at 100–1000 Hz under non-stationary noise at low SNR.
+2. **The spectral branch is the better magnitude estimator** despite its simple design, and the blend already
+   extracts most of the complementarity. A better time-frequency model is the most promising architecture lever.
+3. **Every from-scratch all-data model has the high-band phase defect.**
+   - It costs 0.5 dB of SI-SDR on VB and 1.5 dB on EARS-WHAM, and no PESQ.
+   - The cause is the losses combined with training from scratch.
+   - The fix is a phase-sensitive loss, and/or a pretrained initialization. Every new architecture needs it.
+4. **Capacity and compute.** The training loss still falls, so more effective capacity, placed where it matters, and
+   longer training should help.
+5. **Model selection is VB-centric.** Checkpoints and blend weights are chosen on val_unseen only, and the all-data
+   model needs a multi-domain dev set.
+
+### 16.4 Plan
+
+**Ordering.**
+- Cheap measurements and the loss fix come first, because every later comparison depends on them.
+- Then the time-frequency branch (largest expected gain), then waveform-branch capacity, then fusion and
+  conditioning.
+- At most one full all-data training per phase.
+
+**Phase 0: foundations** (about 1 day of GPU, no new architecture)
+
+| Item | What | Why | Cost | Pass criterion |
+|---|---|---|---|---|
+| 0.1 | Multi-domain dev set `filelists/dev_multi.csv`: val_unseen (770), EARS-WHAM valid (~300 of 632, p100–p101), Libri2Mix dev (~300), URGENT 2026 validation with labels, additive-noise rows (~200). Selection on the mean of the per-domain means | Finding 5; the test sets stay untouched | CPU, ~1 h | — |
+| 0.2 | `last.ckpt` saved every epoch (a second ModelCheckpoint with `monitor: null`) | 15.2.1, Checkpoints | trivial | — |
+| 0.3 | Phase-sensitive loss on the waveform output: MSE on the power-compressed complex STFT (\|X\|^0.3 e^{jφ}, 400 / 100, as in MP-SENet and CMGAN), plus an optional magnitude-weighted anti-wrapping term (`losses.phase_losses`). Fine-tune M2 for 4 epochs with it | Finding 3 | ~2 h | Coherence ≥ 0.99 and rotation within 10° up to 8 kHz; SI-SDR ≥ +0.4 dB on the VB test (proxy +0.49) and ≥ +1.2 dB on EARS-WHAM (proxy +1.48); PESQ-WB ≥ −0.01 |
+| 0.4 | Short screening protocol: ~10% of M1's audio (e.g. 50k steps of 16 × 4.096 s, ~1.5–2 h, to be measured) on the all-data mixture with the 0.3 loss. The baseline is M1's architecture under the same protocol | Every later variant | ~2 h per variant | Report dev PESQ-WB, PESQ-NB, SI-SDR, high-band coherence, steps/s, VRAM |
+| 0.5 | Controls that size the VB gap (recipe, not architecture). (a) M2 + MS fine-tuned on VB28 + MUSAN at LR 2e-5 for 10–20 epochs (Z4's recipe). (b) Later, M1 started from the Z4 waveform weights instead of from scratch | Findings 1 and 3 | (a) ~2–3 h; (b) one full run, in phase 4 | (a) tells how much of the 0.39 is specialization |
+
+**Phase 1: time-frequency branch v2** (the main track)
+
+- **1.1 Design.** Extend `cleanunet/tf_mamba.py` (N2) into a non-causal, phase-aware dual-path model:
+  - **Input:** STFT 512 / 128 (8 ms hop) on the power-compressed complex spectrum (magnitude^0.3 plus cos / sin of
+    the phase).
+  - **Encoder:** 2-D convolutional, with ×2 down-sampling in frequency.
+  - **Core:** 4–6 blocks of bidirectional Mamba over time (one sequence per frequency) and over frequency (one per
+    frame), with 64–96 channels.
+  - **Decoders:** a bounded magnitude-mask decoder and a phase decoder (pseudo real / imaginary parts, then
+    `safe_atan2`).
+  - **Losses:** compressed magnitude, complex, anti-wrapping phase (IP, GD, IAF), time L1 and STFT consistency, with
+    the metric discriminator at the end.
+- **Why N2's result does not carry over.** N2 failed in 13.x as a 0.98M, causal, magnitude-only model trained for 30
+  epochs on VoiceBank, and none of those limits apply here. Published VB-only models of this family (MP-SENet,
+  SEMamba) report PESQ-WB around 3.5–3.6 on VoiceBank-DEMAND (not reproduced here).
+- **1.2 Screening.** Three sizes (C 48 / 64 / 96, 4 or 6 blocks) with the 0.4 protocol, with 2–4 s crops if memory
+  requires.
+- **1.3 Full run.** One all-data training of the best size. Evaluate it alone, blended with M2 (magnitude) with the
+  phase of either branch, and as the phase source for the M2 + MS magnitude.
+- **Pass criterion.** Dev PESQ-WB ≥ +0.05 over M2 + MS, with SI-SDR not lower. The gain is expected on the low-SNR,
+  non-stationary sets (EARS-WHAM, Libri2Mix) and in the phase: a perfect phase is worth up to +0.4 PESQ and +6 dB of
+  SI-SDR.
+- **Cost.** Implementation 1–2 days, screens about 3 × 2–3 h, full run about 10–20 h (to be measured).
+
+**Phase 2: waveform-branch capacity at high time resolution** (the screens can share the GPU queue with phase 1)
+
+| Item | Change | Why |
+|---|---|---|
+| 2.1 | Residual dilated-convolution blocks (2 per level, compressed channels, as in Hybrid Demucs) in encoder and decoder levels 1–6 | The 2–8 kHz content is formed by one convolution per level |
+| 2.2 | Bidirectional Mamba at the two decoder levels above the bottleneck (125 and 250 frames/s) | Sequence modeling happens only at 62.5 frames/s |
+| 2.3 | Bottleneck scaling: 3 → 6 Mamba layers, then d_model 512 → 768 | The training loss is still falling (finding 4) |
+| 2.4 | Gated skip connections | Cheap |
+
+Each item is screened alone with the 0.4 protocol.
+- **Pass:** dev PESQ-WB ≥ +0.03 with SI-SDR ≥ −0.3 dB and STOI ≥ −0.003, on at least 3 of the 4 domains.
+- The passing items are combined into one full run of about 15–18 h.
+
+**Phase 3: fusion and conditioning** (after phases 1–2 change the branches)
+
+- **3.1 Learned per-bin blend gate.** A small 2-D conv net on log |Y|, log |S| and log |X| gives w(t, f) ∈ [0, 1],
+  with the branches frozen (about 2 h). The gain is bounded: the per-set oracle weight adds at most +0.045 (+0.011
+  on average), and the per-file oracle on VB added +0.028 (14.11).
+- **3.2 Target-style conditioning.**
+  - A learned embedding of the target corpus (VCTK / VB, DNS, EARS, LibriSpeech, reverberant) is applied by FiLM at
+    the bottleneck and in the TF blocks.
+  - At inference the style is chosen: the VCTK style for the VB sets, a studio style for general use. With dry
+    targets, a dereverberation style also becomes possible.
+  - It addresses the uniform VB gap without a separate model. Compare it with 0.5(a), and report it as a system that
+    uses domain information.
+
+**Phase 4: final model**
+- One all-data training with the winners of phases 1–3 and the 0.3 loss, optionally started from pretrained weights
+  (0.5b).
+- Then the metric-GAN fine-tune (0.3, and the hp1.0 variant for use), and a soup of 2–3 seeds if the budget allows.
+- Evaluate once on all sets.
+- Streaming (causal) versions are a separate track.
+
+**Not recommended now.**
+- More fusion operators inside the U-Net: phases 2–4 of section 5 ended in ties.
+- Larger batches (14.10).
+- Per-file blend weights: their gain is bounded (see 3.1).
+- Generative refiners: expensive, and their PESQ effect is uncertain.
+- 48 kHz: a product track, not a benchmark gain.
+
+**Estimated GPU time.**
+
+| Phase | Screens | Full runs |
+|---|---|---|
+| 0 | 6–10 h in total | — |
+| 1 | ~10 h | 10–20 h |
+| 2 | ~10 h | 15–18 h |
+| 3 | 2 h (3.1) | 15 h (3.2) |
+| 4 | — | 20–40 h |
+
+### 16.5 Implementation (2026-11-01)
+
+Phases 0–2 are implemented. Phases 3 and 4 wait for the screening results, because the blend gate and the
+conditioning act on whichever branches pass.
+
+| Item | Code | Config |
+|---|---|---|
+| 0.1 Multi-domain dev set | `scripts/make_dev_multi.py` | `filelists/dev_multi.csv` (900 files), `dev_multi_{vb,ears_wham,libri2mix}.csv` (300 each) |
+| 0.2 `last.ckpt` every epoch | `train.LastEveryEpochCheckpoint` replaces ModelCheckpoint for every config | — |
+| 0.3 Compressed complex loss | `losses.CompressedComplexLoss`; `loss.ccomplex: {weight, n_fft, hop_length, power}` | `configs/all_data/M2c_phase.yaml` |
+| 0.4 Screening protocol | — | `configs/screen/base.yaml` |
+| 0.5(a) VoiceBank fine-tune control | — | `configs/all_data/M2c_vbft.yaml` |
+| 1.1–1.2 Time-frequency branch v2 | `evaluate.py --spec_only`, `--blend_phase spec`; `cleanunet/blend.py` `phase_source`; validation scores spectral-only runs through their resynthesis | `configs/model/tfmamba_v2_spec{,_s,_l}.yaml`, `configs/screen/tf_{s,m,l}.yaml` |
+| 2.1–2.4 Waveform-branch capacity | `cleanunet/cleanunet.py`: `level_dconv`, `level_mamba`, `gated_skips` | `configs/model/cleanunet_mamba_bidir_e8_{dconv,levmamba,deepbott,gated}.yaml`, `configs/screen/{dconv,levmamba,deepbott,gated}.yaml` |
+
+How the pieces work:
+- **Compressed complex loss.** It weighs the 5–8 kHz band through the 0.3 compression. Weight 1.0 makes it about a
+  third of the waveform loss on M2's outputs (0.15 against 0.39 for the MR-STFT loss and 0.09 for L1).
+- **New waveform modules.** They start close to the identity: the DConv and level-Mamba branches have a LayerScale
+  of 1e-4, and the skip gates are zero-initialized (exactly 1). Old checkpoints load unchanged.
+- **Time-frequency branch v2.** It reuses `cleanunet/tf_mamba.py` (N2), now non-causal, with these settings:
+  - phase input and phase decoder;
+  - power-0.3 compression on a 512 / 128 STFT;
+  - spectral loss terms (`loss.spec_terms`): magnitude MSE 0.9, anti-wrapping phase 0.3, complex 0.1, consistency
+    0.1, and the waveform loss of the resynthesis 0.2.
+- **Tests.** `tests/test_plan16.py`; the suite has 168 passed.
+
+Queue `logs/plan16/run_plan16.sh` (tmux session `plan16`, log `logs/plan16/queue.log`):
+1. M2c, then its evaluation alone and with MS (w 0.65).
+2. M2c_vbft, with the blend weight picked on val_unseen, then evaluated on every set.
+3. The eight screening runs (base, dconv, levmamba, deepbott, gated, tf_s, tf_m, tf_l), each scored per domain on
+   the dev set.
+
+Started 2026-11-01 12:23. M2c runs at 1.3 steps/s.
+
+Measured over 120 steps per screening config:
+
+| Config | Speed (steps/s) | Peak VRAM |
+|---|---|---|
+| base | 9.2 | 5.9 GB |
+| levmamba | 7.4 | 6.8 GB |
+| deepbott | 7.1 | 6.6 GB |
+| gated | 7.8 | 7.5 GB |
+| dconv | 3.9 | 16.0 GB |
+| tf_s | 7.4 | 6.4 GB |
+| tf_m | 5.6 | 7.9 GB |
+| tf_l | 2.6 | 15.1 GB |
+
+Two adjustments were needed:
+- **DConv** is limited to levels 3–6. With levels 1–2 as well it ran at 2.8 steps/s in 24 GB.
+- **The time-frequency screens** use batches of 8 × 2.048 s (a quarter of the audio of the waveform screens). With
+  16 × 4.096 s the small size ran at 1 step/s in 22 GB and the others did not fit.
+
+The whole queue is estimated at ~26 h. The results and the decisions for the full runs of phases 1, 2 and 4 go in
+16.6.
+
+### 16.6 Results of the queue (2026-11-03)
+
+The queue ended on 2026-11-03 at 03:41. M2 + MS, M2c + MS and the `tf_l` blends were then scored on the dev set
+(`results/screen/ref/`). Full tables, architectures and limitations are in `ARCHITECTURES_AND_RESULTS.md`.
+
+Dev PESQ-WB and SI-SDR (dB), mean over the three domains:
+
+| System | PESQ-WB | SI-SDR |
+|---|---|---|
+| base (screen) | 2.165 | 13.76 |
+| dconv (screen, best waveform variant on the mean) | 2.180 | 14.16 |
+| `tf_l` (screen, 2.48M) | 2.635 | 15.91 |
+| M2 + MS w 0.65 | 2.567 | 13.88 |
+| M2c + MS w 0.65 | 2.563 | 14.83 |
+| M2c + `tf_l` w 0.65, M2c phase | 2.629 | 15.27 |
+| **M2c + `tf_l` w 0.65, `tf_l` phase** | **2.691** | **15.98** |
+
+Decisions proposed, none started:
+- **Item 0.3 (M2c).** Rotation and SI-SDR pass. Coherence stays at 0.975 at 7.5–8 kHz, and PESQ falls by 0.017–0.027
+  on `val_unseen` and `vctk_unseen`. Keep the loss for new training.
+- **Item 0.5(a).** The VoiceBank fine-tune closes 0.128 of the 0.386 test gap and costs 0.100 to 0.194 on EARS-WHAM and
+  Libri2Mix.
+- **Phase 1.** `tf_l` passes (+0.068, +2.02 dB), though its gain on EARS-WHAM alone (+0.013) is not distinguishable
+  from zero. It goes to the full run (1.3). Every size increase improved every domain, so a larger size is an option.
+- **Phase 2.** No variant passes. Only deepbott reaches +0.03, on VB alone. dconv is the most consistent, at 2.4 times
+  the step time. No combined full run for now.
+- **The dev set has three domains**, not the plan's five sources: URGENT and the additive-noise rows were not built.
+
+**M2c + `tf_l` on the evaluation sets** (`results/all/M2cTFL_sph_w0.65`, `results/all/TFL_screen`). The dev grid picks
+w 0.65 with the phase of `tf_l`. PESQ-WB:
+
+| System | val_unseen | test | vctk_unseen | DNS no_reverb | DNS with_reverb | EARS-WHAM | Libri2Mix |
+|---|---|---|---|---|---|---|---|
+| `tf_l` alone | 3.161 | 3.136 | 3.104 | 3.270 | 2.980 | 2.411 | 2.417 |
+| M2c + `tf_l` | 3.181 | 3.216 | 3.180 | 3.325 | 3.002 | 2.507 | 2.490 |
+| M2 + MS | 3.041 | 3.060 | 3.017 | 3.062 | 2.903 | 2.418 | 2.335 |
+| Z4 + W5 | 3.419 | 3.446 | 3.414 | 2.777 | 1.189 | 2.178 | 1.902 |
+
+It beats M2 + MS on all seven sets (+0.089 to +0.263), with SI-SDR +0.76 to +3.53 dB, and has 54.9M parameters against
+71.9M.
+
+The watchdog still kills only the main process. Orphaned loader workers held 21.9 GB and stopped the queue from 18:10
+to 22:51 on 2026-11-01. Later queues should start each run in its own process group.
+
+### 16.7 Full runs of the time-frequency branch (2026-11-03)
+
+**Request.** Update the documents and start the trainings. Item 1.3, with the metric discriminator that the phase 1
+design calls for.
+
+| Stage | Config | Init | Recipe | Measured | Estimate |
+|---|---|---|---|---|---|
+| TF1 | `configs/all_data/TF1_tfmamba_l.yaml` | `logs/screen/tf_l/last.ckpt` | 30 epochs of 10,000 steps of 8 × 2.048 s (~1,365 h of audio), LR 2e-4, losses of the screen | 2.62 steps/s, 15.1 GB | ~32 h |
+| TF2 | `configs/all_data/TF2_tfmamba_l_mgan.yaml` | TF1 | 4 epochs (~182 h of audio), metric discriminator 0.3, warm-up 600 steps, LR 2e-5 | 2.16 steps/s, 15.1 GB | ~5 h |
+
+Choices:
+- **Warm start.** It reuses the 10.8 h of `tf_l`. With the screen, the branch reaches ~1,820 h of audio, two thirds of
+  MS's ~2,730 h. Starting from scratch would add about 11 h for the same audio.
+- **Size `tf_l`.** The plan runs the best screened size. A larger branch is left for later, because memory and step
+  time already limit the run.
+
+Code:
+- **`lightning_modules/cleanunet_module.py`.** `loss.metric_gan` now works with `loss.mode: spec`: the discriminator
+  scores the resynthesis with the predicted phase. The waveform branch stays frozen.
+- **`tests/test_plan16.py`.** It covers that path. The suite has 169 passed.
+
+Queue `logs/plan16/run_tf_full.sh` (tmux session `tffull`, log `logs/plan16/tf_full.log`), started on 2026-11-03 at
+12:04, expected to end around 2026-11-05 03:00:
+- After each stage: the branch alone on the dev set, then the blend M2c + TF with the phase of TF at w 0.35–0.8 on the
+  dev set, then the branch and the picked blend on the seven evaluation sets.
+- Each training runs in its own process group, and the watchdog kills the whole group. This addresses the orphaned
+  workers of 16.6.
+
+Partial TF1 validation at 17:39, 5 of 30 epochs (one attempt, no restart; 64.6 min per epoch, on the ~32 h estimate):
+
+| Epoch | 1 | 2 | 3 | 4 | 5 |
+|---|---|---|---|---|---|
+| Validation PESQ-WB | 2.578 | 2.627 | 2.602 | 2.632 | 2.674 |
+| Validation SI-SDR (dB) | 15.80 | 15.27 | 15.91 | 16.07 | 15.80 |
+
+The last validation of `tf_l` was 2.626 and 15.88 dB. The curve is noisy and nothing has been scored on the dev or
+evaluation sets yet, so this decides nothing. `worker_stderr.log` holds 34 caught `MixtureDataset` read errors, with
+training unaffected.
+
+**Interruption.** The machine stopped on 2026-11-03 between 20:40 and 20:50, during the validation at the end of epoch 8,
+with no clean shutdown, and came back on 2026-11-04 at 16:07. The cause is unknown (`kern.log` is not readable from this
+account). `last.ckpt` loads clean at epoch 7 of 30 (step 70,000, validation PESQ-WB 2.717, SI-SDR 16.01 dB; 2.651 and
+15.86 dB one epoch earlier). The steps up to ~80,000 were lost. The queue was resumed from that checkpoint on 2026-11-04,
+with the end now expected around 2026-11-06 02:30.
+
+The results go in 16.8.

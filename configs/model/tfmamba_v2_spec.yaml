@@ -1,0 +1,26 @@
+# Time-frequency branch v2 (IMPROVEMENT_PLAN.md, 16.4, phase 1): non-causal, phase-aware dual-path Mamba on the
+# power-compressed spectrum of a 512 / 128 STFT (8 ms hop). Input: compressed magnitude + cos / sin of the noisy
+# phase; 2-D convolutional encoder with one x2 frequency down-sampling (257 -> 129 bins); blocks of bidirectional
+# Mamba over time (per bin) and over frequency (per frame); a bounded magnitude mask and a phase decoder (pseudo
+# real / imaginary parts -> atan2). The waveform branch of the base is built but frozen and unused (loss.mode spec).
+# Sizes are set by the screening configs (configs/screen/tf_*.yaml).
+base: cleanunet_mamba_bidir_e8.yaml
+use_spec_branch: true
+conditioning_type: none
+bottleneck_fusion: false
+spectrogram: {n_fft: 512, hop_length: 128, win_length: 512, alignment: center, compression: pow, compression_power: 0.3}
+cleanspecnet_params:
+  architecture: tf_mamba
+  input_features: mag_phase
+  causal: false
+  channels: 64
+  full_res_channels: 32
+  n_blocks: 4
+  freq_downsample: 1
+  time_kernel: 3
+  d_state: 16
+  d_conv: 4
+  expand: 2
+  output_mode: mask
+  predict_phase: true
+  backend: auto

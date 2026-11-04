@@ -19,8 +19,8 @@ from cleanunet.cleanspecnet import safe_atan2
 from cleanunet.cleanunet2 import CleanUNet2
 from cleanunet.metric_disc import MetricDiscriminator, batch_pesq, discriminator_loss, generator_loss
 from evaluation.metrics import evaluate_many, summarize
-from losses import (AntiWrappingPhaseLoss, CleanUNet2Loss, CompressedMagnitudeLoss, MultiResolutionSTFTLoss,
-                    phase_losses)
+from losses import (AntiWrappingPhaseLoss, CleanUNet2Loss, CompressedComplexLoss, CompressedMagnitudeLoss,
+                    MultiResolutionSTFTLoss, phase_losses)
 
 SPEC_TERMS = ("l1", "mse", "wave", "phase", "complex", "consistency")
 
@@ -32,8 +32,8 @@ class CleanUNetLightningModule(pl.LightningModule):
       model:              architecture (CleanUNet2 kwargs), init (pretrained weights),
                           train_cleanunet / train_cleanspecnet (freezing)
       loss:               mode = hybrid | waveform | spec | blend; waveform, spectral and phase weights; MR-STFT
-                          settings; cmag (compressed-magnitude loss); metric_gan (metric discriminator, optional
-                          highpass_hz); blend_w (weight of the spectral magnitude in mode blend)
+                          settings; cmag / ccomplex (compressed magnitude / complex losses); metric_gan (metric
+                          discriminator, optional highpass_hz); blend_w (weight of the spectral magnitude in mode blend)
       optim:              AdamW + linear warm-up + cosine decay, per-submodule LR scales
       augment:            Remix / BandMask / Shift / Gain / SNR probabilities (applied on GPU)
       augment_polarity:   probability of multiplying a training pair by -1
@@ -117,6 +117,15 @@ class CleanUNetLightningModule(pl.LightningModule):
             self.cmag = CompressedMagnitudeLoss(n_fft=int(cmag.get("n_fft", 400)),
                                                 hop_length=int(cmag.get("hop_length", 100)),
                                                 power=float(cmag.get("power", 0.3)))
+        # Power-law compressed complex loss on the waveform output (plan 16.4, item 0.3): supervises the phase,
+        # including the 5-8 kHz band that the waveform L1 barely weighs
+        ccx = loss_cfg.get("ccomplex") or {}
+        self.ccomplex_weight = float(ccx.get("weight", 0.0))
+        self.ccomplex = None
+        if self.ccomplex_weight > 0:
+            self.ccomplex = CompressedComplexLoss(n_fft=int(ccx.get("n_fft", 400)),
+                                                  hop_length=int(ccx.get("hop_length", 100)),
+                                                  power=float(ccx.get("power", 0.3)))
 
         # 4. Augmentation and validation settings
         self.sample_rate = int(cfg.get("data", {}).get("sample_rate", 16000))
@@ -182,8 +191,6 @@ class CleanUNetLightningModule(pl.LightningModule):
         self.mgan_weight = float(mg.get("weight", 0.0))
         self.metric_disc = None
         if self.mgan_weight > 0:
-            if self.loss_mode == "spec":
-                raise ValueError("loss.metric_gan needs a waveform output (loss.mode waveform or hybrid)")
             self.automatic_optimization = False
             # highpass_hz: band-limited PESQ target and discriminator input (cleanunet/metric_disc.py)
             hp = float(mg.get("highpass_hz", 0.0))
@@ -362,6 +369,11 @@ class CleanUNetLightningModule(pl.LightningModule):
             loss_cm = self.cmag(enhanced / scale, clean.view_as(enhanced) / scale)
             total = total + self.cmag_weight * loss_cm
             logs["cmag_loss"] = loss_cm.detach()
+        if self.ccomplex is not None:
+            scale = out["scale"]
+            loss_cc = self.ccomplex(enhanced / scale, clean.view_as(enhanced) / scale)
+            total = total + self.ccomplex_weight * loss_cc
+            logs["ccomplex_loss"] = loss_cc.detach()
         if self.teacher is not None and self.training:
             if teacher_input is None:
                 target = self._teacher_output(noisy)
@@ -426,8 +438,12 @@ class CleanUNetLightningModule(pl.LightningModule):
         sched = self.lr_schedulers()
         total, out, logs = self._compute_losses(noisy, clean, teacher_input)
         scale = out["scale"].float()
-        est = out["wav"].float() / scale
-        ref = clean.view_as(out["wav"]).float() / scale
+        if out["wav"] is None:      # spectral-branch training: the discriminator scores the resynthesis
+            x_norm = noisy.view(noisy.shape[0], 1, -1).float() / scale
+            est = self.model.spec_to_wave(out["spec"], x_norm, noisy.shape[-1], phase=out.get("phase"))
+        else:
+            est = out["wav"].float() / scale
+        ref = clean.view_as(est).float() / scale
         if int(self.mgan_step) >= self.mgan_warmup:
             self.metric_disc.requires_grad_(False)
             g_loss = generator_loss(self.metric_disc, ref, est)
@@ -467,6 +483,12 @@ class CleanUNetLightningModule(pl.LightningModule):
         for k, v in logs.items():
             self.log(f"val/{k}", v, on_epoch=True, sync_dist=True, batch_size=bs)
 
+        if out["wav"] is None and out.get("spec") is not None:
+            # spectral-branch training: score the resynthesis with the predicted phase (or the noisy phase), so
+            # val/pesq exists for these runs too (IMPROVEMENT_PLAN.md, 16.4, phase 1)
+            x = noisy.view(noisy.shape[0], 1, -1).float()
+            out["wav"] = self.model.spec_to_wave(out["spec"], x / out["scale"], x.shape[-1],
+                                                 phase=out.get("phase")) * out["scale"]
         if out["wav"] is not None:
             enhanced = out["wav"].float().squeeze(1).cpu().numpy()
             ref = clean.float().squeeze(1).cpu().numpy()

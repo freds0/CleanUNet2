@@ -1,0 +1,8 @@
+# Screening variant: M1's architecture with item 2.4, gated skip connections (IMPROVEMENT_PLAN.md, 16.4).
+base: base.yaml
+model:
+  architecture: ../model/cleanunet_mamba_bidir_e8_gated.yaml
+callbacks:
+  best_checkpoint: {dirpath: logs/screen/gated}
+logger:
+  tensorboard: {name: screen/gated}

@@ -4,6 +4,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from dataset import PairDataset, seed_worker
+from mixture_dataset import MixtureDataset
 
 
 class CleanUNetDataModule(pl.LightningDataModule):
@@ -24,12 +25,15 @@ class CleanUNetDataModule(pl.LightningDataModule):
             of `crossfade` samples (long training sequences, IMPROVEMENT_PLAN.md N7a).
         ext_noise: training crops whose noise is replaced by another corpus (dataset.py, noise_bank.py):
             {dir, p, snr_db: [low, high], weights: {noise, babble, music}, babble_talkers: [min, max]}.
+        mixture: multi-corpus training set (mixture_dataset.py) instead of `train_list_path`:
+            {lists_dir, pairs: {name: weight}, mix: {...}, epoch_size, worker_stderr}.
     """
     def __init__(self, data_dir: str, train_list_path: str, val_list_path: str, batch_size: int = 16,
                  num_workers: int = 8, persistent_workers: bool = True, segment_size: int = 32768,
                  sample_rate: int = 16000, val_max_files: int = None, concat_utterances: int = 1,
-                 crossfade: int = 160, ext_noise: dict = None, **unused):
+                 crossfade: int = 160, ext_noise: dict = None, mixture: dict = None, **unused):
         super().__init__()
+        self.mixture = mixture
         self.concat_utterances = concat_utterances
         self.crossfade = crossfade
         self.ext_noise = ext_noise
@@ -46,10 +50,15 @@ class CleanUNetDataModule(pl.LightningDataModule):
             print(f"[INFO] CleanUNetDataModule ignores keys: {sorted(unused)}")
 
     def setup(self, stage=None):
-        """Build the training set (random crops, optional external noise) and the validation set (whole files)."""
-        self.train_dataset = PairDataset(self.data_dir, self.train_list_path, segment_size=self.segment_size,
-                                         sample_rate=self.sample_rate, concat_utterances=self.concat_utterances,
-                                         crossfade=self.crossfade, ext_noise=self.ext_noise)
+        """Build the training set (random crops of a file list with optional external noise, or the multi-corpus
+        mixture) and the validation set (whole files)."""
+        if self.mixture:
+            self.train_dataset = MixtureDataset(segment_size=self.segment_size, sample_rate=self.sample_rate,
+                                                **self.mixture)
+        else:
+            self.train_dataset = PairDataset(self.data_dir, self.train_list_path, segment_size=self.segment_size,
+                                             sample_rate=self.sample_rate, concat_utterances=self.concat_utterances,
+                                             crossfade=self.crossfade, ext_noise=self.ext_noise)
         self.val_dataset = PairDataset(self.data_dir, self.val_list_path, segment_size=None,
                                        sample_rate=self.sample_rate, max_files=self.val_max_files)
 
