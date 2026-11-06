@@ -1,19 +1,23 @@
 # Architectures and experimental results
 
-State on 2026-11-03, 17:40. This document covers the architectures evaluated in this repository and the results of the
+State on 2026-11-06, 11:30. This document covers the architectures evaluated in this repository and the results of the
 experiments. The full log, with every queue and decision, is in `IMPROVEMENT_PLAN.md` (the sections are cited below).
 Raw results are in `results/all/` and `results/screen/` (`summary.json` and per-file `metrics.csv`).
 
 ## 1. Summary
 
-- **Best system on VoiceBank-DEMAND:** Z4 + W5, trained on VoiceBank only. Test PESQ-WB 3.446, SI-SDR 19.24 dB. It
-  fails off VoiceBank: 1.189 PESQ-WB and −3.31 dB on DNS with_reverb.
-- **Best full-budget system across domains:** M2c + MS (w 0.65), trained on all the data. Test PESQ-WB 3.048.
-  - Against M2 + MS (test 3.060), it adds +0.60 to +2.23 dB of SI-SDR at about the same PESQ (−0.022 to +0.015).
-- **Best system across domains:** M2c + `tf_l` (w 0.65, phase of `tf_l`), 54.9M. The time-frequency branch v2 (`tf_l`)
-  has only 2.48M parameters and had a screening budget. Test PESQ-WB 3.216.
-  - It beats M2 + MS on all seven sets: PESQ-WB +0.089 to +0.263, SI-SDR +0.76 to +3.53 dB.
-  - It is 0.230 behind Z4 + W5 on the VoiceBank test set, and far ahead off VoiceBank.
+- **Best system across domains, and on the VoiceBank test set:** TF2, the time-frequency branch v2 (`tf_l` size,
+  2.48M parameters) trained on all the data for 300,000 steps (TF1) and then with the metric discriminator. Test
+  PESQ-WB 3.478, SI-SDR 18.65 dB (5.8).
+  - Against Z4 + W5 (3.446), it is ahead on `val_unseen` and test, 0.079 behind on `vctk_unseen`, and ahead on all
+    three VoiceBank sets in PESQ-WB above 100 Hz and in PESQ-NB. Z4 + W5 keeps SI-SDR (+0.59 dB on test).
+  - Off VoiceBank it beats every other system, except its own blend with M2c on three of the four sets (by 0.010
+    to 0.028). TF2: DNS no_reverb 3.484, with_reverb 3.359, EARS-WHAM 2.694, Libri2Mix 2.711.
+  - The waveform branch M2c adds almost nothing to it (+0.002 on the dev set).
+- **Best system trained on VoiceBank only:** Z4 + W5. Test PESQ-WB 3.446, SI-SDR 19.24 dB. It fails off VoiceBank:
+  1.189 PESQ-WB and −3.31 dB on DNS with_reverb.
+- **Earlier all-data systems:** M2c + `tf_l` (screening budget, test 3.216) and M2c + MS (test 3.048). Both are
+  superseded by TF1 and TF2.
 - **Waveform-branch capacity:** none of the four variants passed its criterion. Dilated convolutions (dconv) are the
   most consistent.
 - **High-band phase defect:** the from-scratch all-data models apply a fixed phase rotation above 5 kHz. A
@@ -140,6 +144,9 @@ waveform branch by default, or from the spectral branch with `--blend_phase spec
 | M2c + MS | M2c | MS | 0.65 | 71.9M | all data |
 | M2c_vbft + MS | M2c, then VoiceBank fine-tune | MS | 0.35 | 71.9M | all data, then VoiceBank |
 | M2c + `tf_l` | M2c | `tf_l` | 0.65 | 54.9M | all data (`tf_l`: screening budget) |
+| TF1 | — | TF1 | 1.0 | 2.48M | all data |
+| TF2 | — | TF2 | 1.0 | 2.48M | all data |
+| M2c + TF1, M2c + TF2 | M2c | TF1, TF2 | 0.8 | 54.9M | all data |
 | Z4 + W5 | Z4 (Mamba) | W5 | 0.15 | 71.9M | VoiceBank only |
 | Z4 hp1.0 + W5 | Z4 hp1.0 | W5 | 0.25 | 71.9M | VoiceBank only |
 
@@ -173,7 +180,7 @@ Batch 16 of 15.36 s crops, bf16, polarity inversion p 0.5.
 | M2c | M2 | + compressed complex loss 1.0 (STFT 400 / 100, power 0.3) | 5e-5 | 5,332 | ~364 h |
 | M2c_vbft | M2c | same, on VoiceBank + MUSAN, 2.048 s crops | 2e-5 | 15 epochs | — |
 
-Two stages of the time-frequency branch are running (section 9), with batch 8 of 2.048 s crops:
+Two stages of the time-frequency branch, with batch 8 of 2.048 s crops (results in 5.8):
 
 | Stage | Init | Losses | LR | Steps | Audio |
 |---|---|---|---|---|---|
@@ -219,7 +226,8 @@ Bold marks the best per set.
 | Z4 + W5 (w 0.15) | **3.419** | **3.446** | **3.414** | 2.777 | 1.189 | 2.178 | 1.902 |
 | Z4 hp1.0 + W5 (w 0.25) | 3.376 | 3.403 | 3.356 | 2.921 | 1.225 | 2.200 | 1.958 |
 
-M2c + `tf_l` and `tf_l` alone are in 5.7, which supersedes the bold of the four non-VoiceBank columns.
+M2c + `tf_l` and `tf_l` alone are in 5.7, and TF1 and TF2 in 5.8. TF2 supersedes the bold of every column except
+`vctk_unseen`.
 
 ### 5.2 Full evaluation: SI-SDR (dB)
 
@@ -269,7 +277,11 @@ Each cell is PESQ-WB / SI-SDR (dB) / STOI. Means are over the three domains.
 | M2c + MS (w 0.65) | 3.027 / 17.67 / 0.924 | 2.356 / 14.28 / 0.897 | 2.306 / 12.56 / 0.913 | 2.563 | 14.83 |
 | M2c + `tf_l` (w 0.65, M2c phase) | 3.144 / 18.87 / 0.927 | 2.392 / 14.31 / 0.898 | 2.350 / 12.65 / 0.916 | 2.629 | 15.27 |
 | M2c + `tf_l` (w 1.0, M2c phase) | 3.142 / 18.96 / 0.925 | 2.340 / 14.27 / 0.896 | 2.339 / 12.68 / 0.916 | 2.607 | 15.30 |
-| **M2c + `tf_l` (w 0.65, `tf_l` phase)** | **3.183** / 19.28 / **0.928** | **2.449 / 15.07 / 0.903** | **2.440 / 13.58 / 0.921** | **2.691** | **15.98** |
+| M2c + `tf_l` (w 0.65, `tf_l` phase) | 3.183 / **19.28** / 0.928 | 2.449 / 15.07 / 0.903 | 2.440 / 13.58 / 0.921 | 2.691 | 15.98 |
+| TF1 | 3.318 / 18.68 / 0.930 | 2.536 / 15.79 / 0.914 | 2.548 / 14.16 / 0.931 | 2.801 | 16.21 |
+| M2c + TF1 (w 0.8, TF1 phase) | 3.311 / 18.93 / **0.931** | 2.579 / **15.84** / **0.915** | 2.579 / **14.21** / **0.932** | 2.823 | **16.33** |
+| **TF2** | **3.442** / 18.32 / 0.930 | 2.629 / 15.66 / 0.914 | 2.671 / 14.08 / **0.932** | 2.914 | 16.02 |
+| M2c + TF2 (w 0.8, TF2 phase) | 3.416 / 18.67 / **0.931** | **2.656** / 15.74 / **0.915** | **2.676** / 14.14 / **0.932** | **2.916** | 16.18 |
 
 The VoiceBank-only systems (Z4 + W5) were not evaluated on the dev set.
 
@@ -285,6 +297,8 @@ The VoiceBank-only systems (Z4 + W5) were not evaluated on the dev set.
 | `tf_s` | 1.834, 2.146, 2.065, 2.229, 2.277, 2.224, 2.291, 2.237, 2.277, 2.280 |
 | `tf_m` | 1.967, 2.213, 2.301, 2.335, 2.407, 2.432, 2.475, 2.494, 2.482, 2.478 |
 | `tf_l` | 2.142, 2.350, 2.437, 2.483, 2.570, 2.561, 2.646, 2.618, 2.636, 2.626 |
+| TF1 (30 epochs, from `tf_l`) | 2.578, 2.627, 2.602, 2.632, 2.674, 2.651, 2.717, 2.710, 2.729, 2.723, 2.723, 2.717, 2.677, 2.773, 2.759, 2.750, 2.756, 2.744, 2.740, 2.772, 2.787, 2.793, 2.790, 2.786, 2.792, 2.802, 2.799, 2.798, 2.802, 2.795 |
+| TF2 (4 epochs, from TF1) | 2.869, 2.903, 2.915, 2.914 |
 
 ### 5.5 Waveform capacity variants against base
 
@@ -362,6 +376,64 @@ Other metrics of M2c + `tf_l`:
   SI-SDR is higher on `val_unseen` (+0.11 dB) and `vctk_unseen` (+0.48 dB).
 - RTF is about 0.010, against 0.0012–0.0026 for M2 + MS.
 
+### 5.8 Full time-frequency runs: TF1 and TF2
+
+TF1 is `tf_l` trained for 300,000 steps, and TF2 is TF1 with the metric discriminator (4.2). The blend weight with
+M2c was picked on the dev set (phase of the branch): w 0.8, the edge of the grid. Details in `IMPROVEMENT_PLAN.md`,
+16.8.
+
+Dev set, mean over the three domains:
+
+| System | Mean PESQ-WB | Mean SI-SDR (dB) |
+|---|---|---|
+| M2c + `tf_l` (w 0.65) | 2.691 | 15.98 |
+| TF1 | 2.801 | 16.21 |
+| M2c + TF1 (w 0.8) | 2.823 | 16.33 |
+| TF2 | 2.914 | 16.02 |
+| M2c + TF2 (w 0.8) | 2.916 | 16.18 |
+
+PESQ-WB:
+
+| System | val_unseen | test | vctk_unseen | DNS no_reverb | DNS with_reverb | EARS-WHAM | Libri2Mix |
+|---|---|---|---|---|---|---|---|
+| M2c + `tf_l` | 3.181 | 3.216 | 3.180 | 3.325 | 3.002 | 2.507 | 2.490 |
+| TF1 | 3.304 | 3.336 | 3.184 | 3.397 | 3.247 | 2.589 | 2.579 |
+| M2c + TF1 | 3.300 | 3.357 | 3.229 | 3.428 | 3.245 | 2.636 | 2.620 |
+| **TF2** | **3.426** | **3.478** | 3.335 | 3.484 | **3.359** | 2.694 | 2.711 |
+| M2c + TF2 | 3.404 | **3.478** | 3.351 | **3.494** | 3.346 | **2.722** | **2.724** |
+| Z4 + W5 | 3.419 | 3.446 | **3.414** | 2.777 | 1.189 | 2.178 | 1.902 |
+
+SI-SDR (dB):
+
+| System | val_unseen | test | vctk_unseen | DNS no_reverb | DNS with_reverb | EARS-WHAM | Libri2Mix |
+|---|---|---|---|---|---|---|---|
+| TF1 | 18.69 | 19.02 | 18.60 | **20.01** | 16.80 | 16.32 | 14.16 |
+| M2c + TF1 | 18.92 | **19.29** | **18.65** | 20.00 | 16.77 | **16.36** | **14.20** |
+| TF2 | 18.33 | 18.65 | 18.40 | 19.94 | **17.04** | 16.14 | 14.07 |
+| M2c + TF2 | 18.65 | 19.03 | 18.45 | 19.95 | 16.96 | 16.22 | 14.12 |
+| Z4 + W5 | **19.11** | 19.24 | 17.84 | 14.55 | −3.31 | 11.30 | 9.31 |
+
+Other metrics of TF2:
+
+| Metric | val_unseen | test | vctk_unseen | DNS no_reverb | DNS with_reverb | EARS-WHAM | Libri2Mix |
+|---|---|---|---|---|---|---|---|
+| PESQ-NB | 3.933 | 3.957 | 3.969 | 3.802 | 3.721 | 3.229 | 3.270 |
+| PESQ-WB above 100 Hz | 3.558 | 3.571 | 3.572 | 3.510 | 3.388 | 2.714 | 2.769 |
+| STOI | 0.929 | 0.961 | 0.851 | 0.979 | 0.943 | 0.924 | 0.936 |
+| CSIG | 4.670 | 4.764 | 4.586 | 4.789 | 4.710 | 4.223 | 4.352 |
+| CBAK | 3.842 | 3.855 | 3.756 | 4.166 | 4.102 | 3.381 | 3.409 |
+| COVL | 4.171 | 4.242 | 4.047 | 4.275 | 4.168 | 3.516 | 3.584 |
+
+For Z4 + W5 on `val_unseen` / test / `vctk_unseen`: PESQ-WB above 100 Hz 3.505 / 3.510 / 3.523, PESQ-NB 3.873 /
+3.902 / 3.888, CSIG 4.696 / 4.754 / 4.683, COVL 4.171 / 4.208 / 4.153.
+
+- **Full run:** TF1 − `tf_l` is +0.166 on the dev set and +0.072 to +0.267 PESQ-WB on the evaluation sets.
+- **Metric discriminator:** TF2 − TF1 is +0.09 to +0.15 PESQ-WB on every set, and −0.07 to −0.37 dB of SI-SDR except
+  on DNS with_reverb (+0.24 dB).
+- **Blend:** with TF2, M2c changes PESQ-WB by −0.022 to +0.028 and adds 0.06–0.38 dB of SI-SDR.
+- **Size:** TF2 alone uses 2.48M parameters. `evaluate.py` reports 54.9M because the checkpoint also holds the frozen
+  M2c branch. Its RTF (0.0084 in `evaluate.py`) was not measured for the branch alone.
+
 ## 6. Findings
 
 ### 6.1 Mamba against Transformer
@@ -425,7 +497,8 @@ Mean phase difference between output and clean reference on the VB test set, and
 
 The weight is near its ceiling for MS: picking the best weight per set adds at most +0.045, and +0.011 on average
 (16.2). With `tf_l`, the phase source matters more than the weight: `tf_l` phase instead of M2c phase adds +0.039 to
-+0.090 PESQ-WB at w 0.65. Other weights with the `tf_l` phase were not tested.
++0.090 PESQ-WB at w 0.65. With the full branches the dev grid picks w 0.8, its edge, and with TF2 the blend adds
+only +0.002 on the dev set (5.8).
 
 ### 6.6 VoiceBank-only history
 
@@ -459,10 +532,23 @@ blend, and larger batches (3.312 against 3.375). Learned fusion variants ended i
 - **Objective metrics only.** The listening test (14.8, X5) has no answers. DNSMOS did not confirm the discriminator's
   gain on VoiceBank (14.8).
 - **RTF** comes from `evaluate.py` runs on a shared GPU, not from a dedicated benchmark.
+- **`last.ckpt` is not the end of training.** `train.LastEveryEpochCheckpoint` never writes (`IMPROVEMENT_PLAN.md`,
+  16.8), so `last.ckpt` is the latest of the two best validation checkpoints: epoch 29 of 30 for TF1, epoch 9 of 10
+  for `tf_l`. The evaluations used those, so they are selected on the dev set, one epoch from the end at most. The
+  callback is fixed for later runs.
+- **The blend weight sits at the edge of the grid** (w 0.8) for TF1 and TF2.
 
-## 8. Incidents in the last queue
+## 8. Incidents in the last queues
 
-The queue of the plan (`logs/plan16/run_plan16.sh`) ran from 2026-11-01 12:23 to 2026-11-03 03:41. No evaluation file
+**Full time-frequency runs** (`logs/plan16/run_tf_full.sh`, 2026-11-03 12:04 to 2026-11-06 01:54). No run or
+evaluation failed.
+
+- The machine stopped on 2026-11-03 between 20:40 and 20:50, during the validation of TF1 epoch 8, with no clean
+  shutdown. It came back on 2026-11-04 at 16:07. The cause is unknown (`kern.log` is not readable from this account).
+- TF1 resumed from `last.ckpt` (step 70,000) on 2026-11-04 at 19:02, losing about 10,000 steps, and ran to the end
+  without a restart. TF2 ran in one attempt.
+
+**Plan queue.** The queue of the plan (`logs/plan16/run_plan16.sh`) ran from 2026-11-01 12:23 to 2026-11-03 03:41. No evaluation file
 failed.
 
 - Three runs stalled, and the watchdog killed and resumed them: M2c at 13:45, base at 15:49 and dconv at 18:10.
@@ -476,28 +562,11 @@ failed.
 
 ## 9. Next steps
 
-**Running since 2026-11-03 12:04** (`logs/plan16/run_tf_full.sh`, tmux session `tffull`, log `logs/plan16/tf_full.log`):
-
-1. TF1: the `tf_l` branch warm-started, 30 more epochs (~32 h).
-2. TF2: TF1 with the metric discriminator on its resynthesis, 4 epochs (~5 h).
-3. After each: the branch alone on the dev set, the weight of M2c + TF (phase of TF) picked on the dev set, and both
-   systems on the seven evaluation sets. Results go to `results/all/{TF1,TF2}` and `results/all/M2c{TF1,TF2}_sph_w*`.
-
-The queue should end around 2026-11-05 03:00.
-
-Partial TF1 validation at 17:39, 5 of 30 epochs (one attempt, no restart):
-
-| Epoch | 1 | 2 | 3 | 4 | 5 |
-|---|---|---|---|---|---|
-| Validation PESQ-WB | 2.578 | 2.627 | 2.602 | 2.632 | 2.674 |
-| Validation SI-SDR (dB) | 15.80 | 15.27 | 15.91 | 16.07 | 15.80 |
-
-The last validation of `tf_l`, on the same curve, was 2.626 and 15.88 dB. These are per-epoch training checks, not
-results: the curve is noisy, and neither the dev set nor the evaluation sets have been scored. The tables in section 5
-do not include TF1.
+The full time-frequency runs are done (5.8).
 
 **Proposed, not started:**
 
-- Phase 3: blend gate and target-style conditioning, on the new branches.
+- Phase 3: blend gate and target-style conditioning, on top of TF2.
 - Phase 4: final model. dconv is the only waveform candidate worth a longer test, given its cost.
-- A larger time-frequency branch: each size so far improved every domain.
+- A larger time-frequency branch: each size so far improved every domain. A metric loss that keeps SI-SDR.
+- Use TF2 alone as the all-data system, unless the SI-SDR of the blend matters.

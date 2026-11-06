@@ -116,11 +116,14 @@ Trained on DNS 2020, VoiceBank-DEMAND, EARS-WHAM, Libri2Mix, URGENT 2026 and on-
 | System | Params | VB test | vctk_unseen | DNS no_reverb | DNS with_reverb | EARS-WHAM | Libri2Mix |
 |---|---|---|---|---|---|---|---|
 | M2 + MS, w = 0.65 | 71.9M | 3.060 | 3.017 | 3.062 | 2.903 | 2.418 | 2.335 |
-| **M2c + `tf_l`, w = 0.65, phase of `tf_l`** | 54.9M | 3.216 | 3.180 | **3.325** | **3.002** | **2.507** | **2.490** |
-| Bidirectional S30 soup + W5, w = 0.15 (VoiceBank only) | 71.9M | **3.446** | **3.414** | 2.777 | 1.189 | 2.178 | 1.902 |
+| M2c + `tf_l`, w = 0.65, phase of `tf_l` | 54.9M | 3.216 | 3.180 | 3.325 | 3.002 | 2.507 | 2.490 |
+| **TF2, time-frequency branch alone** | 2.48M | **3.478** | 3.335 | 3.484 | **3.359** | 2.694 | 2.711 |
+| M2c + TF2, w = 0.8, phase of TF2 | 54.9M | **3.478** | 3.351 | **3.494** | 3.346 | **2.722** | **2.724** |
+| Bidirectional S30 soup + W5, w = 0.15 (VoiceBank only) | 71.9M | 3.446 | **3.414** | 2.777 | 1.189 | 2.178 | 1.902 |
 
-`tf_l` is still a screening run. Its full runs are in progress (`IMPROVEMENT_PLAN.md`, 16.7). The blend uses
-`evaluate.py --blend_spec <checkpoint> --blend_w 0.65 --blend_phase spec`.
+TF2 alone is `evaluate.py --spec_only` on `logs/all/TF2_tfmamba_l_mgan/last.ckpt`. It has SI-SDR 18.65 dB on the
+VB test set, against 19.24 for the VoiceBank-only system (`IMPROVEMENT_PLAN.md`, 16.8). The blends use
+`evaluate.py --blend_spec <checkpoint> --blend_w <w> --blend_phase spec`.
 
 ## Architecture of the recommended system
 

@@ -1,7 +1,9 @@
 """Tests of the code added for the architecture plan (IMPROVEMENT_PLAN.md, 16.4): compressed complex loss, the
 per-epoch last checkpoint, the waveform-branch capacity options and the spectral phase in the blend."""
 import pytest
+import pytorch_lightning as pl
 import torch
+from pytorch_lightning.demos.boring_classes import BoringModel
 
 from cleanunet.blend import blend_with_spec
 from cleanunet.cleanunet import CleanUNet
@@ -118,31 +120,25 @@ def test_metric_gan_trains_the_spectral_branch_through_its_resynthesis():
     assert all(torch.equal(a, b) for a, b in zip(wave0, module.model.clean_unet.parameters()))
 
 
-def test_last_checkpoint_follows_every_validation(tmp_path):
-    """The subclass writes last.ckpt even when the monitored metric did not improve."""
-    calls = []
+class _FallingMetricModel(BoringModel):
+    """Logs a validation metric that only gets worse, so that no top-k checkpoint is saved after the first epoch."""
+
+    def validation_step(self, batch, batch_idx):
+        out = super().validation_step(batch, batch_idx)
+        self.log("val/pesq", -float(self.current_epoch))
+        return out
+
+
+@pytest.mark.parametrize("val_check_interval", [1.0, 0.5])   # validation at epoch end (2026-11-05 bug) and mid-epoch
+def test_last_checkpoint_follows_every_validation(tmp_path, val_check_interval):
+    """last.ckpt is the end of training even when the monitored metric stopped improving (IMPROVEMENT_PLAN.md, 16.8)."""
     cb = LastEveryEpochCheckpoint(dirpath=str(tmp_path), monitor="val/pesq", mode="max", save_top_k=1,
                                   save_last=True)
-    cb._save_last_checkpoint = lambda trainer, cand: calls.append(trainer.global_step)
-
-    class T:   # the minimal trainer surface that ModelCheckpoint reads in on_validation_end
-        fast_dev_run = False
-        sanity_checking = False
-        global_step = 10
-        callback_metrics = {"val/pesq": torch.tensor(1.0)}
-        logged_metrics = {}
-        current_epoch = 0
-        max_epochs = 2
-        val_check_interval = 1.0
-        check_val_every_n_epoch = 1
-        num_training_batches = 10
-        is_global_zero = True
-
-        class state:
-            from pytorch_lightning.trainer.states import TrainerFn
-            fn = TrainerFn.FITTING
-
-    cb._save_topk_checkpoint = lambda trainer, cand: None      # metric not improved: no top-k save
-    cb._should_save_on_train_epoch_end = lambda trainer: False
-    cb.on_validation_end(T(), None)
-    assert calls == [10]
+    trainer = pl.Trainer(max_epochs=3, limit_train_batches=4, limit_val_batches=2, val_check_interval=val_check_interval,
+                         callbacks=[cb], logger=False, enable_progress_bar=False, enable_model_summary=False,
+                         accelerator="cpu", num_sanity_val_steps=0)
+    trainer.fit(_FallingMetricModel())
+    last = torch.load(tmp_path / "last.ckpt", map_location="cpu", weights_only=False)
+    assert last["global_step"] == trainer.global_step == 12
+    best = torch.load(cb.best_model_path, map_location="cpu", weights_only=False)
+    assert best["epoch"] == 0                                  # the top-k file is still the best one

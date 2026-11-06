@@ -26,16 +26,25 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(
 logger = logging.getLogger("train")
 
 class LastEveryEpochCheckpoint(ModelCheckpoint):
-    """ModelCheckpoint whose `last.ckpt` follows every validation. In Lightning 2.6 `on_validation_end` only writes
-    it when a top-k checkpoint was saved at that step, so with a monitored metric `last.ckpt` was the latest of the
-    best checkpoints, not the end of training (IMPROVEMENT_PLAN.md, 15.2.1)."""
+    """ModelCheckpoint whose `last.ckpt` follows every save point. In Lightning 2.6 `last.ckpt` is only written when a
+    top-k checkpoint was saved at that step, so with a monitored metric it was the latest of the best checkpoints, not
+    the end of training (IMPROVEMENT_PLAN.md, 15.2.1). With one validation per epoch Lightning saves in
+    `on_train_epoch_end`, otherwise in `on_validation_end`, so both are covered (16.8)."""
+
+    def _save_last_if_missing(self, trainer):
+        """`last.ckpt` at this step, unless the parent hook already saved a checkpoint here."""
+        if self.save_last and not self._should_skip_saving_checkpoint(trainer):
+            self._save_last_checkpoint(trainer, self._monitor_candidates(trainer))
+
+    def on_train_epoch_end(self, trainer, pl_module):
+        super().on_train_epoch_end(trainer, pl_module)
+        if self._should_save_on_train_epoch_end(trainer):
+            self._save_last_if_missing(trainer)
 
     def on_validation_end(self, trainer, pl_module):
-        """Save top-k as usual, then `last.ckpt` if that step did not already write it."""
         super().on_validation_end(trainer, pl_module)
-        if (self.save_last and not self._should_skip_saving_checkpoint(trainer)
-                and not self._should_save_on_train_epoch_end(trainer)):
-            self._save_last_checkpoint(trainer, self._monitor_candidates(trainer))
+        if not self._should_save_on_train_epoch_end(trainer):
+            self._save_last_if_missing(trainer)
 
 
 _CALLBACKS = {"ModelCheckpoint": LastEveryEpochCheckpoint, "EarlyStopping": EarlyStopping,

@@ -12,6 +12,11 @@
 
 ## 0. Summary
 
+**Status on 2026-11-06.** The full runs of the time-frequency branch finished (16.7, results in 16.8). TF2 (`tf_l`
+trained for 300,000 steps, then with the metric discriminator, 2.48M parameters) alone scores test PESQ-WB 3.478, above
+Z4 + W5 (3.446), with SI-SDR 18.65 dB against 19.24. It is ahead by 0.5 to 2.2 off VoiceBank. M2c adds nothing on the
+dev set (+0.002). `train.LastEveryEpochCheckpoint` did not work (`last.ckpt` was the latest of the two best) and is now fixed.
+
 **Status on 2026-11-03.** The queue of 16.5 finished, with results in 16.6 and in `ARCHITECTURES_AND_RESULTS.md`. The
 time-frequency branch `tf_l` (2.48M, screening budget) passes the phase 1 criterion. No waveform-capacity variant
 passes the phase 2 criterion. M2c removes the high-band phase rotation. M2c + `tf_l` (test 3.216) beats M2 + MS on all
@@ -2965,3 +2970,106 @@ account). `last.ckpt` loads clean at epoch 7 of 30 (step 70,000, validation PESQ
 with the end now expected around 2026-11-06 02:30.
 
 The results go in 16.8.
+
+### 16.8 Results of the full time-frequency runs (2026-11-06)
+
+The queue ended on 2026-11-06 at 01:54. Apart from the machine stop of 16.7, no run or evaluation failed: TF1 ended on
+2026-11-05 at 19:46 and TF2 (one attempt) at 01:26. Every evaluation has all its files and no metric errors, and
+`val/metric_errors` stayed at 0. The loader caught 290 (TF1) and 52 (TF2) read errors, mostly broken MP3 frames and
+empty mixes.
+
+**Validation PESQ-WB per epoch** (mean over the domains of the dev set):
+
+| Run | Curve |
+|---|---|
+| TF1 | 2.578, 2.627, 2.602, 2.632, 2.674, 2.651, 2.717, 2.710, 2.729, 2.723, 2.723, 2.717, 2.677, 2.773, 2.759, 2.750, 2.756, 2.744, 2.740, 2.772, 2.787, 2.793, 2.790, 2.786, 2.792, 2.802, 2.799, 2.798, 2.802, 2.795 |
+| TF2 | 2.869, 2.903, 2.915, 2.914 |
+
+The first value after the restart (epoch 8, 2.710) repeats the epoch lost in the stop. TF1 flattens at about 2.80
+from epoch 26. The discriminator loss of TF2 fell to about 0.004, and the share of valid PESQ targets stayed at
+0.998–1.0.
+
+**Dev set**, PESQ-WB / SI-SDR (dB) / STOI, with means over the three domains:
+
+| System | VB | EARS-WHAM | Libri2Mix | Mean PESQ | Mean SI-SDR |
+|---|---|---|---|---|---|
+| `tf_l` (screen) | 3.167 / 19.30 / 0.926 | 2.359 / 14.91 / 0.899 | 2.379 / 13.51 / 0.919 | 2.635 | 15.91 |
+| M2c + `tf_l` (w 0.65, `tf_l` phase) | 3.183 / 19.28 / 0.928 | 2.449 / 15.07 / 0.903 | 2.440 / 13.58 / 0.921 | 2.691 | 15.98 |
+| TF1 | 3.318 / 18.68 / 0.930 | 2.536 / 15.79 / 0.914 | 2.548 / 14.16 / 0.931 | 2.801 | 16.21 |
+| M2c + TF1 (w 0.8, TF1 phase) | 3.311 / 18.93 / 0.931 | 2.579 / 15.84 / 0.915 | 2.579 / 14.21 / 0.932 | 2.823 | 16.33 |
+| **TF2** | **3.442** / 18.32 / 0.930 | 2.629 / 15.66 / 0.914 | 2.671 / 14.08 / 0.932 | 2.914 | 16.02 |
+| M2c + TF2 (w 0.8, TF2 phase) | 3.416 / 18.67 / 0.931 | **2.656** / 15.74 / 0.915 | **2.676** / 14.14 / 0.932 | **2.916** | 16.18 |
+
+Blend weight on the dev set (TF phase), mean PESQ-WB:
+
+| w | 0.35 | 0.5 | 0.65 | 0.8 | 1.0 (TF alone) |
+|---|---|---|---|---|---|
+| M2c + TF1 | 2.708 | 2.772 | 2.811 | **2.823** | 2.801 |
+| M2c + TF2 | 2.747 | 2.829 | 2.886 | **2.916** | 2.914 |
+
+The queue picked w 0.8, the edge of its grid. w 0.9 was not tested.
+
+**Evaluation sets, PESQ-WB:**
+
+| System | val_unseen | test | vctk_unseen | DNS no_reverb | DNS with_reverb | EARS-WHAM | Libri2Mix |
+|---|---|---|---|---|---|---|---|
+| M2c + `tf_l` (16.6) | 3.181 | 3.216 | 3.180 | 3.325 | 3.002 | 2.507 | 2.490 |
+| TF1 | 3.304 | 3.336 | 3.184 | 3.397 | 3.247 | 2.589 | 2.579 |
+| M2c + TF1 (w 0.8) | 3.300 | 3.357 | 3.229 | 3.428 | 3.245 | 2.636 | 2.620 |
+| **TF2** | **3.426** | **3.478** | 3.335 | 3.484 | **3.359** | 2.694 | 2.711 |
+| M2c + TF2 (w 0.8) | 3.404 | **3.478** | 3.351 | **3.494** | 3.346 | **2.722** | **2.724** |
+| Z4 + W5 (VoiceBank only) | 3.419 | 3.446 | **3.414** | 2.777 | 1.189 | 2.178 | 1.902 |
+
+**SI-SDR (dB):**
+
+| System | val_unseen | test | vctk_unseen | DNS no_reverb | DNS with_reverb | EARS-WHAM | Libri2Mix |
+|---|---|---|---|---|---|---|---|
+| M2c + `tf_l` (16.6) | **19.22** | 18.76 | 18.32 | 19.18 | 15.87 | 15.63 | 13.54 |
+| TF1 | 18.69 | 19.02 | 18.60 | **20.01** | 16.80 | 16.32 | 14.16 |
+| M2c + TF1 (w 0.8) | 18.92 | **19.29** | **18.65** | 20.00 | 16.77 | **16.36** | **14.20** |
+| TF2 | 18.33 | 18.65 | 18.40 | 19.94 | **17.04** | 16.14 | 14.07 |
+| M2c + TF2 (w 0.8) | 18.65 | 19.03 | 18.45 | 19.95 | 16.96 | 16.22 | 14.12 |
+| Z4 + W5 | 19.11 | 19.24 | 17.84 | 14.55 | −3.31 | 11.30 | 9.31 |
+
+**TF2 against Z4 + W5 on the three VoiceBank sets:**
+
+| Metric | val_unseen | test | vctk_unseen |
+|---|---|---|---|
+| PESQ-WB | 3.426 / 3.419 | 3.478 / 3.446 | 3.335 / 3.414 |
+| PESQ-WB above 100 Hz | 3.558 / 3.505 | 3.571 / 3.510 | 3.572 / 3.523 |
+| PESQ-NB | 3.933 / 3.873 | 3.957 / 3.902 | 3.969 / 3.888 |
+| SI-SDR (dB) | 18.33 / 19.11 | 18.65 / 19.24 | 18.40 / 17.84 |
+| STOI | 0.929 / 0.930 | 0.961 / 0.958 | 0.851 / 0.850 |
+| CSIG | 4.670 / 4.696 | 4.764 / 4.754 | 4.586 / 4.683 |
+| CBAK | 3.842 / 3.866 | 3.855 / 3.878 | 3.756 / 3.750 |
+| COVL | 4.171 / 4.171 | 4.242 / 4.208 | 4.047 / 4.153 |
+
+Findings:
+- **The full run pays.** TF1 against the `tf_l` screen: +0.166 dev PESQ-WB, and +0.072 to +0.267 on the evaluation sets
+  (DNS with_reverb the most). TF1 alone already beats M2c + `tf_l` on all seven sets.
+- **The metric discriminator adds +0.09 to +0.15 PESQ-WB** on every set (TF2 − TF1), with PESQ-NB, CSIG and COVL
+  up and STOI unchanged. It costs SI-SDR: −0.07 to −0.37 dB, except +0.24 dB on DNS with_reverb.
+- **VoiceBank.** TF2 alone passes Z4 + W5 on `val_unseen` and test PESQ-WB, and is 0.079 behind on `vctk_unseen`.
+  Above 100 Hz and in narrow band it is ahead on all three sets. Z4 + W5 keeps SI-SDR on `val_unseen` and test
+  (+0.78 and +0.59 dB) and CSIG/COVL on `vctk_unseen`. Part of the VoiceBank-only lead was in the band below 100 Hz,
+  as with the metric discriminator in 14.8.
+- **The waveform branch is no longer needed.** M2c + TF2 adds +0.002 on the dev set, and between −0.022 and +0.028
+  on the evaluation sets. It recovers 0.06–0.38 dB of SI-SDR. TF2 alone uses the 2.48M parameters of the branch,
+  against 71.9M for Z4 + W5. The evaluation reports 54.9M for TF2 because its checkpoint also holds the frozen M2c
+  branch, and its RTF (0.0084) was not measured for the branch alone.
+
+**Checkpoint defect.** `train.LastEveryEpochCheckpoint` (16.5) never writes. When validation runs once per epoch,
+Lightning 2.6 saves in `on_train_epoch_end`, and the subclass only overrides `on_validation_end`, where it skips. Its
+test (`tests/test_plan16.py`) sets `_should_save_on_train_epoch_end` to False and so misses that path. Effects:
+- `last.ckpt` is still the latest of the two best checkpoints: epoch 29 of 30 for TF1 (2.802, against 2.795 at the
+  end), epoch 9 of 10 for `tf_l`, and the final epoch for TF2. TF1 was warm-started from epoch 9 of `tf_l`.
+- The evaluations therefore used checkpoints selected by validation PESQ, one epoch from the end at most. No
+  conclusion changes.
+- **Fixed on 2026-11-06.** The subclass now also overrides `on_train_epoch_end`. The test runs a real `Trainer`
+  with a metric that only gets worse, with validation at the end and in the middle of the epoch. It failed before the
+  fix for the end-of-epoch case. The suite has 170 passed.
+
+Proposed next steps, none started:
+- Extend the blend grid (w 0.9) only if the waveform branch is kept. TF2 alone is the simpler system.
+- A larger branch than `tf_l`, since each size so far improved every domain, and a metric loss that keeps SI-SDR.
+- Phases 3 and 4 (blend gate, conditioning, final model) on top of TF2.
