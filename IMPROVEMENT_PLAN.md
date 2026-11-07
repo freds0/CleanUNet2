@@ -3058,6 +3058,16 @@ Findings:
   against 71.9M for Z4 + W5. The evaluation reports 54.9M for TF2 because its checkpoint also holds the frozen M2c
   branch, and its RTF (0.0084) was not measured for the branch alone.
 
+**Architecture of TF2**, as coded (`cleanunet/tf_mamba.py`; full description in `ARCHITECTURES_AND_RESULTS.md`, 3.4):
+- STFT 512 / 128 of the std-normalized input. Features: power-0.3 magnitude, and cos and sin of the noisy phase.
+- Stem at 257 bins with 32 channels, one stride-2 frequency down-sampling to 129 bins with 96 channels.
+- 6 blocks of bidirectional Mamba over time (per bin), then over frequency (per frame). d_state 16, d_conv 4,
+  expand 2. Each direction pair is summed.
+- Two decoders, each with one transposed-convolution up-sampling and a skip: a sigmoid mask on the compressed
+  magnitude, and pseudo real and imaginary parts through `safe_atan2` for the phase.
+- Parameters: 1.64M in the Mamba blocks, 0.06M in the convolutions and decoders, and 0.79M in `hidden_proj`. That
+  projection only feeds a fusion with CleanUNet, so the branch alone uses 1.70M.
+
 **Checkpoint defect.** `train.LastEveryEpochCheckpoint` (16.5) never writes. When validation runs once per epoch,
 Lightning 2.6 saves in `on_train_epoch_end`, and the subclass only overrides `on_validation_end`, where it skips. Its
 test (`tests/test_plan16.py`) sets `_should_save_on_train_epoch_end` to False and so misses that path. Effects:

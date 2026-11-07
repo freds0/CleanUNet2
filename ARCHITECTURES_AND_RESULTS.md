@@ -77,6 +77,10 @@ All offline models see the whole utterance. Parameter counts are in millions (M)
 | Transformer (T1, T2) | 5 self-attention layers, 8 heads, d_model 512, d_inner 2048, no causal mask | 46.1M | `configs/model/cleanunet_tsfm_e8.yaml` |
 | Bidirectional Mamba (Z4, M1, M2, M2c) | 3 bidirectional Mamba layers, same sizes | 52.4M | `configs/model/cleanunet_mamba_bidir_e8.yaml` |
 
+A bidirectional Mamba layer runs a forward Mamba and a second one on the time-reversed sequence, and sums the two
+outputs (`BiMambaMixer` in `cleanunet/sequence.py`). The input is divided by its standard deviation, and the output
+is scaled back.
+
 ### 3.2 Capacity variants of the waveform branch
 
 Each adds one change to the bidirectional Mamba version (IMPROVEMENT_PLAN.md, 16.4, phase 2). The new modules start
@@ -108,23 +112,80 @@ dconv at levels 1–6, as first planned, ran at 2.8 steps/s in 24 GB, so it was 
 
 ### 3.4 Spectral branch v2: dual-path time-frequency Mamba
 
-`cleanunet/tf_mamba.py`, in the style of MP-SENet and SEMamba. `configs/model/tfmamba_v2_spec{,_s,_l}.yaml`.
+`TFMambaSpecNet` in `cleanunet/tf_mamba.py`, in the style of MP-SENet and SEMamba. Configs:
+`configs/model/tfmamba_v2_spec.yaml` (shared settings) and `tfmamba_v2_spec_{s,l}.yaml` (sizes). It is used by
+`tf_s`, `tf_m`, `tf_l`, TF1 and TF2. Unlike v1, it models the frequency axis with a sequence model and predicts the
+phase. TF2, the best all-data system (5.8), is this branch alone at size `tf_l`.
 
-- **Input:** STFT 512 / 128 (8 ms hop): power-0.3 compressed magnitude, plus cos and sin of the noisy phase.
-- **Encoder:** 2-D convolutions with one ×2 frequency down-sampling (257 → 129 bins).
-- **Core:** blocks of bidirectional Mamba over time (one sequence per bin) followed by bidirectional Mamba over
-  frequency (one sequence per frame). d_state 16, d_conv 4, expand 2.
-- **Decoders:** a bounded magnitude mask, and a phase decoder (pseudo real and imaginary parts, then atan2).
+```
+ noisy x (16 kHz) ── / std(x)
+   │  STFT 512 / 128 (32 ms Hann window, 8 ms hop), 257 bins
+   ▼
+ features (B, 3, 257, T): |X|^0.3, cos ∠X, sin ∠X
+   │
+   ├─ stem: Conv 1×1 → Conv 3×3, C0 channels, 257 bins ──────────────────────────────┐ skip
+   ├─ down: Conv 3×3, stride 2 in frequency → C channels, 129 bins                    │
+   │                                                                                  │
+   ├─ n_blocks × TFMambaBlock (C channels, 129 × T)                                   │
+   │     ├─ bidirectional Mamba over time       (B·129 sequences of length T)         │
+   │     └─ bidirectional Mamba over frequency  (B·T sequences of length 129)         │
+   │                                                                                  │
+   ├─ magnitude decoder: ConvTranspose (3×1, stride 2 in frequency) + skip ◄──────────┤
+   │                     → Conv 1×1 → mask m                                          │
+   └─ phase decoder:     ConvTranspose (3×1, stride 2 in frequency) + skip ◄──────────┘
+                         → Conv 1×1 → (re, im) → atan2
+   ▼
+ |Ŝ|^0.3 = |X|^0.3 · σ(m), phase φ̂  →  decompress, iSTFT, × std(x)  →  enhanced speech
+```
 
-| Size | Channels | Full-resolution channels | Blocks | Params | Speed | Peak VRAM |
-|---|---|---|---|---|---|---|
-| `tf_s` | 48 | 24 | 4 | 0.73M | 7.4 steps/s | 6.4 GB |
-| `tf_m` | 64 | 32 | 4 | 1.09M | 5.6 steps/s | 7.9 GB |
-| `tf_l` | 96 | 32 | 6 | 2.48M | 2.6 steps/s | 15.1 GB |
+| Part | Detail |
+|---|---|
+| Input | Power-0.3 compressed magnitude plus cos and sin of the noisy phase, three feature maps of 257 × T |
+| Convolution blocks | Conv2d → FrameNorm (per frame, over channels and frequency, with a per-channel affine) → PReLU. Kernels 3 × 3 (frequency × time), symmetric padding (non-causal) |
+| Frequency resolution | Full resolution (257 bins) only in the stem and the last decoder level, with C0 channels to keep it cheap. One ×2 down-sampling to 129 bins for the core |
+| TF-Mamba block | Pre-norm residual Mamba layer over time, final LayerNorm, then the same over frequency. Each layer is bidirectional: a forward and a time-reversed Mamba whose outputs are summed (`BiMambaMixer`, `cleanunet/sequence.py`). d_state 16, d_conv 4, expand 2 |
+| Magnitude output | Sigmoid mask on the compressed noisy magnitude, so in [0, 1] (`output_mode: mask`) |
+| Phase output | Two pseudo-components (real, imaginary) through `safe_atan2`, an atan2 with a bounded gradient near the origin |
+| Causality | Non-causal. The module also has a causal mode (left-padded convolutions, unidirectional Mamba over time), not trained here |
+| `hidden_proj` | Pools the last block into 16 frequency sub-bands and projects each frame to 512, for a fusion with CleanUNet. The branch alone (`--spec_only`) does not use it |
 
-Their checkpoints also hold an unused, frozen 52.4M waveform branch, so `summary.json` reports `params_M` of 53.2–54.9
-for them. The counts above are the branch alone. Although `tf_l` is 8× smaller than MS, it runs 2-D sequence models
-over every bin and frame, so it is slower: RTF 0.0085 against about 0.0012–0.0033 for the whole M2 + MS system.
+**Sizes**, parameter counts of the branch:
+
+| Size | C | C0 | Blocks | TF-Mamba blocks | Convolutions and decoders | `hidden_proj` | Total | Used alone | Speed | Peak VRAM |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `tf_s` | 48 | 24 | 4 | 0.32M | 0.02M | 0.39M | 0.73M | 0.34M | 7.4 steps/s | 6.4 GB |
+| `tf_m` | 64 | 32 | 4 | 0.52M | 0.04M | 0.52M | 1.09M | 0.57M | 5.6 steps/s | 7.9 GB |
+| `tf_l` (TF1, TF2) | 96 | 32 | 6 | 1.64M | 0.06M | 0.79M | 2.48M | 1.70M | 2.6 steps/s | 15.1 GB |
+
+Speed and VRAM are for training with batch 8 × 2.048 s. The tables of this document count the total, including
+`hidden_proj`. The checkpoints also hold an unused, frozen 52.4M waveform branch, so `summary.json` reports `params_M`
+of 53.2–54.9 for them. Although `tf_l` is about 8× smaller than MS, it runs 2-D sequence models over every bin and
+frame, so it is slower: RTF 0.0085 against about 0.0012–0.0033 for the whole M2 + MS system.
+
+**Losses of the branch** (`loss.mode: spec`, `_spectral_loss` in `lightning_modules/cleanunet_module.py`), on the
+compressed spectrum of the input-normalized signals:
+
+| Term | Weight | Definition |
+|---|---|---|
+| `mse` | 0.9 | MSE between the estimated and clean compressed magnitudes |
+| `phase` | 0.3 | MP-SENet anti-wrapping losses: instantaneous phase, group delay (difference along frequency) and instantaneous frequency (difference along time), weighted by the clean compressed magnitude |
+| `complex` | 0.1 | MSE between the compressed complex spectra, magnitude with phase |
+| `consistency` | 0.1 | MSE between the estimate and the STFT of its own iSTFT |
+| `wave` | 0.2 | L1 + multi-resolution STFT loss (as for the waveform branch) on the resynthesized waveform |
+| metric discriminator (TF2 only) | 0.3 | (D(clean, ŷ) − 1)², where D is trained to predict the normalized PESQ of the resynthesis ŷ |
+
+The metric discriminator (`cleanunet/metric_disc.py`) is the MetricGAN-style CNN of the waveform recipes. It takes the
+power-0.3 magnitudes (STFT 400 / 100) of the reference and the estimate as two channels: four strided Conv2d blocks
+with spectral normalization, InstanceNorm and PReLU, global max pooling, two linear layers and a learnable sigmoid.
+The PESQ targets come from a CPU pool. In TF2 it starts with 600 discriminator-only steps.
+
+**Training lineage of TF2** (details in 4.2 and 4.3), all on the all-data mixture with batch 8 × 2.048 s:
+
+| Stage | Init | Losses | LR | Steps | Audio |
+|---|---|---|---|---|---|
+| `tf_l` (screen) | scratch | the five terms above | 3e-4 | 100,000 | ~455 h |
+| TF1 | `tf_l`, epoch 9 of 10 | same | 2e-4 | 300,000 | ~1,365 h |
+| TF2 | TF1, epoch 29 of 30 | + metric discriminator 0.3 | 2e-5 | 40,000 | ~182 h |
 
 ### 3.5 Blend
 
@@ -144,8 +205,8 @@ waveform branch by default, or from the spectral branch with `--blend_phase spec
 | M2c + MS | M2c | MS | 0.65 | 71.9M | all data |
 | M2c_vbft + MS | M2c, then VoiceBank fine-tune | MS | 0.35 | 71.9M | all data, then VoiceBank |
 | M2c + `tf_l` | M2c | `tf_l` | 0.65 | 54.9M | all data (`tf_l`: screening budget) |
-| TF1 | — | TF1 | 1.0 | 2.48M | all data |
-| TF2 | — | TF2 | 1.0 | 2.48M | all data |
+| TF1 | — | TF1 | 1.0 | 2.48M (1.70M used) | all data |
+| TF2 | — | TF2 | 1.0 | 2.48M (1.70M used) | all data |
 | M2c + TF1, M2c + TF2 | M2c | TF1, TF2 | 0.8 | 54.9M | all data |
 | Z4 + W5 | Z4 (Mamba) | W5 | 0.15 | 71.9M | VoiceBank only |
 | Z4 hp1.0 + W5 | Z4 hp1.0 | W5 | 0.25 | 71.9M | VoiceBank only |

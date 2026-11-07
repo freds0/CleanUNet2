@@ -161,6 +161,30 @@ VB test set, against 19.24 for the VoiceBank-only system (`IMPROVEMENT_PLAN.md`,
   magnitudes, a weighted mean in dB. The phase comes from the waveform branch. Nothing is trained; `w` is chosen
   on `val_unseen`.
 
+## Architecture of the best all-data system (TF2)
+
+TF2 is the time-frequency branch v2 (`TFMambaSpecNet`, `cleanunet/tf_mamba.py`, size `tf_l`) used alone. It has
+2.48M parameters, of which 1.70M are used without the fusion projection. Test PESQ-WB 3.478, SI-SDR 18.65 dB.
+
+```
+ noisy x ── / std(x) ── STFT 512 / 128 (8 ms hop) ── |X|^0.3, cos ∠X, sin ∠X   (3 × 257 bins × T)
+   │
+   ├─ Conv 1×1 → Conv 3×3 (32 ch, 257 bins) ── Conv 3×3 stride 2 in frequency (96 ch, 129 bins)
+   ├─ 6 × [bidirectional Mamba over time (per bin) → bidirectional Mamba over frequency (per frame)]
+   ├─ magnitude decoder → sigmoid mask on |X|^0.3
+   └─ phase decoder → (re, im) → atan2
+   ▼
+ decompress, iSTFT with the predicted phase, × std(x)
+```
+
+- **Blocks.** Conv2d → per-frame normalization → PReLU. Mamba with d_state 16, d_conv 4 and expand 2. A
+  bidirectional layer sums a forward and a time-reversed Mamba. Each decoder has one ×2 frequency up-sampling with a
+  skip connection from the encoder.
+- **Training.** All the data, batch 8 of 2.048 s. Losses on the compressed spectrum: magnitude MSE 0.9, anti-wrapping
+  phase 0.3, complex 0.1, STFT consistency 0.1, and L1 + multi-resolution STFT on the waveform 0.2. 100,000 steps from
+  scratch (`tf_l`), 300,000 more (TF1), then 40,000 with a metric discriminator 0.3 on the resynthesis (TF2).
+- **Details** in `ARCHITECTURES_AND_RESULTS.md`, section 3.4.
+
 ## Repository structure
 
 ```
